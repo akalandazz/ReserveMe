@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+
+    <!-- viewport-fit=cover обязателен: без него env(safe-area-inset-*) = 0
+         и фиксированная кнопка уезжает под home-индикатор -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+
+    <!-- Совпадает с --bg в src/index.css для светлой и тёмной темы -->
+    <meta
+      name="theme-color"
+      content="#f2eff1"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#141317"
+      media="(prefers-color-scheme: dark)"
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!-- Шрифты макета: Playfair Display — заголовки и цены, Onest — текст.
+         Фолбэки прописаны в --serif / --sans, если Google Fonts недоступен. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500&family=Onest:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- SDK Telegram. Скрипт синхронный и ВЫШЕ модуля намеренно:
+         именно поэтому window.Telegram существует уже на первом рендере.
+         Не добавляйте defer/async. -->
+    <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+
+    <title>Владислава — запись</title>
+  </head>
+
+  <body>
+    <div id="root"></div>
+
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
