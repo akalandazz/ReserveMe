@@ -1,20 +1,23 @@
 import { useEffect, useState } from "react";
-import { MASTER_NAME, WORKING_HOURS_TEXT } from "../data.js";
+import { useContent } from "../content.js";
 import { isPast, labelForKey } from "../schedule.js";
 import { loadBookings } from "../storage.js";
+import { useSession } from "../supabase.js";
 import { tgUser } from "../telegram.js";
 import { Icon, NavRow, PrimaryButton, Screen, Title } from "../ui.jsx";
 
-const CRUMB = `${MASTER_NAME} · Ногтевой сервис`;
-
-const ITEMS = [
-  { id: "my", icon: "calendar", label: "Мои записи", counter: true },
-  { id: "waitlist", icon: "clock", label: "Хочу окошко" },
-  { id: "services", icon: "sparkle", label: "Услуги и цены" },
-  { id: "location", icon: "pin", label: "Как меня найти" },
-  { id: "contact", icon: "chat", label: `Написать ${MASTER_NAME}` },
-  { id: "info", icon: "info", label: "Важная информация" },
-];
+/** Подпись «Написать …» зависит от имени мастера, поэтому список строится
+    в компоненте, а не на уровне модуля. */
+function menuItems(masterName) {
+  return [
+    { id: "my", icon: "calendar", label: "Мои записи", counter: true },
+    { id: "waitlist", icon: "clock", label: "Хочу окошко" },
+    { id: "services", icon: "sparkle", label: "Услуги и цены" },
+    { id: "location", icon: "pin", label: "Как меня найти" },
+    { id: "contact", icon: "chat", label: `Написать ${masterName}` },
+    { id: "info", icon: "info", label: "Важная информация" },
+  ];
+}
 
 /** Предстоящие по возрастанию времени — порядок хранения произвольный. */
 function sortedUpcoming(list) {
@@ -25,6 +28,8 @@ function sortedUpcoming(list) {
 
 export default function MenuScreen({ onOpen, toast }) {
   const [upcoming, setUpcoming] = useState([]);
+  const { settings } = useContent();
+  const session = useSession();
 
   useEffect(() => {
     // StrictMode в dev вызывает эффект дважды — флаг гасит гонку
@@ -44,9 +49,9 @@ export default function MenuScreen({ onOpen, toast }) {
   const next = upcoming[0];
 
   return (
-    <Screen crumb={CRUMB} toast={toast}>
+    <Screen crumb={`${settings.masterName} · Ногтевой сервис`} toast={toast}>
       <p className="greeting">{greeting}</p>
-      <Title hero>{MASTER_NAME}</Title>
+      <Title hero>{settings.masterName}</Title>
       <p className="eyebrow accent">Запись к мастеру</p>
 
       {next && (
@@ -68,7 +73,7 @@ export default function MenuScreen({ onOpen, toast }) {
       </PrimaryButton>
 
       <div className="panel nav">
-        {ITEMS.map((item) => (
+        {menuItems(settings.masterName).map((item) => (
           <NavRow
             key={item.id}
             icon={item.icon}
@@ -79,9 +84,21 @@ export default function MenuScreen({ onOpen, toast }) {
             onClick={() => onOpen(item.id)}
           />
         ))}
+
+        {/* Пункт только для вошедшего мастера — соседним элементом,
+            чтобы не мутировать общий список. */}
+        {session.status === "signed" && (
+          <NavRow
+            icon="gear"
+            label="Настройки"
+            onClick={() => onOpen("admin")}
+          />
+        )}
       </div>
 
-      <p className="note">{WORKING_HOURS_TEXT}</p>
+      {settings.workingHoursText && (
+        <p className="note">{settings.workingHoursText}</p>
+      )}
     </Screen>
   );
 }

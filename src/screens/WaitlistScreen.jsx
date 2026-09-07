@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { MASTER_NAME, SERVICES, TIME_OF_DAY } from "../data.js";
+import { useContent } from "../content.js";
 import { buildDays } from "../schedule.js";
 import {
   copyText,
@@ -29,9 +29,14 @@ export default function WaitlistScreen({ onBack, home }) {
   const [parts, setParts] = useState([]);
   const [comment, setComment] = useState("");
   const [copied, setCopied] = useState(false);
+  const { settings, activeServices, daysOff } = useContent();
+  const timeOfDay = settings.timeOfDay;
 
-  const openDays = useMemo(() => buildDays().filter((d) => d.isOpen), []);
-  const service = SERVICES.find((s) => s.id === serviceId) || null;
+  const openDays = useMemo(
+    () => buildDays(settings, daysOff).filter((d) => d.isOpen),
+    [settings, daysOff]
+  );
+  const service = activeServices.find((s) => s.id === serviceId) || null;
 
   const message = useMemo(() => {
     if (!service) return "";
@@ -44,13 +49,14 @@ export default function WaitlistScreen({ onBack, home }) {
           : "любые дни",
       timeLabel:
         parts.length > 0
-          ? TIME_OF_DAY.filter((p) => parts.includes(p.id))
+          ? timeOfDay
+              .filter((p) => parts.includes(p.id))
               .map((p) => p.label)
               .join(", ")
           : "любое время",
       comment: comment.trim(),
     });
-  }, [service, days, parts, comment, openDays]);
+  }, [service, days, parts, comment, openDays, timeOfDay]);
 
   const copy = async () => {
     const ok = await copyText(message);
@@ -88,12 +94,12 @@ export default function WaitlistScreen({ onBack, home }) {
     >
       <Title>Хочу окошко</Title>
       <p className="sub">
-        {MASTER_NAME} напишет, когда освободится подходящее время
+        {settings.masterName} напишет, когда освободится подходящее время
       </p>
 
       <p className="eyebrow">Услуга</p>
       <div className="stack">
-        {SERVICES.map((s) => (
+        {activeServices.map((s) => (
           <OptionRow
             key={s.id}
             title={s.name}
@@ -122,7 +128,7 @@ export default function WaitlistScreen({ onBack, home }) {
 
       <p className="eyebrow">Удобное время</p>
       <div className="stack tight">
-        {TIME_OF_DAY.map((p) => (
+        {timeOfDay.map((p) => (
           <OptionRow
             key={p.id}
             wide

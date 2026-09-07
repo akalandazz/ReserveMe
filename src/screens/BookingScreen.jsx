@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { MASTER_NAME, SERVICES } from "../data.js";
+import { useContent } from "../content.js";
 import {
   buildDays,
   buildSlots,
@@ -35,6 +35,7 @@ export default function BookingScreen({
   const [bookings, setBookings] = useState([]);
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
+  const { settings, services, activeServices, daysOff } = useContent();
 
   // Все хуки вызываются безусловно — ветвление только в return,
   // иначе сработает react/rules-of-hooks.
@@ -48,33 +49,43 @@ export default function BookingScreen({
     };
   }, []);
 
-  const days = useMemo(() => buildDays(), []);
+  // Живая версия услуги: мастер мог поменять цену, пока клиент шёл по шагам.
+  // Фолбэк на draft.service — если услугу удалили, флоу всё равно завершается.
+  const service = useMemo(
+    () => services.find((s) => s.id === draft.service?.id) ?? draft.service,
+    [services, draft.service]
+  );
+
+  const days = useMemo(
+    () => buildDays(settings, daysOff),
+    [settings, daysOff]
+  );
   const day = findDay(days, draft.dateKey);
 
   const slots = useMemo(
     () =>
-      day && draft.service
-        ? buildSlots(day, draft.service, busyFor(bookings, day.key))
+      day && service
+        ? buildSlots(day, service, busyFor(bookings, day.key, settings), settings)
         : [],
-    [day, draft.service, bookings]
+    [day, service, bookings, settings]
   );
 
   const message = useMemo(() => {
-    if (!draft.service || !day || !draft.time) return "";
+    if (!service || !day || !draft.time) return "";
     return bookingMessage({
-      serviceName: draft.service.name,
+      serviceName: service.name,
       dateLabel: dayLabel(day),
       time: draft.time,
-      duration: draft.service.duration,
-      price: draft.service.price,
+      duration: service.duration,
+      price: service.price,
       comment: draft.comment.trim(),
     });
-  }, [draft, day]);
+  }, [service, day, draft.time, draft.comment]);
 
-  const pickService = (service) => {
+  const pickService = (s) => {
     haptic("select");
     // время обнуляем: слот, валидный для 90 мин, может не существовать для 120
-    setDraft((d) => ({ ...d, service, time: null }));
+    setDraft((d) => ({ ...d, service: s, time: null }));
     push("book:date");
   };
 
@@ -103,11 +114,11 @@ export default function BookingScreen({
 
     const record = {
       id: String(Date.now()),
-      s: draft.service.id,
+      s: service.id,
       d: day.key,
       t: draft.time,
-      m: draft.service.duration,
-      p: draft.service.price,
+      m: service.duration,
+      p: service.price,
       c: draft.comment.trim(),
     };
 
@@ -125,7 +136,7 @@ export default function BookingScreen({
         <p className="eyebrow step">Шаг 1 из 3</p>
         <Title>Выберите услугу</Title>
         <div className="stack spaced">
-          {SERVICES.map((s) => (
+          {activeServices.map((s) => (
             <OptionRow
               key={s.id}
               title={s.name}
@@ -136,6 +147,9 @@ export default function BookingScreen({
             />
           ))}
         </div>
+        {activeServices.length === 0 && (
+          <div className="blank tall">Услуги пока не добавлены</div>
+        )}
       </Screen>
     );
   }
@@ -146,11 +160,12 @@ export default function BookingScreen({
         <Steps total={3} current={2} />
         <p className="eyebrow step">Шаг 2 из 3</p>
         <Title>Выберите день</Title>
-        <p className="sub">{draft.service?.name ?? ""}</p>
+        <p className="sub">{service?.name ?? ""}</p>
         <div className="divided">
           {days.map((d) => {
             const free = d.isOpen
-              ? buildSlots(d, draft.service, busyFor(bookings, d.key)).length
+              ? buildSlots(d, service, busyFor(bookings, d.key, settings), settings)
+                  .length
               : 0;
             const disabled = !d.isOpen || free === 0;
             return (
@@ -191,7 +206,7 @@ export default function BookingScreen({
         <p className="eyebrow step">Шаг 3 из 3</p>
         <Title>Выберите время</Title>
         <p className="sub">
-          {dayLabel(day)} · {draft.service?.name ?? ""}
+          {dayLabel(day)} · {service?.name ?? ""}
         </p>
 
         {slots.length === 0 ? (
@@ -226,6 +241,8 @@ export default function BookingScreen({
   }
 
   // book:confirm
+  const gone = draft.service && !services.some((s) => s.id === draft.service.id);
+
   return (
     <Screen
       crumb={CRUMB}
@@ -243,10 +260,17 @@ export default function BookingScreen({
     >
       <Title>Подтвердите заявку</Title>
 
+      {gone && (
+        <p className="notice">
+          Эта услуга больше не в прайсе. Заявку отправить можно, но цену лучше
+          уточнить в чате.
+        </p>
+      )}
+
       <dl className="summary">
         <div className="summary-row">
           <dt>Услуга</dt>
-          <dd>{draft.service?.name}</dd>
+          <dd>{service?.name}</dd>
         </div>
         <div className="summary-row">
           <dt>Дата</dt>
@@ -258,11 +282,11 @@ export default function BookingScreen({
         </div>
         <div className="summary-row">
           <dt>Длительность</dt>
-          <dd>{draft.service?.duration} мин</dd>
+          <dd>{service?.duration} мин</dd>
         </div>
         <div className="summary-row">
           <dt>Стоимость</dt>
-          <dd>{draft.service?.price} ₾</dd>
+          <dd>{service?.price} ₾</dd>
         </div>
       </dl>
 
@@ -279,7 +303,8 @@ export default function BookingScreen({
       />
 
       <p className="notice">
-        Запись подтверждается только после ответа {MASTER_NAME} в Telegram.
+        Запись подтверждается только после ответа {settings.masterName} в
+        Telegram.
       </p>
 
       <p className="eyebrow">Текст сообщения</p>

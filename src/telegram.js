@@ -2,11 +2,9 @@
 // SDK подключён <script>-тегом в index.html, npm-пакета нет.
 // В обычном браузере window.Telegram === undefined — поэтому ВСЁ через ?.
 
-import {
-  MASTER_NAME,
-  MASTER_USERNAME,
-  MASTER_USERNAME_PLACEHOLDER,
-} from "./data.js";
+// Контент читаем во время вызова, а не при загрузке модуля: имя и логин
+// мастера лежат в базе и меняются из админки прямо во время работы.
+import { contentSnapshot } from "./content.js";
 
 export const tg = () => window.Telegram?.WebApp;
 
@@ -15,14 +13,25 @@ export const tgUser = () => window.Telegram?.WebApp?.initDataUnsafe?.user ?? nul
 /** Есть ли нативная кнопка «назад» — считаем один раз при загрузке модуля. */
 export const HAS_TG_BACK = Boolean(window.Telegram?.WebApp?.BackButton);
 
+/**
+ * Параметр из ссылки t.me/<bot>/<app>?startapp=… — им открывается админка.
+ * Обычный initDataUnsafe, гейт по версии не нужен; в браузере null.
+ */
+export const START_PARAM =
+  window.Telegram?.WebApp?.initDataUnsafe?.start_param ?? null;
+
 /** Версия клиента не ниже v. */
 export function atLeast(v) {
   return window.Telegram?.WebApp?.isVersionAtLeast?.(v) === true;
 }
 
-/** Логин мастера не заменён на реальный. */
-export const MASTER_NOT_SET =
-  !MASTER_USERNAME || MASTER_USERNAME === MASTER_USERNAME_PLACEHOLDER;
+const masterName = () => contentSnapshot().settings?.masterName || "мастер";
+const masterUsername = () => contentSnapshot().settings?.masterUsername || "";
+
+/** Логин мастера не задан — кнопки отправки заявок работать не будут. */
+export function masterNotSet() {
+  return !masterUsername();
+}
 
 export function init() {
   const w = tg();
@@ -91,14 +100,14 @@ export function openLink(url) {
  * сохраняйте ДО вызова, а не после и не в .then().
  */
 export function sendToMaster(text) {
-  if (MASTER_NOT_SET) {
+  const username = masterUsername();
+  if (!username) {
     showAlert(
-      "⚠️ Не указан Telegram мастера.\nОткройте src/data.js и впишите MASTER_USERNAME."
+      "⚠️ Не указан Telegram мастера.\nОткройте «Настройки» → «Контакты и адрес» и впишите логин."
     );
     return true;
   }
-  const url =
-    "https://t.me/" + MASTER_USERNAME + "?text=" + encodeURIComponent(text);
+  const url = "https://t.me/" + username + "?text=" + encodeURIComponent(text);
   const w = tg();
   if (w?.openTelegramLink) {
     w.openTelegramLink(url);
@@ -130,7 +139,7 @@ function signature() {
 
 export function bookingMessage(b) {
   return (
-    `Здравствуйте, ${MASTER_NAME}! 🌸\n` +
+    `Здравствуйте, ${masterName()}! 🌸\n` +
     `Хочу записаться:\n\n` +
     `💅 Услуга: ${b.serviceName}\n` +
     `📅 Дата: ${b.dateLabel}\n` +
@@ -144,7 +153,7 @@ export function bookingMessage(b) {
 
 export function waitlistMessage(w) {
   return (
-    `Здравствуйте, ${MASTER_NAME}! 🌸\n` +
+    `Здравствуйте, ${masterName()}! 🌸\n` +
     `Хочу в лист ожидания — напишите, пожалуйста, если появится окошко.\n\n` +
     `💅 Услуга: ${w.serviceName}\n` +
     `📅 Удобные дни: ${w.daysLabel}\n` +
@@ -156,7 +165,7 @@ export function waitlistMessage(w) {
 
 export function cancelMessage(b) {
   return (
-    `Здравствуйте, ${MASTER_NAME}!\n` +
+    `Здравствуйте, ${masterName()}!\n` +
     `Хочу отменить запись:\n\n` +
     `💅 ${b.serviceName}\n` +
     `📅 ${b.dateLabel}, 🕒 ${b.time}` +
@@ -165,5 +174,5 @@ export function cancelMessage(b) {
 }
 
 export function greetingMessage() {
-  return `Здравствуйте, ${MASTER_NAME}! 🌸`;
+  return `Здравствуйте, ${masterName()}! 🌸`;
 }

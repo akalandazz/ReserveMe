@@ -1,21 +1,25 @@
-import { INFO_BLOCKS, MASTER_NAME } from "../data.js";
+import { useContent } from "../content.js";
 import { OutlineButton, Screen, Title } from "../ui.jsx";
 
 export default function InfoScreen({ onBack, onContact }) {
+  const { settings, infoBlocks } = useContent();
+
   return (
     <Screen crumb="Информация" onBack={onBack}>
       <Title>Важная информация</Title>
 
       <div className="divided">
-        {INFO_BLOCKS.map((block) => (
-          <div key={block.title} className="info-row">
+        {infoBlocks.map((block) => (
+          <div key={block.id} className="info-row">
             <p>{block.title}</p>
-            <p>{block.text}</p>
+            <p>{block.body}</p>
           </div>
         ))}
       </div>
 
-      <OutlineButton onClick={onContact}>Написать {MASTER_NAME}</OutlineButton>
+      <OutlineButton onClick={onContact}>
+        Написать {settings.masterName}
+      </OutlineButton>
       <p className="note center">Остались вопросы? Напишите мне</p>
     </Screen>
   );

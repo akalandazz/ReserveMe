@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LOCATION, WORKING_HOURS_TEXT } from "../data.js";
+import { useContent } from "../content.js";
 import { copyText, openLink } from "../telegram.js";
 import { PrimaryButton, Screen, TextButton, Title } from "../ui.jsx";
 
@@ -14,11 +14,13 @@ function Section({ label, text }) {
 
 export default function LocationScreen({ onBack }) {
   const [copied, setCopied] = useState(false);
+  const { settings } = useContent();
+  const location = settings.location;
 
   const copyAddress = async () => {
-    const ok = await copyText(LOCATION.address);
+    const ok = await copyText(location.address);
     setCopied(ok);
-    if (!ok) window.prompt("Скопируйте адрес вручную:", LOCATION.address);
+    if (!ok) window.prompt("Скопируйте адрес вручную:", location.address);
   };
 
   return (
@@ -27,9 +29,11 @@ export default function LocationScreen({ onBack }) {
       onBack={onBack}
       footer={
         <>
-          <PrimaryButton onClick={() => openLink(LOCATION.mapUrl)}>
-            Открыть на карте
-          </PrimaryButton>
+          {location.mapUrl && (
+            <PrimaryButton onClick={() => openLink(location.mapUrl)}>
+              Открыть на карте
+            </PrimaryButton>
+          )}
           <TextButton onClick={copyAddress}>
             {copied ? "Адрес скопирован" : "Скопировать адрес"}
           </TextButton>
@@ -41,15 +45,17 @@ export default function LocationScreen({ onBack }) {
       <div className="panel">
         <div className="panel-section">
           <p className="kicker">Адрес</p>
-          <p className="panel-text lead">{LOCATION.address}</p>
+          <p className="panel-text lead">{location.address}</p>
         </div>
-        {LOCATION.landmark && (
-          <Section label="Как войти" text={LOCATION.landmark} />
+        {location.landmark && (
+          <Section label="Как войти" text={location.landmark} />
         )}
-        {LOCATION.transport && (
-          <Section label="Как добраться" text={LOCATION.transport} />
+        {location.transport && (
+          <Section label="Как добраться" text={location.transport} />
         )}
-        <Section label="Время работы" text={WORKING_HOURS_TEXT} />
+        {settings.workingHoursText && (
+          <Section label="Время работы" text={settings.workingHoursText} />
+        )}
       </div>
     </Screen>
   );

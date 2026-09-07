@@ -1,14 +1,16 @@
-import { SERVICES } from "../data.js";
+import { useContent } from "../content.js";
 import { ListRow, Screen, Title } from "../ui.jsx";
 
 export default function ServicesScreen({ onBack, onPick }) {
+  const { activeServices, stale } = useContent();
+
   return (
     <Screen crumb="Услуги и цены" onBack={onBack}>
       <Title>Услуги и цены</Title>
       <p className="sub">Нажмите на услугу, чтобы записаться</p>
 
       <div className="divided">
-        {SERVICES.map((s) => (
+        {activeServices.map((s) => (
           <ListRow
             key={s.id}
             title={s.name}
@@ -18,6 +20,12 @@ export default function ServicesScreen({ onBack, onPick }) {
           />
         ))}
       </div>
+
+      {stale && (
+        <p className="note">
+          Показан сохранённый список — не удалось обновить данные.
+        </p>
+      )}
 
       <p className="note">
         Цены указаны в лари (₾). Точную стоимость уточняйте при записи — она
