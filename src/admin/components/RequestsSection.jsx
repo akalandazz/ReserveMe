@@ -70,7 +70,9 @@ export default function RequestsSection({ bookings, busy, busyThen, onToast, onE
               <p className="request-meta">
                 {labelForKey(b.day)} · {toHHMM(b.start_min)}
                 {b.client_name ? ` · ${b.client_name}` : ""}
+                {b.client_username ? ` · @${b.client_username}` : ""}
               </p>
+              {b.comment ? <p className="request-comment">«{b.comment}»</p> : null}
               <div className="request-actions">
                 <button
                   className="btn-approve"

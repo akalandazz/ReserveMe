@@ -577,6 +577,13 @@ input:focus {
   color: var(--muted);
 }
 
+.request-comment {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .request-actions {
   display: flex;
   gap: 8px;
