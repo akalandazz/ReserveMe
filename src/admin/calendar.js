@@ -191,7 +191,16 @@ export function buildDayRows(settings, daysOff, bookings, blockedSlots, key) {
     }
     const isBlocked = blocked.includes(t);
     if (!isBlocked) freeCount++;
-    rows.push({ type: "free", time: toHHMM(t), blocked: isBlocked, minute: t });
+    // isOpenSlot/isBlockedSlot — чтобы панель дня рисовала две отдельные
+    // ветки со статичными стилями, а не ветвилась внутри одного элемента.
+    rows.push({
+      type: "free",
+      time: toHHMM(t),
+      blocked: isBlocked,
+      isOpenSlot: !isBlocked,
+      isBlockedSlot: isBlocked,
+      minute: t,
+    });
     t += step;
   }
   return { closed: false, closedByOff: false, rows, freeCount };

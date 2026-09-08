@@ -139,22 +139,25 @@ export default function DayPanel({
                       </button>
                     </span>
                   </span>
+                ) : r.isOpenSlot ? (
+                  <button
+                    type="button"
+                    className="free-slot slot-open"
+                    onClick={() => (moving ? moveTo(r.minute) : toggleBlock(r.minute, false))}
+                  >
+                    <span className="free-slot-label">Свободно</span>
+                    <span className="free-slot-action">
+                      {moving ? "Перенести сюда" : "Закрыть"}
+                    </span>
+                  </button>
                 ) : (
                   <button
                     type="button"
-                    className="free-slot"
-                    onClick={() =>
-                      r.blocked
-                        ? toggleBlock(r.minute, true)
-                        : moving
-                          ? moveTo(r.minute)
-                          : toggleBlock(r.minute, false)
-                    }
+                    className="free-slot slot-blocked"
+                    onClick={() => toggleBlock(r.minute, true)}
                   >
-                    <span className="free-slot-label">{r.blocked ? "Закрыто" : "Свободно"}</span>
-                    <span className="free-slot-action">
-                      {r.blocked ? "Открыть" : moving ? "Перенести сюда" : "Закрыть"}
-                    </span>
+                    <span className="free-slot-label">Закрыто</span>
+                    <span className="free-slot-action">Открыть</span>
                   </button>
                 )}
               </span>

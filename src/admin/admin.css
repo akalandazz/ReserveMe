@@ -1028,6 +1028,8 @@ button {
   border-top: 1px solid var(--line);
 }
 
+/* Геометрия одна на оба состояния — строки дня должны стоять в общем
+   ритме; различаются только заливка, рамка и цвет подписей. */
 .free-slot {
   display: flex;
   align-items: center;
@@ -1036,22 +1038,55 @@ button {
   width: 100%;
   min-height: 44px;
   padding: 10px 14px;
-  border: 1px dashed var(--line);
   border-radius: 14px;
-  background: none;
   text-align: left;
   cursor: pointer;
 }
 
 .free-slot-label {
   font-size: 13px;
-  color: var(--muted);
 }
 
 .free-slot-action {
   flex: none;
   font-size: 12px;
+}
+
+/* Свободный слот: тёплая подложка акцента и пунктир — «сюда можно». */
+.slot-open {
+  border: 1px dashed var(--accent);
+  background: var(--accent-soft);
+}
+
+.slot-open .free-slot-label {
+  color: var(--ink);
+}
+
+.slot-open .free-slot-action {
   color: var(--accent);
+}
+
+/* Закрытый слот: штриховка цветом фона по прозрачному, сплошная рамка,
+   зачёркнутая подпись — читается как «выключено» и без цвета. */
+.slot-blocked {
+  border: 1px solid var(--line);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--bg),
+    var(--bg) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+
+.slot-blocked .free-slot-label {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--line);
+}
+
+.slot-blocked .free-slot-action {
+  color: var(--muted);
 }
 
 .day-foot {
