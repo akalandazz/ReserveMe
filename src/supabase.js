@@ -5,9 +5,16 @@
 // (см. supabase/schema.sql), а не секретность ключа — ключ уезжает
 // в собранный бандл и виден любому.
 //
-// Заявки клиентов сюда НЕ попадают и попадать не должны: они лежат
-// в CloudStorage/localStorage, а мастер узнаёт о них из сообщения
-// в чате. Supabase хранит только контент салона.
+// Заявка клиента (src/storage.js) сохраняется локально И вставляется
+// сюда, в таблицу bookings, — это нужно кабинету мастера (admin.html),
+// у которого нет доступа к CloudStorage клиента. RLS пускает анонима
+// только на INSERT новой своей заявки; читает и правит записи (в том
+// числе видит имя и комментарий клиента) только вошедший мастер —
+// иначе анонимный ключ отдал бы личные данные всех клиентов кому угодно.
+//
+// Этим модулем пользуются оба приложения: клиент — анонимно, только на
+// чтение и на вставку своей заявки; кабинет мастера — через signIn/signOut,
+// вход возможен только там.
 
 import { useSyncExternalStore } from "react";
 import { createClient } from "@supabase/supabase-js";
@@ -133,4 +140,36 @@ export async function signOut() {
     // не смогли сказать серверу — локальную сессию клиент всё равно чистит
   }
   publish({ status: "guest", email: null });
+}
+
+/* ─── Заявка клиента → bookings ──────────────────────────────────
+   Вызывается из BookingScreen.submit() ДО sendToMaster (см. CLAUDE.md
+   про openTelegramLink). Best-effort и с коротким таймаутом — как
+   promisify() в src/storage.js: недоступная база не должна задержать
+   клиента, а провал не должен ни отменить запись (она уже сохранена
+   локально), ни помешать отправке сообщения мастеру.                */
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      }
+    );
+  });
+}
+
+/** row — снэйк-кейс колонок bookings, без status/source (их ставит anon-политика). */
+export async function submitBooking(row) {
+  if (!supabase) return;
+  await withTimeout(
+    supabase.from("bookings").insert({ ...row, status: "new", source: "client" }),
+    3000
+  );
 }

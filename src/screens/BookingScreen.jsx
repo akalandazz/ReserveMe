@@ -6,9 +6,11 @@ import {
   busyFor,
   dayLabel,
   findDay,
+  toMinutes,
 } from "../schedule.js";
 import { addBooking, loadBookings } from "../storage.js";
-import { bookingMessage, copyText, haptic, sendToMaster } from "../telegram.js";
+import { submitBooking } from "../supabase.js";
+import { bookingMessage, copyText, haptic, sendToMaster, tgUser } from "../telegram.js";
 import {
   Icon,
   OptionRow,
@@ -124,6 +126,23 @@ export default function BookingScreen({
 
     // Сохраняем ДО отправки: openTelegramLink закрывает мини-апп
     await addBooking(record);
+
+    // Серверная копия для кабинета мастера (admin.html) — у него нет
+    // доступа к CloudStorage клиента. Best-effort: провал не отменяет
+    // запись и не должен задержать отправку сообщения мастеру.
+    const u = tgUser();
+    await submitBooking({
+      day: day.key,
+      start_min: toMinutes(draft.time),
+      duration: service.duration,
+      price: service.price,
+      service_id: service.id,
+      service_name: service.name,
+      client_name: u ? [u.first_name, u.last_name].filter(Boolean).join(" ") : "",
+      client_username: u?.username ?? "",
+      comment: record.c,
+    });
+
     const text = message;
     home(SAVED_TOAST);
     sendToMaster(text);

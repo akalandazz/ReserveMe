@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev      # Vite dev server with HMR
-npm run build    # production build to dist/
+npm run dev      # Vite dev server with HMR — serves both index.html and admin.html
+npm run build    # production build to dist/ — two separate bundles, see "Two apps" below
 npm run preview  # serve the built dist/
 npm run lint     # oxlint (NOT eslint — config is .oxlintrc.json)
 ```
@@ -15,21 +15,32 @@ There is no test setup in this project (no test runner, no test files).
 
 ## Architecture
 
-A Telegram Mini App for booking appointments with a single beauty master, built as a
-React 19 + Vite 8 single-page app.
+Two Telegram Mini Apps in one repo, one React 19 + Vite 8 codebase:
 
-Supabase holds **salon content only** — services, prices, working hours, address, the
-«Важная информация» blocks — so the owner can edit them from the in-app admin screen
-instead of editing code. **Client bookings never reach any server**, and that is a
-deliberate constraint, not a gap. If you find yourself writing a booking into Supabase,
-stop: it breaks the delivery model below.
+- **The client** (`index.html` → `src/main.jsx` → `src/App.jsx`) — where a customer
+  browses services and submits a booking request. No login, no Supabase writes except
+  a client's own new booking (see below).
+- **The cabinet** (`admin.html` → `src/admin/main.jsx` → `src/admin/AdminApp.jsx`) —
+  where the master signs in to manage her schedule, requests and prices. Completely
+  separate bundle, separate CSS (`src/admin/admin.css`, not `src/index.css`), separate
+  Telegram Mini App / bot menu button. **Never import client screens into `src/admin/`
+  or vice versa** — see "Two apps" below for what's shared and what isn't.
+
+Supabase holds salon content (services, prices, working hours, address, the «Важная
+информация» blocks) so the master can edit it from the cabinet instead of editing code,
+**and now also client bookings** — a deliberate change from the app's original design
+(see "The delivery model" below for what that changed and what it didn't).
 
 ### The delivery model (the thing to understand first)
 
 A booking is a *request*, never a confirmed appointment. When a client submits one:
 
-1. It is persisted **client-side only** via [src/storage.js](src/storage.js).
-2. [`sendToMaster`](src/telegram.js) opens `https://t.me/<логин мастера>?text=…`
+1. It is persisted **client-side** via [src/storage.js](src/storage.js) — this remains
+   the client's own source of truth for «Мои записи» and cancellation.
+2. It is also inserted into Supabase's `bookings` table via
+   [`submitBooking`](src/supabase.js) — **best-effort, with a short timeout**, so the
+   cabinet has something to show. Its failure must never block or undo step 1 or 3.
+3. [`sendToMaster`](src/telegram.js) opens `https://t.me/<логин мастера>?text=…`
    through `WebApp.openTelegramLink`, and the client sends the message themselves.
 
 Consequences that constrain every change here:
@@ -40,104 +51,164 @@ Consequences that constrain every change here:
 - **`?text=` prefill is deep-link behavior, not a documented Mini App API**, and can
   silently fail. Every send screen therefore also renders the exact message in a
   `.msg-preview` block with a «Скопировать текст» fallback. Don't remove that.
-- The slot list hides only the *current user's own* stored bookings. It is not a
-  shared calendar, and the UI copy must not imply that it is.
+- The client's own slot list still hides only *that client's own* stored bookings, from
+  `src/storage.js` — **not** from the `bookings` table. The client does not read
+  `bookings` at all (RLS wouldn't let it — see below); the table exists only for the
+  cabinet. This is deliberate for now, tracked as a known gap: two clients can still
+  request the same slot, and the master resolves the conflict by hand in the cabinet.
+- **The cabinet never calls `sendToMaster` / `openTelegramLink`.** That would close the
+  cabinet on the master. When the cabinet needs to notify a client (approve, decline,
+  move a booking), it shows a toast telling the master to message the client herself —
+  it never opens a chat automatically.
+
+### Two apps: what's shared, what's isolated
+
+| | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
+|---|---|---|
+| Auth | none (anonymous) | Supabase Auth sign-in |
+| Reads | `settings`, `services`, `days_off`, `info_blocks` (public) | those, plus `bookings`, `blocked_slots` (auth only) |
+| Writes | inserts its own row into `bookings` | everything |
+| CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
+| UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
+
+Shared as plain imports (both apps use these as-is, no duplication):
+[src/supabase.js](src/supabase.js), [src/theme.js](src/theme.js),
+[src/telegram.js](src/telegram.js), and from [src/schedule.js](src/schedule.js) the
+date/time helpers (`dateKey`, `toMinutes`, `toHHMM`, `labelForKey`) — but **not**
+`buildSlots`/`buildDays`/`busyFor`, which are shaped around the client's per-service
+CloudStorage bookings, not the cabinet's day/week/month calendar
+([src/admin/calendar.js](src/admin/calendar.js) has the cabinet's own equivalents).
 
 ### Telegram integration
 
-- The WebApp SDK is loaded from a `<script>` tag in [index.html](index.html), **not**
-  as an npm dependency. It is reached only through the `window.Telegram.WebApp`
-  global — no import, no types. Keep that script **synchronous and above** the module
-  script; that ordering is why `window.Telegram` exists at first render.
+- The WebApp SDK is loaded from a `<script>` tag in **both** [index.html](index.html)
+  and [admin.html](admin.html) — not as an npm dependency. It is reached only through
+  the `window.Telegram.WebApp` global — no import, no types. Keep that script
+  **synchronous and above** the module script in both files; that ordering is why
+  `window.Telegram` exists at first render.
 - `window.Telegram` is `undefined` in a normal browser. Every access is optional-chained
-  and must stay that way, otherwise plain-browser development breaks.
+  and must stay that way, otherwise plain-browser development breaks — the cabinet in
+  particular is routinely opened from a desktop browser, not just Telegram.
   [src/telegram.js](src/telegram.js) is the single wrapper — add new SDK usage there,
   gated by `atLeast("<version>")`, with a browser fallback.
 - `BackButton` is wired in [src/App.jsx](src/App.jsx) as **three separate effects**:
   `onClick`/`offClick` subscription (once, `back` is a dependency-free `useCallback`),
   visibility keyed on `stack.length`, and a `hide()` on unmount. Merging them
-  re-subscribes on every navigation and misbehaves under `React.StrictMode`.
-- `initDataUnsafe` is unverified client data — fine for the greeting, and fine for the
-  `?startapp=admin` deep link (it only opens a screen that then demands a password).
-  It is **not** an authorization signal: admin writes are gated by Supabase Auth + RLS.
+  re-subscribes on every navigation and misbehaves under `React.StrictMode`. The cabinet
+  has no BackButton wiring — it's a single scrolling page, not a stack.
+- `initDataUnsafe` is unverified client data — fine for the greeting and for reading
+  the client's name/username onto a new booking row. It is **not** an authorization
+  signal anywhere: cabinet writes are gated by Supabase Auth + RLS, not by anything
+  read from Telegram.
 
-### Content and the admin screen
+### Content, bookings and RLS
 
 Salon content lives in four Supabase tables (`settings` — a single row, `services`,
-`days_off`, `info_blocks`); [supabase/schema.sql](supabase/schema.sql) is the schema and
+`days_off`, `info_blocks`), plus two tables that exist only for the cabinet
+(`bookings`, `blocked_slots`) and a view (`busy_slots`) that exposes availability
+without personal data. [supabase/schema.sql](supabase/schema.sql) is the schema and
 seed, kept in the repo because the content is no longer in git otherwise.
 
 - The anon key ships **inside the bundle** — that is expected. The security boundary is
-  RLS: anyone may `select`, only `authenticated` may write. **Email signups must stay
-  disabled in the Supabase dashboard**, otherwise anyone can register, become
-  `authenticated`, and rewrite the price list and the master's Telegram username.
-- [src/content.js](src/content.js) is the runtime replacement for the old `src/data.js`.
-  It caches to `localStorage` (`vs_content_v1`), read **synchronously at module load**, so
-  a returning client never sees the boot screen.
+  RLS. **Email signups must stay disabled in the Supabase dashboard**, otherwise anyone
+  can register, become `authenticated`, and both rewrite the price list and read every
+  client's name, phone and comment out of `bookings`.
+- **`bookings` RLS is asymmetric, unlike every other table**: `anon` may only `insert`
+  a row for itself (`status = 'new'`, `source = 'client'`, `day >= current_date` —
+  enforced by the insert policy's `with check`), never `select`. Only `authenticated`
+  (the signed-in master) can read or change bookings. If you ever need the client to
+  read booking data, read from the `busy_slots` view (day/start/duration only, no
+  names) — never grant `anon` a `select` policy on `bookings` itself.
+- [src/content.js](src/content.js) is the client's read-only store — fetch,
+  `localStorage` cache, `useContent()`. It has **no mutation functions anymore**; all
+  writes to salon content happen through [src/admin/api.js](src/admin/api.js) instead.
+  It caches to `localStorage` (`vs_content_v1`), read **synchronously at module load**,
+  so a returning client never sees the boot screen.
 - `App.jsx` gates the whole client tree on `content.settings` — without it there is
-  nothing to render, not even the crumb. The admin branch is checked **before** that gate:
-  an empty or unreachable database must not lock the owner out of the screen that fixes it.
-- `createClient` must keep `detectSessionInUrl: false` — Telegram opens the Mini App with
-  a `#tgWebAppData=…` fragment that supabase-js would otherwise parse as an OAuth callback.
+  nothing to render, not even the crumb. There is no admin branch to check before that
+  gate anymore: the cabinet is a different bundle at a different URL, so a broken
+  client database can't lock the master out of the screen that fixes it.
+- `createClient` (in `src/supabase.js`, shared by both apps) must keep
+  `detectSessionInUrl: false` — Telegram opens the Mini App with a `#tgWebAppData=…`
+  fragment that supabase-js would otherwise parse as an OAuth callback.
 
 ### Navigation
 
-Screens are a stack in `useState` — no router. The booking steps (`book:service` →
-`book:date` → `book:time` → `book:confirm`) and the admin sections (`admin` →
-`admin:services` → `admin:service`, …) are entries in that **same** stack, which is what
-makes BackButton walk both flows backwards for free. Going back preserves the draft;
-only `home()` clears it. Changing the service resets `draft.time`, because a slot valid
-for a 90-minute service may not exist for a 120-minute one.
+**Client**: screens are a stack in `useState` — no router. The booking steps
+(`book:service` → `book:date` → `book:time` → `book:confirm`) are entries in that
+stack, which is what makes BackButton walk the flow backwards for free. Going back
+preserves the draft; only `home()` clears it. Changing the service resets
+`draft.time`, because a slot valid for a 90-minute service may not exist for a
+120-minute one.
+
+**Cabinet**: no stack, no router — one scrolling page
+([src/admin/AdminApp.jsx](src/admin/AdminApp.jsx)) that renders every section in order
+(stats → requests → calendar → services → schedule). The only internal navigation state
+is inside [CalendarSection.jsx](src/admin/components/CalendarSection.jsx) (which
+month/week/day is showing) and each section's own edit-in-place state.
 
 ### Module boundaries
 
 | File | Role |
 |---|---|
-| [src/content.js](src/content.js) | All salon content at runtime: fetch, `localStorage` cache, admin mutations, `slugify`/validation. Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. |
-| [src/supabase.js](src/supabase.js) | Client + the session store (`useSession`, `signIn`, `signOut`). Every export must survive `supabase === null` (env vars unset). |
-| [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `busyFor(bookings, key, settings)`) and every function must survive `settings == null`. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). |
-| [src/storage.js](src/storage.js) | `CloudStorage` (gated on `isVersionAtLeast("6.9")`) mirrored onto `localStorage`. Every callback is promisified **with a 3s timeout** — some clients never fire it, which would hang «Мои записи» forever. Writes go to `localStorage` unconditionally. |
-| [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load — they change at runtime now. |
-| [src/theme.js](src/theme.js) | Light/dark resolution and the manual override. No React. |
-| [src/ui.jsx](src/ui.jsx) | Presentational primitives. `<Screen>` owns the whole chrome — sticky crumb bar, toast slot, sticky footer. The footer is `position: sticky` inside a `100dvh` flex column, which is what keeps the last list row from hiding under the button without a padding hack. |
-| [src/screens/admin/](src/screens/admin/) | The admin sections. The only nested screen folder — `AdminScreen.jsx` stays in `src/screens/` and dispatches into it, so one component instance spans every `admin:*` step and keeps its state. |
+| [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache. Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. |
+| [src/supabase.js](src/supabase.js) | Shared by both apps. Client + the master's session store (`useSession`, `signIn`, `signOut` — used only by the cabinet) + `submitBooking` (used only by the client, best-effort insert into `bookings`). Every export must survive `supabase === null` (env vars unset). |
+| [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `busyFor(bookings, key, settings)`) and every function must survive `settings == null`. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
+| [src/storage.js](src/storage.js) | `CloudStorage` (gated on `isVersionAtLeast("6.9")`) mirrored onto `localStorage`. Every callback is promisified **with a 3s timeout** — some clients never fire it, which would hang «Мои записи» forever. Writes go to `localStorage` unconditionally. Client-only; the cabinet has no CloudStorage access to a client's device, which is why bookings also live in Supabase now. |
+| [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
+| [src/theme.js](src/theme.js) | Light/dark resolution and the manual override, shared by both apps. No React. |
+| [src/ui.jsx](src/ui.jsx) | Client-only presentational primitives. `<Screen>` owns the whole chrome — sticky crumb bar, toast slot, sticky footer. The footer is `position: sticky` inside a `100dvh` flex column, which is what keeps the last list row from hiding under the button without a padding hack. |
+| [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. |
+| [src/admin/api.js](src/admin/api.js) | Every write the cabinet makes — services, `working_hours`, `days_off`, `blocked_slots`, `bookings`. Same `{ ok, error }`-never-throws idiom as the old `content.js` mutations, and every mutation calls `loadAdminData()` on success. |
+| [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
+| [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. |
 
 Stored bookings use short keys (`{id, s, d, t, m, p, c}`) because CloudStorage caps a
 value at 4096 characters. `m` (duration) and `p` (price) are denormalized on purpose:
-the owner edits prices in the admin screen, and an old booking must keep showing what was
-agreed. Service `id`s are stable keys for those records — the admin UI makes the field
-read-only after creation, and hiding a service (`active = false`) is the safe alternative
-to deleting one, because a deleted service's name is gone from every past booking.
+the master edits prices in the cabinet, and an old booking must keep showing what was
+agreed. The `bookings` table denormalizes the same way (`duration`, `price`,
+`service_name` columns) for the same reason, plus `service_id` can go `null` (`on
+delete set null`) if the service is deleted outright — the cabinet's service editor
+deletes for real, unlike the old admin's `active = false` hide.
 
 ## Conventions
 
 - UI copy is Russian (`<html lang="ru">`); prices are Georgian lari (`₾`). Keep new
-  strings in Russian.
-- [src/index.css](src/index.css) defines a token layer at the top of the file: warm
-  neutral surfaces plus a single `--accent`, written out **twice** — once for light, once
-  for dark (`html[data-theme="dark"]` and a `prefers-color-scheme` copy covering the
-  first frame). Both copies must list the same tokens. **Below those blocks there must be
-  no literal color** (`#ddd`, `white`, `#fff`) — that rule is what keeps dark theme
-  working. `--accent` is for accents, text-on-accent and the primary button; never for
-  page or card surfaces.
+  strings in Russian, in both apps.
+- Both [src/index.css](src/index.css) and [src/admin/admin.css](src/admin/admin.css)
+  define **their own** token layer at the top of the file: warm neutral surfaces plus a
+  single `--accent`, written out **twice** — once for light, once for dark
+  (`html[data-theme="dark"]` and a `prefers-color-scheme` copy covering the first
+  frame). The two files' tokens currently have the same values, but they are not the
+  same file — a change to one's palette does not require changing the other's, and
+  vice versa. Within each file, both copies must list the same tokens, and **below
+  those blocks there must be no literal color** (`#ddd`, `white`, `#fff`) — that rule is
+  what keeps dark theme working in that file. `--accent` is for accents, text-on-accent
+  and the primary button; never for page or card surfaces.
 - The palette is the app's own, not Telegram's: only safe-area comes from `--tg-*`.
   [src/theme.js](src/theme.js) sets `data-theme` on `<html>` from the client's
   `colorScheme` (system `prefers-color-scheme` in a browser), the header button
   overrides it into `localStorage`, and `syncChrome()` in `telegram.js` repaints the
   Telegram header/background to match — otherwise the seam around the Mini App is
   obvious. `initTheme()` guards against a second `onEvent("themeChanged")` subscription
-  under `React.StrictMode`.
+  under `React.StrictMode`. Both apps call `initTheme()` independently and share the
+  same `localStorage` key, so a manual theme choice made in one carries to the other.
 - Fonts are Playfair Display (headings, prices) and Onest (everything else), loaded from
-  Google Fonts in [index.html](index.html) and reached through `--serif` / `--sans`,
-  which carry system fallbacks for when the CDN is blocked.
-- `viewport-fit=cover` in [index.html](index.html) is required, otherwise
-  `env(safe-area-inset-*)` is 0 and the sticky footer sits under the home indicator.
-- There is no input primitive in `ui.jsx`: forms use a raw `<input>`/`<textarea>` with
+  Google Fonts in **both** [index.html](index.html) and [admin.html](admin.html), and
+  reached through `--serif` / `--sans`, which carry system fallbacks for when the CDN
+  is blocked.
+- `viewport-fit=cover` in both HTML entry points is required, otherwise
+  `env(safe-area-inset-*)` is 0 and a sticky footer sits under the home indicator.
+- Neither app has an input primitive: forms use a raw `<input>`/`<textarea>` with
   `className="field"` and a `<label className="eyebrow" htmlFor>`. Native controls
   (`type="number"`, `time`, `date`, password reveal) theme themselves via `color-scheme`
   on `:root` — do not add `-webkit-appearance` hacks.
-- The sign-in form puts its button **in the body** as `<PrimaryButton inline>` rather than
-  in `<Screen footer>`: with only two fields on screen the sticky footer would sit right
-  on top of the password field when the Telegram keyboard opens. The longer admin forms
-  keep «Сохранить» in the footer — if a field there turns out to be obscured on a real
-  device, move that button inline too.
+- The sign-in form (`src/admin/components/SignIn.jsx`, the cabinet's only gate) puts its
+  button **in the body** as `<button className="btn-primary inline">` rather than in a
+  sticky footer: with only two fields on screen, a sticky footer would sit right on top
+  of the password field when the Telegram keyboard opens.
+- `react-day-picker` (month grid in the cabinet) is themed with a fully custom
+  `classNames`/`components` map in `MonthGrid.jsx` — **do not** import
+  `react-day-picker/style.css`; it would bring in literal colors that don't track
+  `data-theme`. All layout for its table markup lives in `admin.css` under the
+  `.rdp-*` classes.

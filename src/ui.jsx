@@ -139,7 +139,7 @@ export function BootLoading() {
   );
 }
 
-export function BootError({ message, onRetry, onAdmin }) {
+export function BootError({ message, onRetry }) {
   return (
     <Screen crumb="Ошибка">
       <div className="blank">
@@ -147,13 +147,7 @@ export function BootError({ message, onRetry, onAdmin }) {
         {message && <p className="note">{message}</p>}
         <TextButton onClick={onRetry}>Повторить</TextButton>
       </div>
-      <p className="note center">
-        Проверьте соединение. Если не помогает — откройте{" "}
-        <button className="btn-link" type="button" onClick={onAdmin}>
-          настройки
-        </button>
-        .
-      </p>
+      <p className="note center">Проверьте соединение и повторите попытку.</p>
     </Screen>
   );
 }

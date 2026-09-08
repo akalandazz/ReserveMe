@@ -17,7 +17,9 @@
 --       Anon-ключ лежит в бандле открыто — границей безопасности служит
 --       RLS. При открытой регистрации кто угодно заведёт себе аккаунт,
 --       станет authenticated и перепишет прайс, адрес и логин мастера,
---       то есть перенаправит заявки клиентов себе.
+--       то есть перенаправит заявки клиентов себе. С таблицей bookings
+--       ставки выше: authenticated-регистрация отдала бы чужому человеку
+--       ещё и имена, комментарии и телефоны клиентов.
 -- ═══════════════════════════════════════════════════════════════
 
 -- ─── Настройки: ровно одна строка ──────────────────────────────
@@ -85,6 +87,46 @@ create table if not exists public.info_blocks (
 
 create index if not exists info_blocks_sort_idx on public.info_blocks (sort, id);
 
+-- ─── Записи клиентов ───────────────────────────────────────────
+--  Раньше заявки не покидали устройство клиента (CloudStorage) и
+--  доезжали до мастера только сообщением в чат. Кабинет мастера
+--  (admin.html) их не увидит без сервера — поэтому здесь заводим
+--  таблицу, сознательно отступая от прежнего правила.
+--
+--  day/start_min, а не timestamptz/time: PostgREST отдаёт time как
+--  "14:00:00", а day+start_min ложится прямо на dateKey()/toMinutes()
+--  из src/schedule.js без переразбора.
+create table if not exists public.bookings (
+  id              bigint generated always as identity primary key,
+  day             date    not null,
+  start_min       integer not null check (start_min between 0 and 1439),
+  -- Длительность и цена денормализованы: правка услуги или её удаление
+  -- не должны переписывать то, что уже согласовано с клиентом.
+  duration        integer not null check (duration > 0 and duration <= 600),
+  price           integer not null check (price between 0 and 9999),
+  service_id      text references public.services(id) on delete set null,
+  service_name    text    not null,
+  -- Из initDataUnsafe.user — непроверенные данные, только для показа мастеру.
+  client_name     text    not null default '',
+  client_username text    not null default '',
+  comment         text    not null default '',
+  status          text    not null default 'new' check (status in ('new', 'ok')),
+  source          text    not null default 'client' check (source in ('client', 'master')),
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create index if not exists bookings_day_idx on public.bookings (day, start_min);
+
+-- ─── Закрытые вручную окошки ─────────────────────────────────────
+--  «Закрыть» отдельный слот в панели дня кабинета мастера, не трогая
+--  весь день (для этого служит days_off) и не создавая фиктивную запись.
+create table if not exists public.blocked_slots (
+  day       date    not null,
+  start_min integer not null check (start_min between 0 and 1439),
+  primary key (day, start_min)
+);
+
 -- ─── updated_at ────────────────────────────────────────────────
 create or replace function public.touch_updated_at()
 returns trigger
@@ -106,6 +148,11 @@ create trigger settings_touch_updated_at
 drop trigger if exists services_touch_updated_at on public.services;
 create trigger services_touch_updated_at
   before update on public.services
+  for each row execute function public.touch_updated_at();
+
+drop trigger if exists bookings_touch_updated_at on public.bookings;
+create trigger bookings_touch_updated_at
+  before update on public.bookings
   for each row execute function public.touch_updated_at();
 
 -- ═══════════════════════════════════════════════════════════════
@@ -142,6 +189,70 @@ begin
   end loop;
 end
 $$;
+
+-- ═══════════════════════════════════════════════════════════════
+--  bookings — иначе, чем остальные таблицы: анониму нельзя давать
+--  select. Anon-ключ публичный, и открытый select отдал бы имена,
+--  телефоны и комментарии всех клиентов кому угодно. Читает и правит
+--  записи только вошедший мастер (кабинет), анонимный клиент мини-аппа
+--  умеет только вставить свою заявку.
+-- ═══════════════════════════════════════════════════════════════
+
+alter table public.bookings enable row level security;
+
+drop policy if exists bookings_select_auth  on public.bookings;
+drop policy if exists bookings_insert_anon  on public.bookings;
+drop policy if exists bookings_insert_auth  on public.bookings;
+drop policy if exists bookings_update_auth  on public.bookings;
+drop policy if exists bookings_delete_auth  on public.bookings;
+
+create policy bookings_select_auth on public.bookings
+  for select to authenticated using (true);
+
+-- Клиент мини-аппа создаёт только свою собственную новую заявку —
+-- не может подделать статус "ok" или дату задним числом.
+create policy bookings_insert_anon on public.bookings
+  for insert to anon
+  with check (status = 'new' and source = 'client' and day >= current_date);
+
+create policy bookings_insert_auth on public.bookings
+  for insert to authenticated with check (true);
+
+create policy bookings_update_auth on public.bookings
+  for update to authenticated using (true) with check (true);
+
+create policy bookings_delete_auth on public.bookings
+  for delete to authenticated using (true);
+
+-- ─── blocked_slots: читают все (это часть доступности), пишет мастер ──
+
+alter table public.blocked_slots enable row level security;
+
+drop policy if exists blocked_slots_select_public on public.blocked_slots;
+drop policy if exists blocked_slots_insert_auth   on public.blocked_slots;
+drop policy if exists blocked_slots_delete_auth   on public.blocked_slots;
+
+create policy blocked_slots_select_public on public.blocked_slots
+  for select to anon, authenticated using (true);
+
+create policy blocked_slots_insert_auth on public.blocked_slots
+  for insert to authenticated with check (true);
+
+create policy blocked_slots_delete_auth on public.blocked_slots
+  for delete to authenticated using (true);
+
+-- ─── busy_slots: занятость без персональных данных ───────────────
+--  Вьюха отдаёт только day/start_min/duration — ни имён, ни цены,
+--  ни комментариев. Существует для будущего использования на клиенте
+--  (сейчас клиент видит только свои же записи из CloudStorage) —
+--  задел, чтобы два человека не выбрали одно и то же время.
+create or replace view public.busy_slots
+  with (security_invoker = off) as
+  select day, start_min, duration from public.bookings
+  union all
+  select day, start_min, 0 as duration from public.blocked_slots;
+
+grant select on public.busy_slots to anon, authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
 --  Сид — значения из прежнего src/data.js дословно, чтобы после

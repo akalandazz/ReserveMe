@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import "./index.css";
 import { initContent, refreshContent, useContent } from "./content.js";
-import { initAuth } from "./supabase.js";
-import { START_PARAM, init } from "./telegram.js";
+import { init } from "./telegram.js";
 import { initTheme } from "./theme.js";
 import { BootError, BootLoading } from "./ui.jsx";
-import AdminScreen from "./screens/AdminScreen.jsx";
 import BookingScreen from "./screens/BookingScreen.jsx";
 import ContactScreen from "./screens/ContactScreen.jsx";
 import InfoScreen from "./screens/InfoScreen.jsx";
@@ -23,33 +21,8 @@ const EMPTY_DRAFT = { service: null, dateKey: null, time: null, comment: "" };
 // без отдельных обработчиков.
 const BOOKING_STEPS = ["book:service", "book:date", "book:time", "book:confirm"];
 
-// Разделы админки — по той же причине элементы того же стека.
-const ADMIN_STEPS = [
-  "admin",
-  "admin:services",
-  "admin:service",
-  "admin:schedule",
-  "admin:contact",
-  "admin:info",
-];
-
-/**
- * Прямая ссылка в админку: ?startapp=admin в Telegram, #admin в браузере.
- * Читается один раз при первом рендере — эффект тут не нужен, а лениво
- * заданное начальное состояние переживает двойной вызов под StrictMode.
- */
-function initialStack() {
-  const params = new URLSearchParams(window.location.search);
-
-  const wantsAdmin =
-    params.get("startapp") === "admin" ||
-    window.location.hash === "#admin";
-
-  return wantsAdmin ? [HOME, "admin"] : [HOME];
-}
-
 function App() {
-  const [stack, setStack] = useState(initialStack);
+  const [stack, setStack] = useState([HOME]);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
   // Короткое сообщение на главной после отправки заявки.
   const [toast, setToast] = useState("");
@@ -60,7 +33,6 @@ function App() {
     init();
     initTheme();
     initContent();
-    initAuth();
   }, []);
 
   const push = useCallback((next) => {
@@ -113,22 +85,10 @@ function App() {
     [push]
   );
 
-  // Админка доступна всегда, до гейта загрузки: иначе пустая или
-  // недоступная база запирает приложение и чинить его будет негде.
-  if (ADMIN_STEPS.includes(screen)) {
-    return <AdminScreen step={screen} push={push} back={back} home={home} />;
-  }
-
   // Без контента рисовать нечего — даже имя мастера в крошке приходит из базы.
   if (!content.settings) {
     if (content.status === "error") {
-      return (
-        <BootError
-          message={content.error}
-          onRetry={refreshContent}
-          onAdmin={() => push("admin")}
-        />
-      );
+      return <BootError message={content.error} onRetry={refreshContent} />;
     }
     return <BootLoading />;
   }
