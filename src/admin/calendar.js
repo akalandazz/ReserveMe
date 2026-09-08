@@ -50,9 +50,11 @@ export function bookingCountsByDay(bookings) {
 
 /* ─── Неделя ────────────────────────────────────────────────────── */
 
-export const GRID_FROM = 8 * 60; // 08:00 — с запасом раньше самого раннего графика
-export const GRID_HOURS = 13; // до 21:00
-export const PX_H = 34; // высота часа на временной шкале, px
+export const PX_H = 40; // высота часа на временной шкале, px
+
+const FALLBACK_FROM = 9 * 60;
+const FALLBACK_TO = 20 * 60;
+const MIN_HOURS = 4; // не схлопывать шкалу в полоску на пустой неделе
 
 /** Понедельник недели, содержащей key. */
 export function weekStart(key) {
@@ -61,20 +63,91 @@ export function weekStart(key) {
   return d;
 }
 
-export function hourLabels() {
-  const out = [];
-  for (let m = GRID_FROM; m < GRID_FROM + GRID_HOURS * 60; m += 60) {
-    out.push(toHHMM(m));
+/**
+ * Диапазон шкалы недели: рабочие часы показанных дней плюс всё, что в
+ * них не попало. Фиксированной сетки «с 8 до 21» нет намеренно — при
+ * графике 10:00–19:00 треть колонки уходила в пустоту, а запись,
+ * перенесённая мастером за пределы графика, из сетки просто выпадала.
+ */
+export function weekRange(settings, keys, bookings, blockedSlots, step = 30) {
+  const days = new Set(keys);
+  let from = Infinity;
+  let to = -Infinity;
+
+  for (const key of keys) {
+    const h = hoursFor(settings, parseKey(key).getDay());
+    if (!h) continue;
+    from = Math.min(from, toMinutes(h.from));
+    to = Math.max(to, toMinutes(h.to));
   }
+  for (const b of bookings) {
+    if (!days.has(b.day)) continue;
+    from = Math.min(from, b.start_min);
+    to = Math.max(to, b.start_min + (b.duration || step));
+  }
+  for (const b of blockedSlots) {
+    if (!days.has(b.day)) continue;
+    from = Math.min(from, b.start_min);
+    to = Math.max(to, b.start_min + step);
+  }
+  if (!Number.isFinite(from)) {
+    from = FALLBACK_FROM;
+    to = FALLBACK_TO;
+  }
+
+  from = Math.max(0, Math.floor(from / 60) * 60);
+  to = Math.min(24 * 60, Math.ceil(to / 60) * 60);
+  if (to - from < MIN_HOURS * 60) to = Math.min(24 * 60, from + MIN_HOURS * 60);
+  return { from, to, hours: (to - from) / 60 };
+}
+
+/** Подписи часов — по одной на каждую линию сетки, включая нижнюю. */
+export function hourLabels(range) {
+  const out = [];
+  for (let m = range.from; m <= range.to; m += 60) out.push(toHHMM(m));
   return out;
 }
 
-/** Позиция и высота события на временной шкале недели, в px. */
-export function eventGeometry(startMin, duration) {
+/** Позиция и высота отрезка [startMin, +duration) на шкале недели, в px. */
+export function eventGeometry(range, startMin, duration) {
+  const top = ((startMin - range.from) * PX_H) / 60;
+  const h = (duration * PX_H) / 60;
+  const clipped = Math.max(0, top);
   return {
-    top: Math.max(0, ((startMin - GRID_FROM) * PX_H) / 60),
-    h: Math.max(18, (duration * PX_H) / 60 - 2),
+    top: clipped,
+    h: Math.max(14, top + h - clipped),
   };
+}
+
+/**
+ * Раскладка пересекающихся событий по дорожкам внутри колонки дня.
+ * Две заявки на одно время — штатная ситуация (клиент не видит чужих
+ * записей и может попросить занятый слот), и в сетке они должны быть
+ * видны обе, а не одна поверх другой.
+ */
+export function layoutEvents(events) {
+  const sorted = [...events].sort((a, b) => a.start - b.start || a.end - b.end);
+  const out = [];
+  let cluster = [];
+  let clusterEnd = -Infinity;
+
+  const flush = () => {
+    const lanes = cluster.reduce((n, e) => Math.max(n, e.lane + 1), 0);
+    for (const e of cluster) out.push({ ...e, lanes });
+    cluster = [];
+    clusterEnd = -Infinity;
+  };
+
+  for (const e of sorted) {
+    if (e.start >= clusterEnd) flush();
+    const taken = new Set(cluster.filter((x) => x.end > e.start).map((x) => x.lane));
+    let lane = 0;
+    while (taken.has(lane)) lane++;
+    cluster.push({ ...e, lane });
+    clusterEnd = Math.max(clusterEnd, e.end);
+  }
+  flush();
+  return out;
 }
 
 /* ─── День ──────────────────────────────────────────────────────── */

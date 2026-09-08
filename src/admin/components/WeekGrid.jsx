@@ -1,17 +1,27 @@
 import { useMemo } from "react";
-import { dateKey } from "../../schedule.js";
+import { dateKey, toHHMM, toMinutes } from "../../schedule.js";
 import {
-  GRID_HOURS,
+  PX_H,
   bookingsForDay,
   eventGeometry,
   hourLabels,
   hoursFor,
+  layoutEvents,
+  parseKey,
+  weekRange,
   weekStart,
 } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
 
 const WD_SHORT = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+const D = new Intl.DateTimeFormat("ru-RU", { day: "numeric" });
 const DM = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
+
+/** «7 – 13 сент.», но «28 сент. – 4 окт.» на стыке месяцев. */
+function rangeLabel(start, end) {
+  const left = start.getMonth() === end.getMonth() ? D.format(start) : DM.format(start);
+  return `${left} – ${DM.format(end)}`;
+}
 
 export default function WeekGrid({
   settings,
@@ -29,90 +39,166 @@ export default function WeekGrid({
     return d;
   }, [start]);
 
-  const cols = useMemo(() => {
+  const keys = useMemo(() => {
     const out = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(start);
       d.setDate(start.getDate() + i);
-      const key = dateKey(d);
-      const dow = d.getDay();
-      const hours = hoursFor(settings, dow);
-      const isClosed = !hours || daysOff.includes(key);
-      const isSelected = key === selectedKey;
-      const dayBookings = bookingsForDay(bookings, key);
-      const events = dayBookings.map((b) => {
-        const { top, h } = eventGeometry(b.start_min, b.duration);
-        return {
-          id: b.id,
-          top,
-          h,
-          label: `${String(Math.floor(b.start_min / 60)).padStart(2, "0")}:${String(
-            b.start_min % 60
-          ).padStart(2, "0")} ${b.client_name || b.service_name}`,
-          isNew: b.status === "new",
-        };
-      });
-      blockedSlots
-        .filter((b) => b.day === key)
-        .forEach((b) => {
-          const { top } = eventGeometry(b.start_min, 15);
-          events.push({ id: `x${b.start_min}`, top, h: 15, label: "×", blocked: true });
-        });
-      out.push({ key, dow, dayNum: d.getDate(), isClosed, isSelected, events });
+      out.push(dateKey(d));
     }
     return out;
-  }, [start, settings, daysOff, bookings, blockedSlots, selectedKey]);
+  }, [start]);
+
+  const step = settings?.slotStepMinutes || 30;
+  const range = useMemo(
+    () => weekRange(settings, keys, bookings, blockedSlots, step),
+    [settings, keys, bookings, blockedSlots, step]
+  );
+  const labels = useMemo(() => hourLabels(range), [range]);
+  const trackH = range.hours * PX_H;
+  const todayKey = dateKey(new Date());
+
+  const cols = useMemo(
+    () =>
+      keys.map((key, i) => {
+        const dow = (start.getDay() + i) % 7;
+        const hours = hoursFor(settings, dow);
+        const isClosed = !hours || daysOff.includes(key);
+
+        // Рабочее окно дня — светлая полоса на приглушённом фоне колонки.
+        // Закрытый вручную день (days_off) остаётся полностью приглушённым,
+        // хотя часы в графике у него есть.
+        const open =
+          hours && !isClosed
+            ? eventGeometry(range, toMinutes(hours.from), toMinutes(hours.to) - toMinutes(hours.from))
+            : null;
+
+        const raw = [
+          ...bookingsForDay(bookings, key).map((b) => ({
+            id: `b${b.id}`,
+            start: b.start_min,
+            end: b.start_min + (b.duration || step),
+            kind: b.status === "new" ? "new" : "ok",
+            time: toHHMM(b.start_min),
+            title: `${toHHMM(b.start_min)} · ${b.service_name} · ${b.client_name || "клиент"}`,
+          })),
+          ...blockedSlots
+            .filter((b) => b.day === key)
+            .map((b) => ({
+              id: `x${b.start_min}`,
+              start: b.start_min,
+              end: b.start_min + step,
+              kind: "blocked",
+              time: toHHMM(b.start_min),
+              title: `${toHHMM(b.start_min)} · закрыто`,
+            })),
+        ];
+
+        const events = layoutEvents(raw).map((e) => {
+          const { top, h } = eventGeometry(range, e.start, e.end - e.start);
+          return {
+            ...e,
+            top,
+            h,
+            left: `calc(${(e.lane / e.lanes) * 100}% + 2px)`,
+            width: `calc(${100 / e.lanes}% - 4px)`,
+          };
+        });
+
+        return {
+          key,
+          dow,
+          dayNum: parseKey(key).getDate(),
+          isClosed,
+          isSelected: key === selectedKey,
+          isToday: key === todayKey,
+          open,
+          events,
+        };
+      }),
+    [keys, start, settings, daysOff, bookings, blockedSlots, selectedKey, todayKey, range, step]
+  );
 
   return (
     <div className="week-panel">
       <div className="week-head">
-        <button className="round-btn" type="button" aria-label="Предыдущая неделя" onClick={() => onShift(-7)}>
-          <Icon name="chevronLeft" size={14} />
+        <button className="round-btn lg" type="button" aria-label="Предыдущая неделя" onClick={() => onShift(-7)}>
+          <Icon name="chevronLeft" size={15} />
         </button>
-        <span className="week-title">
-          {DM.format(start)} – {DM.format(end)}
-        </span>
-        <button className="round-btn" type="button" aria-label="Следующая неделя" onClick={() => onShift(7)}>
-          <Icon name="chevronRight" size={14} />
+        <span className="week-title">{rangeLabel(start, end)}</span>
+        <button className="round-btn lg" type="button" aria-label="Следующая неделя" onClick={() => onShift(7)}>
+          <Icon name="chevronRight" size={15} />
         </button>
       </div>
 
-      <div className="week-scroll">
-        <div className="week-hours-col">
-          {hourLabels().map((h) => (
-            <div className="week-hour-label" key={h}>
-              {h}
-            </div>
-          ))}
-        </div>
+      <div className="week-grid" style={{ "--px-h": `${PX_H}px` }}>
+        <div className="week-corner" />
         {cols.map((c) => (
-          <div className="week-day-col" key={c.key}>
-            <button
-              type="button"
-              className="week-day-head"
-              data-state={c.isSelected ? "selected" : c.isClosed ? "closed" : "open"}
-              onClick={() => onSelect(c.key)}
-            >
-              <span className="week-day-weekday">{WD_SHORT[c.dow]}</span>
-              <span className="week-day-num">{c.dayNum}</span>
-            </button>
-            <div
-              className="week-track"
-              data-state={c.isClosed ? "closed" : "open"}
-              style={{ height: GRID_HOURS * 34 }}
-            >
-              {c.events.map((e) => (
-                <div
-                  className={e.blocked ? "week-event is-blocked" : e.isNew ? "week-event is-new" : "week-event"}
-                  key={e.id}
-                  style={{ top: e.top, height: e.h }}
-                >
-                  {e.label}
-                </div>
-              ))}
-            </div>
+          <button
+            type="button"
+            key={`h${c.key}`}
+            className="week-day-head"
+            data-state={c.isSelected ? "selected" : c.isClosed ? "closed" : "open"}
+            data-today={c.isToday ? "true" : undefined}
+            aria-pressed={c.isSelected ? "true" : "false"}
+            onClick={() => onSelect(c.key)}
+          >
+            <span className="week-day-weekday">{WD_SHORT[c.dow]}</span>
+            <span className="week-day-num">{c.dayNum}</span>
+          </button>
+        ))}
+
+        <div className="week-hours">
+          <div className="week-hours-inner" style={{ height: trackH }}>
+            {labels.map((h, i) => (
+              <span className="week-hour-label" key={h} style={{ top: i * PX_H }}>
+                {h}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {cols.map((c) => (
+          <div
+            className="week-col"
+            key={c.key}
+            data-state={c.isSelected ? "selected" : c.isClosed ? "closed" : "open"}
+            style={{ height: trackH }}
+          >
+            {c.open && (
+              <div className="week-open" style={{ top: c.open.top, height: c.open.h }} />
+            )}
+            {c.events.map((e) => (
+              <button
+                type="button"
+                key={e.id}
+                className="week-event"
+                data-kind={e.kind}
+                style={{ top: e.top, height: e.h, left: e.left, width: e.width }}
+                title={e.title}
+                aria-label={e.title}
+                onClick={() => onSelect(c.key)}
+              >
+                {e.kind !== "blocked" && e.h >= 26 && <span className="week-event-time">{e.time}</span>}
+              </button>
+            ))}
           </div>
         ))}
+      </div>
+
+      <div className="week-legend">
+        <span className="legend-item">
+          <span className="legend-bar" />
+          подтверждена
+        </span>
+        <span className="legend-item">
+          <span className="legend-bar is-new" />
+          ждёт ответа
+        </span>
+        <span className="legend-item">
+          <span className="legend-bar is-blocked" />
+          закрыто
+        </span>
       </div>
     </div>
   );

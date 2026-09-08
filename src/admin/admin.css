@@ -660,7 +660,8 @@ button {
   background: var(--on-accent);
 }
 
-.month-legend {
+.month-legend,
+.week-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
@@ -694,12 +695,16 @@ button {
 
 /* ─── Неделя ──────────────────────────────────────────────────── */
 
+/* Вся неделя помещается по ширине: семь колонок делят остаток поровну
+   (никакой горизонтальной прокрутки — суббота с воскресеньем не должны
+   оставаться за краем карточки). Высота часа приходит из JS в --px-h,
+   чтобы линии сетки и позиции событий считались от одного числа. */
 .week-panel {
   margin-top: 12px;
+  padding: 14px 14px 0;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: var(--card);
-  overflow: hidden;
 }
 
 .week-head {
@@ -707,55 +712,50 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--line);
 }
 
 .week-title {
-  font-size: 13px;
-  color: var(--muted);
+  font-family: var(--serif);
+  font-size: 19px;
 }
 
-.week-scroll {
-  display: flex;
-  overflow-x: auto;
+.week-grid {
+  display: grid;
+  grid-template-columns: 38px repeat(7, minmax(0, 1fr));
+  margin-top: 14px;
 }
 
-.week-hours-col {
-  flex: none;
-  width: 40px;
-  padding-top: 44px;
-}
-
-.week-hour-label {
-  height: 34px;
-  padding-right: 6px;
-  text-align: right;
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.week-day-col {
-  flex: none;
-  width: 74px;
-  border-left: 1px solid var(--line);
+.week-corner,
+.week-day-head {
+  border-bottom: 1px solid var(--line);
 }
 
 .week-day-head {
-  display: block;
-  width: 100%;
-  height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  height: 46px;
   padding: 0;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: var(--card);
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+  border-radius: 10px 10px 0 0;
+  background: none;
   color: var(--ink);
+  line-height: 1;
   cursor: pointer;
 }
 
 .week-day-head[data-state="closed"] {
-  background: var(--bg);
   color: var(--muted);
+}
+
+.week-day-head[data-today="true"] .week-day-num {
+  color: var(--accent);
+  font-weight: 500;
 }
 
 .week-day-head[data-state="selected"] {
@@ -763,53 +763,131 @@ button {
   color: var(--on-accent);
 }
 
+.week-day-head[data-state="selected"] .week-day-num {
+  color: var(--on-accent);
+}
+
 .week-day-weekday {
-  display: block;
   font-size: 9px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  opacity: 0.7;
+  opacity: 0.65;
 }
 
 .week-day-num {
-  display: block;
-  margin-top: 1px;
   font-size: 15px;
 }
 
-.week-track {
-  position: relative;
-  background: var(--card);
-  background-image: repeating-linear-gradient(var(--line) 0 1px, transparent 1px 34px);
+/* Подписи часов позиционируются от той же сетки, что и события, и
+   центрируются по своей линии — иначе «10:00» стоит рядом с чужой
+   полосой. */
+.week-hours {
+  min-width: 0;
 }
 
-.week-track[data-state="closed"] {
-  background-color: var(--bg);
+.week-hours-inner {
+  position: relative;
+}
+
+.week-hour-label {
+  position: absolute;
+  right: 7px;
+  transform: translateY(-50%);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.week-col {
+  position: relative;
+  min-width: 0;
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+}
+
+/* Часовые линии — поверх светлой полосы рабочих часов, но под событиями. */
+.week-col::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    var(--line) 0 1px,
+    transparent 1px var(--px-h)
+  );
+  pointer-events: none;
+}
+
+.week-open {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: var(--card);
+}
+
+.week-col[data-state="selected"] .week-open {
+  background: var(--accent-soft);
 }
 
 .week-event {
   position: absolute;
-  left: 2px;
-  right: 2px;
-  padding: 4px 5px;
-  border-radius: 8px;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 3px 2px 0;
   border: 1px solid var(--accent);
+  border-radius: 7px;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 11px;
-  line-height: 1.2;
   overflow: hidden;
+  cursor: pointer;
 }
 
-.week-event.is-new {
+.week-event[data-kind="new"] {
   background: var(--accent-soft);
   color: var(--accent);
 }
 
-.week-event.is-blocked {
+.week-event[data-kind="blocked"] {
   border-color: var(--line);
-  background: var(--bg);
   color: var(--muted);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--line) 0 2px,
+    transparent 2px 6px
+  );
+}
+
+.week-event-time {
+  font-size: 9px;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.week-legend {
+  padding-bottom: 14px;
+}
+
+.legend-bar {
+  width: 10px;
+  height: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent);
+}
+
+.legend-bar.is-new {
+  background: var(--accent-soft);
+}
+
+.legend-bar.is-blocked {
+  border-color: var(--line);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--line) 0 2px,
+    transparent 2px 6px
+  );
 }
 
 /* ─── День ────────────────────────────────────────────────────── */
