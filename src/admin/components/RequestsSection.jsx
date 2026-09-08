@@ -12,7 +12,7 @@ const PER_PAGE = 3;
  * клиенту сам, sendToMaster() здесь не вызывается никогда — он закрыл
  * бы мини-апп (см. CLAUDE.md).
  */
-export default function RequestsSection({ bookings, onToast, onError }) {
+export default function RequestsSection({ bookings, busy, busyThen, onToast, onError }) {
   const [page, setPage] = useState(0);
 
   const pending = useMemo(
@@ -30,16 +30,20 @@ export default function RequestsSection({ bookings, onToast, onError }) {
   const from = cur * PER_PAGE;
   const shown = pending.slice(from, from + PER_PAGE);
 
-  const approve = async (id) => {
-    const res = await approveBooking(id);
-    if (res.ok) onToast("Запись подтверждена. Напишите клиенту в чате.");
-    else onError(res.error);
+  const approve = (id) => {
+    busyThen(`appr-${id}`, 500, async () => {
+      const res = await approveBooking(id);
+      if (res.ok) onToast("Запись подтверждена. Напишите клиенту в чате.");
+      else onError(res.error);
+    });
   };
 
-  const decline = async (id) => {
-    const res = await deleteBooking(id);
-    if (res.ok) onToast("Заявка отклонена. Напишите клиенту в чате.");
-    else onError(res.error);
+  const decline = (id) => {
+    busyThen(`drop-${id}`, 450, async () => {
+      const res = await deleteBooking(id);
+      if (res.ok) onToast("Заявка отклонена. Напишите клиенту в чате.");
+      else onError(res.error);
+    });
   };
 
   return (
@@ -52,34 +56,41 @@ export default function RequestsSection({ bookings, onToast, onError }) {
       </div>
 
       <div className="requests-list">
-        {shown.map((b) => (
-          <div className="request-card" key={b.id}>
-            <div className="request-head">
-              <p className="request-name">{b.service_name}</p>
-              <span className="request-price">{b.price} ₾</span>
+        {shown.map((b) => {
+          const approving = busy === `appr-${b.id}`;
+          const declining = busy === `drop-${b.id}`;
+          return (
+            <div className={`request-card${declining ? " is-declining" : ""}`} key={b.id}>
+              <div className="request-head">
+                <p className="request-name">{b.service_name}</p>
+                <span className="request-price">{b.price} ₾</span>
+              </div>
+              <p className="request-meta">
+                {labelForKey(b.day)} · {toHHMM(b.start_min)}
+                {b.client_name ? ` · ${b.client_name}` : ""}
+              </p>
+              <div className="request-actions">
+                <button
+                  className="btn-approve"
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() => approve(b.id)}
+                >
+                  {approving && <span className="btn-spinner" aria-hidden="true" />}
+                  {approving ? "Подтверждаем" : "Подтвердить"}
+                </button>
+                <button
+                  className="btn-decline"
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() => decline(b.id)}
+                >
+                  Отклонить
+                </button>
+              </div>
             </div>
-            <p className="request-meta">
-              {labelForKey(b.day)} · {toHHMM(b.start_min)}
-              {b.client_name ? ` · ${b.client_name}` : ""}
-            </p>
-            <div className="request-actions">
-              <button
-                className="btn-approve"
-                type="button"
-                onClick={() => approve(b.id)}
-              >
-                Подтвердить
-              </button>
-              <button
-                className="btn-decline"
-                type="button"
-                onClick={() => decline(b.id)}
-              >
-                Отклонить
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {pages > 1 && (

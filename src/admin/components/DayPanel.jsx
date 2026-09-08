@@ -20,6 +20,8 @@ export default function DayPanel({
   blockedSlots,
   selectedKey,
   onShift,
+  busy,
+  busyThen,
   onToast,
   onError,
 }) {
@@ -46,15 +48,26 @@ export default function DayPanel({
     }
   };
 
-  const approve = (id) => wrap(approveBooking(id), "Запись подтверждена. Напишите клиенту в чате.");
-  const cancel = (id) => wrap(deleteBooking(id), "Запись отменена. Сообщите клиенту.");
+  const approve = (id) => {
+    if (busy) return;
+    busyThen(`appr-${id}`, 500, () =>
+      wrap(approveBooking(id), "Запись подтверждена. Напишите клиенту в чате.")
+    );
+  };
+  const cancel = (id) => {
+    if (busy) return;
+    busyThen(`drop-${id}`, 450, () => wrap(deleteBooking(id), "Запись отменена. Сообщите клиенту."));
+  };
   const startMove = (id) => setMoveId(id);
-  const moveTo = async (minute) => {
+  const moveTo = (minute) => {
+    if (busy) return;
     const id = moveId;
     setMoveId(null);
     const hh = String(Math.floor(minute / 60)).padStart(2, "0");
     const mm = String(minute % 60).padStart(2, "0");
-    await wrap(moveBooking(id, selectedKey, minute), `Запись перенесена на ${hh}:${mm}. Сообщите клиенту.`);
+    busyThen("move", 450, () =>
+      wrap(moveBooking(id, selectedKey, minute), `Запись перенесена на ${hh}:${mm}. Сообщите клиенту.`)
+    );
   };
   const toggleBlock = (minute, isBlocked) =>
     wrap(isBlocked ? unblockSlot(selectedKey, minute) : blockSlot(selectedKey, minute));

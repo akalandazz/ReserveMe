@@ -13,9 +13,8 @@ import { Icon } from "./Icons.jsx";
  * остальные колонки, а создание новой услуги берёт их значения по
  * умолчанию (см. supabase/schema.sql).
  */
-export default function ServicesSection({ services, onToast, onError }) {
+export default function ServicesSection({ services, busy, busyThen, onToast, onError }) {
   const [draft, setDraft] = useState(null);
-  const [saving, setSaving] = useState(false);
   const [fieldError, setFieldError] = useState("");
 
   const list = draft ?? services;
@@ -38,26 +37,7 @@ export default function ServicesSection({ services, onToast, onError }) {
     setFieldError("");
   };
 
-  const save = async () => {
-    if (saving) return;
-    const cleaned = list
-      .map((s) => ({
-        ...s,
-        name: String(s.name).trim(),
-        price: Math.max(0, Math.round(Number(s.price) || 0)),
-        duration: Math.max(15, Math.round(Number(s.duration) || 0)),
-      }))
-      .filter((s) => s.name !== "");
-
-    for (const s of cleaned) {
-      const err = validateServiceFields(s);
-      if (err) {
-        setFieldError(`«${s.name}»: ${err}`);
-        return;
-      }
-    }
-    setFieldError("");
-
+  const commitSvc = async (cleaned) => {
     const originalIds = new Set(services.map((s) => s.id));
     const draftIds = new Set(cleaned.map((s) => s.id));
     const ops = [];
@@ -76,9 +56,7 @@ export default function ServicesSection({ services, onToast, onError }) {
       }
     }
 
-    setSaving(true);
     const results = await Promise.all(ops);
-    setSaving(false);
     const failed = results.find((r) => !r.ok);
     if (failed) {
       onError(failed.error);
@@ -86,6 +64,29 @@ export default function ServicesSection({ services, onToast, onError }) {
     }
     setDraft(null);
     onToast("Услуги сохранены — клиенты видят новый список.");
+  };
+
+  const save = () => {
+    if (busy) return;
+    const cleaned = list
+      .map((s) => ({
+        ...s,
+        name: String(s.name).trim(),
+        price: Math.max(0, Math.round(Number(s.price) || 0)),
+        duration: Math.max(15, Math.round(Number(s.duration) || 0)),
+      }))
+      .filter((s) => s.name !== "");
+
+    for (const s of cleaned) {
+      const err = validateServiceFields(s);
+      if (err) {
+        setFieldError(`«${s.name}»: ${err}`);
+        return;
+      }
+    }
+    setFieldError("");
+
+    busyThen("save", 700, () => commitSvc(cleaned));
   };
 
   return (
@@ -162,8 +163,9 @@ export default function ServicesSection({ services, onToast, onError }) {
               Отменить
             </button>
           )}
-          <button className="btn-save" type="button" disabled={!dirty || saving} onClick={save}>
-            {saving ? "Сохраняем…" : "Сохранить"}
+          <button className="btn-save" type="button" disabled={!dirty || !!busy} onClick={save}>
+            {busy === "save" && <span className="btn-spinner" aria-hidden="true" />}
+            {busy === "save" ? "Сохраняем" : "Сохранить"}
           </button>
         </div>
       </div>

@@ -37,7 +37,9 @@ function useSyncTheme() {
 
 export default function AdminApp() {
   const [toast, setToast] = useState("");
+  const [busy, setBusy] = useState(null);
   const toastTimer = useRef(null);
+  const busyTimer = useRef(null);
   const session = useSession();
   const data = useAdminData();
 
@@ -52,13 +54,32 @@ export default function AdminApp() {
     else if (session.status === "guest") resetAdminData();
   }, [session.status]);
 
-  const showToast = (msg) => {
+  useEffect(
+    () => () => {
+      window.clearTimeout(toastTimer.current);
+      window.clearTimeout(busyTimer.current);
+    },
+    []
+  );
+
+  const flash = (msg) => {
     setToast(msg);
     // Короткий тост, а не постоянный баннер — как в клиентском приложении.
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(""), 4000);
+    toastTimer.current = window.setTimeout(() => setToast(""), 3400);
   };
-  const showError = (msg) => showToast(`⚠️ ${msg}`);
+  const showError = (msg) => flash(`⚠️ ${msg}`);
+
+  // Единое «занято» состояние на весь экран кабинета: пока один запрос
+  // выполняется, второй такой же клик — no-op, а не гонка из двух мутаций.
+  const busyThen = (key, ms, fn) => {
+    if (busy) return;
+    setBusy(key);
+    busyTimer.current = window.setTimeout(() => {
+      setBusy(null);
+      fn();
+    }, ms);
+  };
 
   const stats = useMemo(() => {
     const todayKey = dateKey(new Date());
@@ -111,6 +132,11 @@ export default function AdminApp() {
       <div className="topbar">
         <span className="crumb">Кабинет мастера</span>
         <ThemeToggle />
+        {busy && (
+          <div className="progress-bar" aria-hidden="true">
+            <div className="progress-fill" />
+          </div>
+        )}
       </div>
 
       {toast && <div className="toast">{toast}</div>}
@@ -133,18 +159,32 @@ export default function AdminApp() {
           <>
             <StatsRow {...stats} />
 
-            <RequestsSection bookings={data.bookings} onToast={showToast} onError={showError} />
+            <RequestsSection
+              bookings={data.bookings}
+              busy={busy}
+              busyThen={busyThen}
+              onToast={flash}
+              onError={showError}
+            />
 
             <CalendarSection
               settings={data.settings}
               daysOff={data.daysOff}
               bookings={data.bookings}
               blockedSlots={data.blockedSlots}
-              onToast={showToast}
+              busy={busy}
+              busyThen={busyThen}
+              onToast={flash}
               onError={showError}
             />
 
-            <ServicesSection services={data.services} onToast={showToast} onError={showError} />
+            <ServicesSection
+              services={data.services}
+              busy={busy}
+              busyThen={busyThen}
+              onToast={flash}
+              onError={showError}
+            />
 
             <ScheduleSection settings={data.settings} onError={showError} />
 

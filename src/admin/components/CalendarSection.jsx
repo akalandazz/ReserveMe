@@ -22,6 +22,8 @@ export default function CalendarSection({
   daysOff,
   bookings,
   blockedSlots,
+  busy,
+  busyThen,
   onToast,
   onError,
 }) {
@@ -81,6 +83,8 @@ export default function CalendarSection({
         blockedSlots={blockedSlots}
         selectedKey={selectedKey}
         onShift={shiftDay}
+        busy={busy}
+        busyThen={busyThen}
         onToast={onToast}
         onError={onError}
       />
