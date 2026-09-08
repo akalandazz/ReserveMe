@@ -112,11 +112,26 @@ create table if not exists public.bookings (
   comment         text    not null default '',
   status          text    not null default 'new' check (status in ('new', 'ok')),
   source          text    not null default 'client' check (source in ('client', 'master')),
+  -- Случайный секрет, который клиент придумывает себе сам и хранит рядом
+  -- с локальной записью (ключ "k" в src/storage.js). Единственная ниточка
+  -- между заявкой на устройстве и строкой здесь: без неё клиент не мог бы
+  -- узнать, подтвердила ли мастер запись, — id строки ему не возвращается,
+  -- а select по таблице аноним не имеет и иметь не должен.
+  -- Не является авторизацией на запись: по нему можно только прочитать
+  -- статус, через booking_status() ниже.
+  -- Nullable: заявки, заведённые мастером (source = 'master'), и строки
+  -- от старых закэшированных бандлов клиента токена не имеют.
+  client_token    uuid,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
 
+-- Файл выполняется повторно на уже развёрнутой базе, а create table
+-- if not exists новую колонку в существующую таблицу не добавит.
+alter table public.bookings add column if not exists client_token uuid;
+
 create index if not exists bookings_day_idx on public.bookings (day, start_min);
+create index if not exists bookings_client_token_idx on public.bookings (client_token);
 
 -- ─── Закрытые вручную окошки ─────────────────────────────────────
 --  «Закрыть» отдельный слот в панели дня кабинета мастера, не трогая
@@ -224,6 +239,39 @@ create policy bookings_update_auth on public.bookings
 create policy bookings_delete_auth on public.bookings
   for delete to authenticated using (true);
 
+-- ─── booking_status(): статус своей заявки для анонимного клиента ─
+--  Мастер подтверждает заявку в кабинете (status → 'ok'), но у клиента
+--  запись лежит в CloudStorage его устройства, и без обратного канала
+--  экран «Мои записи» вечно показывал бы «Ожидает подтверждения».
+--
+--  Канал сделан функцией, а НЕ select-политикой для anon: политика
+--  открыла бы строку целиком (имя, юзернейм, комментарий, цену), а
+--  здесь наружу выходит только статус и только тех строк, чей секретный
+--  client_token спрашивающий уже знает. Тот же приём, что у вьюхи
+--  busy_slots: security definer обходит RLS bookings в одном
+--  контролируемом месте, с фиксированным набором колонок.
+--
+--  Токен перебрать нельзя (128-битный uuid), а знание токена не даёт
+--  ничего, кроме чтения статуса: писать по-прежнему может только мастер.
+create or replace function public.booking_status(p_tokens uuid[])
+returns table (client_token uuid, status text)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select b.client_token, b.status
+  from public.bookings b
+  -- Пустой массив и null отсекаются здесь же: = any('{}') не вернёт строк.
+  where b.client_token = any (p_tokens)
+  -- Потолок на случай подставленного вручную огромного массива.
+  limit 100
+$$;
+
+-- Функции по умолчанию исполняемы для public — сужаем явно.
+revoke all on function public.booking_status(uuid[]) from public;
+grant execute on function public.booking_status(uuid[]) to anon, authenticated;
+
 -- ─── blocked_slots: читают все (это часть доступности), пишет мастер ──
 
 alter table public.blocked_slots enable row level security;
@@ -318,3 +366,10 @@ select * from (values
   ('🩺', 'Здоровье',      'Если есть грибок, порезы или воспаления — напишите мне заранее.', 50)
 ) as seed(emoji, title, body, sort)
 where not exists (select 1 from public.info_blocks);
+
+-- ─── Кэш схемы PostgREST ────────────────────────────────────────
+--  Новая функция (booking_status) и новая колонка не видны через REST,
+--  пока PostgREST не перечитает схему. Supabase обычно делает это сам,
+--  но при повторном прогоне файла на живой базе дешевле сказать явно —
+--  иначе первый вызов rpc() вернёт «function not found».
+notify pgrst, 'reload schema';

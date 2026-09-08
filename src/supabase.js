@@ -173,3 +173,31 @@ export async function submitBooking(row) {
     3000
   );
 }
+
+/* ─── Статус своей заявки ────────────────────────────────────────
+   Мастер подтверждает заявку в кабинете, а у клиента запись лежит в
+   CloudStorage — без этого запроса «Мои записи» вечно показывали бы
+   «Ожидает подтверждения».
+
+   Идём через RPC booking_status (см. supabase/schema.sql), а не в
+   таблицу: анониму select по bookings не давали и не даём — функция
+   отдаёт только статус и только тех строк, чей client_token клиент
+   уже знает, потому что сам его и придумал.                        */
+
+/**
+ * @param {string[]} tokens — client_token'ы своих записей.
+ * @returns {Promise<Map<string,string>|null>} токен → статус.
+ *   null — «спросить не удалось» (нет сети, таймаут, Supabase не настроен);
+ *   пустая Map — «спросили, таких строк нет». Вызывающий в обоих случаях
+ *   обязан оставить прежний статус: пропавшая строка неотличима от
+ *   заявки, чей best-effort insert не доехал.
+ */
+export async function fetchBookingStatuses(tokens) {
+  if (!supabase || !tokens.length) return null;
+  const res = await withTimeout(
+    supabase.rpc("booking_status", { p_tokens: tokens }),
+    3000
+  );
+  if (!res || res.error || !Array.isArray(res.data)) return null;
+  return new Map(res.data.map((r) => [r.client_token, r.status]));
+}

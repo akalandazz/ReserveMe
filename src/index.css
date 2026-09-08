@@ -24,6 +24,7 @@
   --on-accent: #fffcf8;
   --accent-soft: rgba(111, 91, 65, 0.1);
   --danger: #8e4238;
+  --ok: #3f6b4f;
 }
 
 /* Ручной выбор темы и фолбэк системной — значения обязаны совпадать. */
@@ -39,6 +40,7 @@ html[data-theme="dark"] {
   --on-accent: #191519;
   --accent-soft: rgba(201, 168, 124, 0.14);
   --danger: #e39b95;
+  --ok: #8fbf9f;
 }
 
 /* Первый кадр до того, как отработает src/theme.js. */
@@ -55,6 +57,7 @@ html[data-theme="dark"] {
     --on-accent: #191519;
     --accent-soft: rgba(201, 168, 124, 0.14);
     --danger: #e39b95;
+    --ok: #8fbf9f;
   }
 }
 
@@ -735,6 +738,11 @@ button {
   gap: 7px;
   font-size: 12px;
   color: var(--accent);
+}
+
+/* Запись подтверждена мастером в кабинете. */
+.status.ok {
+  color: var(--ok);
 }
 
 .past-row {

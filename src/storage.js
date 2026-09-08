@@ -5,6 +5,11 @@
 // в обычном браузере и на старых клиентах.
 //
 // Записи видны ТОЛЬКО клиенту. Мастер узнаёт о них из сообщения в чате.
+//
+// Форма записи: { id, s, d, t, m, p, c, k, st }, где k — client_token
+// серверной строки (см. newClientToken ниже), а st — последний известный
+// статус ("new" | "ok"), которым MyBookingsScreen обновляет карточку
+// после подтверждения мастером.
 
 /** Ключ CloudStorage: разрешены только A-Za-z0-9_- */
 const KEY = "vs_bookings_v1";
@@ -95,4 +100,32 @@ export async function addBooking(booking) {
 export async function removeBooking(id) {
   const list = await loadBookings();
   return saveBookings(list.filter((b) => b.id !== id));
+}
+
+/**
+ * Секрет, связывающий локальную запись с её строкой в Supabase: по нему
+ * (и только по нему) клиент потом читает статус через booking_status().
+ *
+ * Должен быть непредсказуемым — иначе чужой статус можно перебрать, —
+ * поэтому Math.random() тут не годится ни в каком виде. randomUUID есть
+ * не во всех вебвью (нужен HTTPS-контекст и Safari 15.4+), поэтому
+ * запасной путь через getRandomValues; если нет и его, возвращаем null —
+ * заявка всё равно уедет, просто останется без обратной связи.
+ */
+export function newClientToken() {
+  const c = globalThis.crypto;
+  try {
+    if (c?.randomUUID) return c.randomUUID();
+    if (c?.getRandomValues) {
+      const b = c.getRandomValues(new Uint8Array(16));
+      // Приводим к виду UUID v4 — колонка в базе типа uuid.
+      b[6] = (b[6] & 0x0f) | 0x40;
+      b[8] = (b[8] & 0x3f) | 0x80;
+      const hex = [...b].map((n) => n.toString(16).padStart(2, "0")).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+  } catch {
+    // ничего не делаем — вернём null ниже
+  }
+  return null;
 }
