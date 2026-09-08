@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { useContent } from "../content.js";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { refreshBusy, useContent } from "../content.js";
 import {
   buildDays,
   buildSlots,
   busyFor,
   dayLabel,
   findDay,
+  serverBusyFor,
   toMinutes,
 } from "../schedule.js";
 import { addBooking, loadBookings } from "../storage.js";
@@ -37,7 +38,7 @@ export default function BookingScreen({
   const [bookings, setBookings] = useState([]);
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
-  const { settings, services, activeServices, daysOff } = useContent();
+  const { settings, services, activeServices, daysOff, busy } = useContent();
 
   // Все хуки вызываются безусловно — ветвление только в return,
   // иначе сработает react/rules-of-hooks.
@@ -50,6 +51,13 @@ export default function BookingScreen({
       cancelled = true;
     };
   }, []);
+
+  // Занятость перечитываем на входе в каждый шаг, где она видна: пока
+  // клиент шёл по флоу, мастер могла закрыть окошко в кабинете или
+  // принять чужую заявку на то же время.
+  useEffect(() => {
+    if (step !== "book:service") refreshBusy();
+  }, [step]);
 
   // Живая версия услуги: мастер мог поменять цену, пока клиент шёл по шагам.
   // Фолбэк на draft.service — если услугу удалили, флоу всё равно завершается.
@@ -64,12 +72,21 @@ export default function BookingScreen({
   );
   const day = findDay(days, draft.dateKey);
 
+  // Занято = свои записи (CloudStorage, живут только на этом устройстве)
+  // ПЛЮС занятость с сервера: чужие заявки и окошки, закрытые мастером
+  // в кабинете. Пересечение своей же записи с её серверной копией
+  // безвредно — перекрытие ищется через some().
+  const busyOn = useCallback(
+    (key) => [
+      ...busyFor(bookings, key, settings),
+      ...serverBusyFor(busy, key, settings),
+    ],
+    [bookings, busy, settings]
+  );
+
   const slots = useMemo(
-    () =>
-      day && service
-        ? buildSlots(day, service, busyFor(bookings, day.key, settings), settings)
-        : [],
-    [day, service, bookings, settings]
+    () => (day && service ? buildSlots(day, service, busyOn(day.key), settings) : []),
+    [day, service, busyOn, settings]
   );
 
   const message = useMemo(() => {
@@ -110,7 +127,9 @@ export default function BookingScreen({
   };
 
   const submit = async () => {
-    if (sending) return;
+    // day может исчезнуть, если клиент завис на подтверждении до полуночи
+    // и выбранная дата вышла из окна записи.
+    if (sending || !service || !day || !draft.time) return;
     setSending(true);
     haptic("success");
 
@@ -183,8 +202,7 @@ export default function BookingScreen({
         <div className="divided">
           {days.map((d) => {
             const free = d.isOpen
-              ? buildSlots(d, service, busyFor(bookings, d.key, settings), settings)
-                  .length
+              ? buildSlots(d, service, busyOn(d.key), settings).length
               : 0;
             const disabled = !d.isOpen || free === 0;
             return (
@@ -261,6 +279,12 @@ export default function BookingScreen({
 
   // book:confirm
   const gone = draft.service && !services.some((s) => s.id === draft.service.id);
+  // Дата вышла из окна записи, пока клиент был на этом экране (полночь).
+  const expired = Boolean(draft.dateKey) && !day;
+  // Время разобрали, пока клиент дописывал комментарий. Не блокируем
+  // отправку — мастер всё равно подтверждает заявку вручную, — но
+  // предупреждаем и предлагаем вернуться к сетке.
+  const taken = !expired && Boolean(draft.time) && !slots.includes(draft.time);
 
   return (
     <Screen
@@ -268,7 +292,7 @@ export default function BookingScreen({
       onBack={back}
       footer={
         <>
-          <PrimaryButton onClick={submit} disabled={sending}>
+          <PrimaryButton onClick={submit} disabled={sending || expired}>
             {sending ? "Отправляем…" : "Отправить заявку"}
           </PrimaryButton>
           <TextButton onClick={copy}>
@@ -284,6 +308,26 @@ export default function BookingScreen({
           Эта услуга больше не в прайсе. Заявку отправить можно, но цену лучше
           уточнить в чате.
         </p>
+      )}
+
+      {expired && (
+        <>
+          <p className="notice">
+            Эта дата больше не доступна для записи. Выберите, пожалуйста, другой
+            день.
+          </p>
+          <TextButton onClick={() => home()}>Начать заново</TextButton>
+        </>
+      )}
+
+      {taken && (
+        <>
+          <p className="notice">
+            Это время только что стало занято. Заявку отправить можно, но лучше
+            выбрать другое окошко.
+          </p>
+          <TextButton onClick={back}>Выбрать другое время</TextButton>
+        </>
       )}
 
       <dl className="summary">

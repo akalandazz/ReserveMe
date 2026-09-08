@@ -103,7 +103,7 @@ export function sendToMaster(text) {
   const username = masterUsername();
   if (!username) {
     showAlert(
-      "⚠️ Не указан Telegram мастера.\nОткройте «Настройки» → «Контакты и адрес» и впишите логин."
+      "⚠️ У мастера не указан Telegram-логин — открыть чат не получится.\nСкопируйте текст и отправьте его мастеру сами."
     );
     return true;
   }

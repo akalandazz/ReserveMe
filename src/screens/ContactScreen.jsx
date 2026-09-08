@@ -58,8 +58,7 @@ export default function ContactScreen({ onBack }) {
 
       {masterNotSet() && (
         <p className="notice">
-          Не указан Telegram-логин мастера — кнопка не откроет чат. Впишите его
-          в «Настройки» → «Контакты и адрес».
+          Не указан Telegram-логин мастера — кнопка не откроет чат.
         </p>
       )}
     </Screen>

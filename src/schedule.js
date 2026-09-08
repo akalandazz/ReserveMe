@@ -133,6 +133,22 @@ export function busyFor(bookings, key, settings) {
     }));
 }
 
+/**
+ * Занятость с сервера (вьюха busy_slots) на дату.
+ * Это то, что мастер видит и настраивает в кабинете: чужие заявки,
+ * записи, заведённые ею вручную, и закрытые вручную окошки.
+ *
+ * duration = 0 — закрытое окошко (blocked_slots): длиной ровно
+ * в шаг сетки, иначе интервал нулевой длины ничего бы не перекрыл
+ * и слот на это же время остался бы кликабельным.
+ */
+export function serverBusyFor(busy = [], key, settings) {
+  const step = settings?.slotStepMinutes ?? 30;
+  return busy
+    .filter((b) => b.day === key)
+    .map((b) => ({ start: b.start, end: b.start + (b.duration || step) }));
+}
+
 /** Запись уже в прошлом? */
 export function isPast(b) {
   const [y, mo, d] = b.d.split("-").map(Number);

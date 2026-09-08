@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useContent } from "../content.js";
 import { isPast, labelForKey } from "../schedule.js";
 import { loadBookings } from "../storage.js";
-import { useSession } from "../supabase.js";
 import { tgUser } from "../telegram.js";
 import { Icon, NavRow, PrimaryButton, Screen, Title } from "../ui.jsx";
 
@@ -29,7 +28,6 @@ function sortedUpcoming(list) {
 export default function MenuScreen({ onOpen, toast }) {
   const [upcoming, setUpcoming] = useState([]);
   const { settings } = useContent();
-  const session = useSession();
 
   useEffect(() => {
     // StrictMode в dev вызывает эффект дважды — флаг гасит гонку
@@ -84,16 +82,6 @@ export default function MenuScreen({ onOpen, toast }) {
             onClick={() => onOpen(item.id)}
           />
         ))}
-
-        {/* Пункт только для вошедшего мастера — соседним элементом,
-            чтобы не мутировать общий список. */}
-        {session.status === "signed" && (
-          <NavRow
-            icon="gear"
-            label="Настройки"
-            onClick={() => onOpen("admin")}
-          />
-        )}
       </div>
 
       {settings.workingHoursText && (

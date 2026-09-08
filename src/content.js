@@ -14,6 +14,7 @@
 // функции резолвятся вместо throw). Идиома подписки — с src/theme.js.
 
 import { useSyncExternalStore } from "react";
+import { dateKey } from "./schedule.js";
 import { NOT_CONFIGURED, supabase } from "./supabase.js";
 
 /** Ключ кэша. Менять при смене формы хранимого объекта. */
@@ -28,6 +29,7 @@ const EMPTY = {
   activeServices: [],
   daysOff: [],
   infoBlocks: [],
+  busy: [],
 };
 
 /* ─── Нормализация ──────────────────────────────────────────────
@@ -217,6 +219,55 @@ export async function refreshContent() {
   publish(withContent(snapshot, content, { status: "ready", error: null, stale: false }));
 }
 
+/* ─── Занятость ─────────────────────────────────────────────────
+   Вьюха busy_slots (см. supabase/schema.sql) — только день, минута и
+   длительность: ни имён, ни телефонов, ни комментариев. Саму таблицу
+   bookings анонимному клиенту читать нельзя и не нужно.
+
+   Сюда попадает и то, что мастер настроила в кабинете: чужие заявки,
+   записи, заведённые ею вручную, и отдельные закрытые окошки
+   (blocked_slots — у них duration = 0, это ровно один шаг сетки).
+
+   Загружается ОТДЕЛЬНО от контента, по двум причинам:
+   — меняется в разы чаще (заявка, закрытое окошко), и перечитывать
+     ради неё весь прайс незачем;
+   — её провал не должен гасить экран: адрес, услуги и «важная
+     информация» показываются и без занятости.
+
+   В localStorage не кэшируется намеренно: устаревшая занятость хуже
+   отсутствующей — она показала бы свободным уже занятое время.     */
+
+function toBusy(rows) {
+  return (rows ?? []).map((r) => ({
+    day: r.day,
+    start: Number(r.start_min) || 0,
+    // 0 у закрытых окошек — шаг сетки подставит serverBusyFor().
+    duration: Number(r.duration) || 0,
+  }));
+}
+
+let busySeq = 0;
+
+export async function refreshBusy() {
+  if (!supabase) return;
+
+  const mine = ++busySeq;
+
+  let res;
+  try {
+    res = await supabase
+      .from("busy_slots")
+      .select("day,start_min,duration")
+      // прошлое клиенту не показывается — buildDays начинает с сегодня
+      .gte("day", dateKey(new Date()));
+  } catch {
+    return; // молча: занятость необязательна для отрисовки экрана
+  }
+
+  if (mine !== busySeq || res.error) return;
+  publish({ ...snapshot, busy: toBusy(res.data) });
+}
+
 /**
  * Вызывать один раз при старте. Флаг started — защита от двойного
  * вызова эффекта под React.StrictMode.
@@ -225,4 +276,5 @@ export function initContent() {
   if (started) return;
   started = true;
   refreshContent();
+  refreshBusy();
 }

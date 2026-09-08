@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import "./index.css";
-import { initContent, refreshContent, useContent } from "./content.js";
+import {
+  initContent,
+  refreshBusy,
+  refreshContent,
+  useContent,
+} from "./content.js";
 import { init } from "./telegram.js";
 import { initTheme } from "./theme.js";
 import { BootError, BootLoading } from "./ui.jsx";
@@ -33,6 +38,20 @@ function App() {
     init();
     initTheme();
     initContent();
+  }, []);
+
+  // Мини-апп живёт долго и не перезагружается: клиент свернул Telegram,
+  // вернулся через час — а мастер за это время подняла цену или закрыла
+  // окошко. Перечитываем на возврате во вкладку. Внутри флоу записи
+  // занятость обновляется ещё и на каждом шаге (BookingScreen).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshContent();
+      refreshBusy();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   const push = useCallback((next) => {
