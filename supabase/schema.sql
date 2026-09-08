@@ -87,6 +87,28 @@ create table if not exists public.info_blocks (
 
 create index if not exists info_blocks_sort_idx on public.info_blocks (sort, id);
 
+-- ─── Клиенты ───────────────────────────────────────────────────
+--  У заявки и раньше были client_name/client_username — но построчно,
+--  без устойчивой сущности: телефон и заметка мастера должны пережить
+--  отдельную запись, а не обнуляться на следующей. Строки сюда
+--  заводит только триггер link_booking_client() ниже (см. его
+--  комментарий) — от анонима таблица закрыта полностью.
+create table if not exists public.clients (
+  id                 bigint generated always as identity primary key,
+  name               text    not null default '',
+  telegram_username  text    not null default '',
+  phone              text    not null default '',
+  note               text    not null default '',
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+
+-- Пустая строка не участвует в уникальности — иначе все клиенты без
+-- юзернейма схлопнулись бы в одну запись.
+create unique index if not exists clients_username_uq
+  on public.clients (telegram_username)
+  where telegram_username <> '';
+
 -- ─── Записи клиентов ───────────────────────────────────────────
 --  Раньше заявки не покидали устройство клиента (CloudStorage) и
 --  доезжали до мастера только сообщением в чат. Кабинет мастера
@@ -129,9 +151,11 @@ create table if not exists public.bookings (
 -- Файл выполняется повторно на уже развёрнутой базе, а create table
 -- if not exists новую колонку в существующую таблицу не добавит.
 alter table public.bookings add column if not exists client_token uuid;
+alter table public.bookings add column if not exists client_id bigint references public.clients(id) on delete set null;
 
 create index if not exists bookings_day_idx on public.bookings (day, start_min);
 create index if not exists bookings_client_token_idx on public.bookings (client_token);
+create index if not exists bookings_client_id_idx on public.bookings (client_id);
 
 -- ─── Закрытые вручную окошки ─────────────────────────────────────
 --  «Закрыть» отдельный слот в панели дня кабинета мастера, не трогая
@@ -169,6 +193,57 @@ drop trigger if exists bookings_touch_updated_at on public.bookings;
 create trigger bookings_touch_updated_at
   before update on public.bookings
   for each row execute function public.touch_updated_at();
+
+drop trigger if exists clients_touch_updated_at on public.clients;
+create trigger clients_touch_updated_at
+  before update on public.clients
+  for each row execute function public.touch_updated_at();
+
+-- ─── Привязка заявки к клиенту ───────────────────────────────────
+--  Аноним не имеет и не должен иметь доступа к clients (там телефон
+--  и заметка мастера) — привязка идёт через security definer триггер
+--  на INSERT bookings, тем же приёмом, что и booking_status() ниже:
+--  RLS обходится в одном контролируемом месте, а не открывается anon
+--  напрямую. Сопоставление по telegram_username, если он есть (и имя
+--  подтягивается свежее — мастер видит актуальное отображаемое имя);
+--  иначе — по точному совпадению имени среди клиентов без юзернейма;
+--  не нашли — заводим нового. Пустые client_name/client_username
+--  (initDataUnsafe не отдал ничего) оставляют client_id пустым —
+--  запись просто не попадёт ни к одному клиенту в «Клиенты».
+create or replace function public.link_booking_client()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  found_id bigint;
+begin
+  if new.client_username <> '' then
+    insert into public.clients (name, telegram_username)
+    values (new.client_name, new.client_username)
+    on conflict (telegram_username) where telegram_username <> ''
+    do update set name = excluded.name
+    returning id into found_id;
+  elsif new.client_name <> '' then
+    select id into found_id from public.clients
+      where telegram_username = '' and name = new.client_name
+      limit 1;
+    if found_id is null then
+      insert into public.clients (name) values (new.client_name)
+      returning id into found_id;
+    end if;
+  end if;
+
+  new.client_id = found_id;
+  return new;
+end
+$$;
+
+drop trigger if exists bookings_link_client on public.bookings;
+create trigger bookings_link_client
+  before insert on public.bookings
+  for each row execute function public.link_booking_client();
 
 -- ═══════════════════════════════════════════════════════════════
 --  RLS: читают все (в том числе незалогиненные клиенты мини-аппа),
@@ -271,6 +346,54 @@ $$;
 -- Функции по умолчанию исполняемы для public — сужаем явно.
 revoke all on function public.booking_status(uuid[]) from public;
 grant execute on function public.booking_status(uuid[]) to anon, authenticated;
+
+-- ═══════════════════════════════════════════════════════════════
+--  clients — как bookings: телефон и заметка мастера не должны
+--  светиться анониму. Строки заводит только link_booking_client()
+--  (см. выше) от имени владельца функции — anon-политики нет вовсе,
+--  и authenticated не может ни вставить, ни удалить строку напрямую,
+--  только читать и править phone/note уже созданных.
+-- ═══════════════════════════════════════════════════════════════
+
+alter table public.clients enable row level security;
+
+drop policy if exists clients_select_auth on public.clients;
+drop policy if exists clients_update_auth on public.clients;
+
+create policy clients_select_auth on public.clients
+  for select to authenticated using (true);
+
+create policy clients_update_auth on public.clients
+  for update to authenticated using (true) with check (true);
+
+-- ─── client_stats: клиенты + производные показатели для «Клиенты» ─
+--  security_invoker (по умолчанию) — вьюха выполняется от лица
+--  вызывающего и потому наследует RLS clients/bookings как есть:
+--  authenticated видит всё, anon (без прямого grant) не видит ничего.
+--  visit_count::int — та же причина, что у services.price integer, а
+--  не numeric: PostgREST отдаёт numeric строкой JSON.
+create or replace view public.client_stats as
+  select
+    c.id,
+    c.name,
+    c.telegram_username,
+    c.phone,
+    c.note,
+    count(b.id)::int as visit_count,
+    max(b.day) as last_visit_at,
+    (
+      select b2.service_name
+      from public.bookings b2
+      where b2.client_id = c.id
+      group by b2.service_id, b2.service_name
+      order by count(*) desc, max(b2.day) desc
+      limit 1
+    ) as favorite_service_name
+  from public.clients c
+  left join public.bookings b on b.client_id = c.id
+  group by c.id;
+
+grant select on public.client_stats to authenticated;
 
 -- ─── blocked_slots: читают все (это часть доступности), пишет мастер ──
 

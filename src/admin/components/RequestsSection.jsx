@@ -23,7 +23,9 @@ export default function RequestsSection({ bookings, busy, busyThen, onToast, onE
     [bookings]
   );
 
-  if (pending.length === 0) return null;
+  if (pending.length === 0) {
+    return <div className="blank tall">Новых заявок нет</div>;
+  }
 
   const pages = Math.max(1, Math.ceil(pending.length / PER_PAGE));
   const cur = Math.min(page, pages - 1);

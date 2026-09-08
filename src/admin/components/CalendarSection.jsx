@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { dateKey } from "../../schedule.js";
 import { parseKey } from "../calendar.js";
 import DayPanel from "./DayPanel.jsx";
@@ -16,20 +15,25 @@ const VIEWS = [
  * лишь добавляют сверху обзор, из которого выбирают дату (как в
  * макете: единственная вещь, что скрывает переключатель «День», —
  * сами обзорные сетки).
+ *
+ * view/selectedKey приходят от AdminApp, а не живут здесь локально:
+ * вкладка «Клиенты» читает тот же selectedKey для режима «За день»,
+ * и оба должны пережить переключение вкладок кабинета.
  */
 export default function CalendarSection({
   settings,
   daysOff,
   bookings,
   blockedSlots,
+  view,
+  setView,
+  selectedKey,
+  setSelectedKey,
   busy,
   busyThen,
   onToast,
   onError,
 }) {
-  const [view, setView] = useState("month");
-  const [selectedKey, setSelectedKey] = useState(() => dateKey(new Date()));
-
   const shiftDay = (delta) => {
     const d = parseKey(selectedKey);
     d.setDate(d.getDate() + delta);

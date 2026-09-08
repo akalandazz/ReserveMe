@@ -227,6 +227,75 @@ input:focus {
   padding: var(--pad) var(--pad) 40px;
 }
 
+/* ─── Нижняя навигация ────────────────────────────────────────── */
+
+/* Обычный флекс-элемент под .page-body (flex: 1 забирает остаток
+   высоты), а не position: fixed — так же, как sticky .topbar сверху,
+   без хака с паддингом под контентом. */
+.bottom-nav {
+  position: sticky;
+  bottom: 0;
+  z-index: 9;
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--line);
+  background: var(--card);
+  padding-bottom: var(--safe-bottom);
+}
+
+.bottom-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 8px 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.bottom-nav-item[aria-current="true"] {
+  color: var(--accent);
+}
+
+.bottom-nav-icon-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 26px;
+  border-radius: 12px;
+}
+
+.bottom-nav-item[aria-current="true"] .bottom-nav-icon-wrap {
+  background: var(--accent-soft);
+}
+
+.bottom-nav-label {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.bottom-nav-badge {
+  position: absolute;
+  top: -4px;
+  right: -8px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  line-height: 1;
+}
+
 /* ─── Типографика и мелочи ────────────────────────────────────── */
 
 .header-row {
@@ -338,6 +407,7 @@ input:focus {
 /* ─── Кнопки общего назначения ────────────────────────────────── */
 
 .btn-primary {
+  display: block;
   width: 100%;
   padding: 17px;
   border: 0;
@@ -347,6 +417,8 @@ input:focus {
   font-size: 16px;
   font-weight: 500;
   letter-spacing: 0.01em;
+  text-align: center;
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -1409,6 +1481,131 @@ input:focus {
   font-size: 12px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* ─── Клиенты ─────────────────────────────────────────────────── */
+
+.clients-controls {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.clients-panel {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.client-row {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.clients-panel .client-row:last-child {
+  border-bottom: 0;
+}
+
+.client-row[data-expanded="true"] {
+  background: var(--accent-soft);
+}
+
+.client-row-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.client-row-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.client-monogram {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--serif);
+  font-size: 16px;
+}
+
+.client-row[data-expanded="true"] .client-monogram {
+  background: var(--card);
+}
+
+.client-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.client-name {
+  font-size: 15px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-sub {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-detail {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.client-detail-row {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.client-note-box {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.client-detail .link-btn {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.client-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
 }
 
 /* ─── Отклик и фокус ──────────────────────────────────────────── */

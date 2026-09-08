@@ -7,7 +7,7 @@
 // специфично для страницы мастера: разбор произвольного ключа обратно
 // в Date, сетка недели и сплошная (не завязанная на услугу) сетка дня.
 
-import { toHHMM, toMinutes } from "../schedule.js";
+import { dateKey, toHHMM, toMinutes } from "../schedule.js";
 
 /** "ГГГГ-ММ-ДД" -> Date в локальном времени. Обратное к dateKey(). */
 export function parseKey(key) {
@@ -46,6 +46,37 @@ export function bookingCountsByDay(bookings) {
   const map = new Map();
   for (const b of bookings) map.set(b.day, (map.get(b.day) || 0) + 1);
   return map;
+}
+
+/* ─── Русские склонения (вкладка «Клиенты») ────────────────────── */
+
+/** Число + [форма "1", форма "2-4", форма "5-20/0"] по русским правилам. */
+function pluralRu(n, forms) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return forms[0];
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
+  return forms[2];
+}
+
+export function pluralVisits(n) {
+  return pluralRu(n, ["визит", "визита", "визитов"]);
+}
+
+/** "сегодня" / "вчера" / "N дней/недель/месяцев назад" по дате day (ГГГГ-ММ-ДД). */
+export function relativeVisit(day) {
+  const days = Math.round(
+    (parseKey(dateKey(new Date())).getTime() - parseKey(day).getTime()) / 86400000
+  );
+  if (days <= 0) return "сегодня";
+  if (days === 1) return "вчера";
+  if (days < 7) return `${days} ${pluralRu(days, ["день", "дня", "дней"])} назад`;
+  if (days < 30) {
+    const weeks = Math.max(1, Math.round(days / 7));
+    return `${weeks} ${pluralRu(weeks, ["неделю", "недели", "недель"])} назад`;
+  }
+  const months = Math.max(1, Math.round(days / 30));
+  return `${months} ${pluralRu(months, ["месяц", "месяца", "месяцев"])} назад`;
 }
 
 /* ─── Неделя ────────────────────────────────────────────────────── */

@@ -5,13 +5,22 @@ import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.j
 import { initAuth, signOut, useSession } from "../supabase.js";
 import { isBookingPast, weekStart } from "./calendar.js";
 import { loadAdminData, resetAdminData, useAdminData } from "./store.js";
+import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
+import ClientsSection from "./components/ClientsSection.jsx";
 import { Icon } from "./components/Icons.jsx";
 import RequestsSection from "./components/RequestsSection.jsx";
 import ScheduleSection from "./components/ScheduleSection.jsx";
 import ServicesSection from "./components/ServicesSection.jsx";
 import SignIn from "./components/SignIn.jsx";
 import StatsRow from "./components/StatsRow.jsx";
+
+const TAB_TITLES = {
+  schedule: "Расписание",
+  requests: "Заявки",
+  clients: "Клиенты",
+  settings: "Настройки",
+};
 
 function ThemeToggle() {
   const theme = useSyncTheme();
@@ -38,6 +47,12 @@ function useSyncTheme() {
 export default function AdminApp() {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(null);
+  const [tab, setTab] = useState("schedule");
+  // Живут здесь, а не в CalendarSection: вкладка «Клиенты» читает тот же
+  // selectedKey для режима «За день», и оба должны пережить переключение
+  // вкладок кабинета.
+  const [calView, setCalView] = useState("month");
+  const [selectedKey, setSelectedKey] = useState(() => dateKey(new Date()));
   const toastTimer = useRef(null);
   const busyTimer = useRef(null);
   const session = useSession();
@@ -142,12 +157,14 @@ export default function AdminApp() {
       {toast && <div className="toast">{toast}</div>}
 
       <div className="page-body">
-        <div className="header-row">
-          <h1 className="title">Расписание</h1>
-          {data.settings?.masterName && (
-            <span className="header-name">{data.settings.masterName}</span>
-          )}
-        </div>
+        {tab !== "clients" && (
+          <div className="header-row">
+            <h1 className="title">{TAB_TITLES[tab]}</h1>
+            {tab === "schedule" && data.settings?.masterName && (
+              <span className="header-name">{data.settings.masterName}</span>
+            )}
+          </div>
+        )}
 
         {data.status === "error" && (
           <p className="form-error">{data.error}</p>
@@ -157,49 +174,76 @@ export default function AdminApp() {
           <div className="blank tall">Загрузка…</div>
         ) : (
           <>
-            <StatsRow {...stats} />
+            {tab === "schedule" && (
+              <>
+                <StatsRow {...stats} />
+                <CalendarSection
+                  settings={data.settings}
+                  daysOff={data.daysOff}
+                  bookings={data.bookings}
+                  blockedSlots={data.blockedSlots}
+                  view={calView}
+                  setView={setCalView}
+                  selectedKey={selectedKey}
+                  setSelectedKey={setSelectedKey}
+                  busy={busy}
+                  busyThen={busyThen}
+                  onToast={flash}
+                  onError={showError}
+                />
+              </>
+            )}
 
-            <RequestsSection
-              bookings={data.bookings}
-              busy={busy}
-              busyThen={busyThen}
-              onToast={flash}
-              onError={showError}
-            />
+            {tab === "requests" && (
+              <RequestsSection
+                bookings={data.bookings}
+                busy={busy}
+                busyThen={busyThen}
+                onToast={flash}
+                onError={showError}
+              />
+            )}
 
-            <CalendarSection
-              settings={data.settings}
-              daysOff={data.daysOff}
-              bookings={data.bookings}
-              blockedSlots={data.blockedSlots}
-              busy={busy}
-              busyThen={busyThen}
-              onToast={flash}
-              onError={showError}
-            />
+            {tab === "clients" && (
+              <ClientsSection
+                clients={data.clients}
+                bookings={data.bookings}
+                selectedKey={selectedKey}
+                busy={busy}
+                busyThen={busyThen}
+                onToast={flash}
+                onError={showError}
+              />
+            )}
 
-            <ServicesSection
-              services={data.services}
-              busy={busy}
-              busyThen={busyThen}
-              onToast={flash}
-              onError={showError}
-            />
+            {tab === "settings" && (
+              <>
+                <ServicesSection
+                  services={data.services}
+                  busy={busy}
+                  busyThen={busyThen}
+                  onToast={flash}
+                  onError={showError}
+                />
 
-            <ScheduleSection settings={data.settings} onError={showError} />
+                <ScheduleSection settings={data.settings} onError={showError} />
 
-            <button
-              className="btn-text danger signout"
-              type="button"
-              onClick={async () => {
-                await signOut();
-              }}
-            >
-              Выйти
-            </button>
+                <button
+                  className="btn-text danger signout"
+                  type="button"
+                  onClick={async () => {
+                    await signOut();
+                  }}
+                >
+                  Выйти
+                </button>
+              </>
+            )}
           </>
         )}
       </div>
+
+      <BottomNav active={tab} onChange={setTab} pendingCount={stats.pendingCount} />
     </div>
   );
 }
