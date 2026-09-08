@@ -22,6 +22,7 @@ const EMPTY = {
   daysOff: [],
   blockedSlots: [],
   bookings: [],
+  clients: [],
 };
 
 let snapshot = EMPTY;
@@ -88,6 +89,10 @@ export async function loadAdminData() {
         .select("*")
         .order("day", { ascending: true })
         .order("start_min", { ascending: true }),
+      supabase
+        .from("client_stats")
+        .select("*")
+        .order("last_visit_at", { ascending: false, nullsFirst: false }),
     ]);
   } catch {
     if (mine !== seq) return;
@@ -107,7 +112,7 @@ export async function loadAdminData() {
     return;
   }
 
-  const [settingsRes, servicesRes, daysRes, blockedRes, bookingsRes] = result;
+  const [settingsRes, servicesRes, daysRes, blockedRes, bookingsRes, clientsRes] = result;
   publish({
     status: "ready",
     error: null,
@@ -116,6 +121,7 @@ export async function loadAdminData() {
     daysOff: (daysRes.data ?? []).map((r) => r.day),
     blockedSlots: blockedRes.data ?? [],
     bookings: bookingsRes.data ?? [],
+    clients: clientsRes.data ?? [],
   });
 }
 

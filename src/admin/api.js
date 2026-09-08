@@ -102,3 +102,9 @@ export function moveBooking(id, day, startMin) {
     supabase.from("bookings").update({ day, start_min: startMin }).eq("id", id)
   );
 }
+
+/* ─── Клиенты ───────────────────────────────────────────────────── */
+
+export function updateClient(id, { phone, note }) {
+  return run(() => supabase.from("clients").update({ phone, note }).eq("id", id));
+}

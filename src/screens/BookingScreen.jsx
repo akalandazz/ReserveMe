@@ -9,7 +9,7 @@ import {
   serverBusyFor,
   toMinutes,
 } from "../schedule.js";
-import { addBooking, loadBookings } from "../storage.js";
+import { addBooking, loadBookings, newClientToken } from "../storage.js";
 import { submitBooking } from "../supabase.js";
 import { bookingMessage, copyText, haptic, sendToMaster, tgUser } from "../telegram.js";
 import {
@@ -133,6 +133,12 @@ export default function BookingScreen({
     setSending(true);
     haptic("success");
 
+    // Секрет, по которому «Мои записи» потом спросят у сервера, не
+    // подтвердила ли мастер эту заявку. Кладём его и в локальную запись,
+    // и в серверную строку — связать их иначе нечем: id серверной строки
+    // клиенту не возвращается (select по bookings анониму закрыт).
+    const token = newClientToken();
+
     const record = {
       id: String(Date.now()),
       s: service.id,
@@ -141,6 +147,8 @@ export default function BookingScreen({
       m: service.duration,
       p: service.price,
       c: draft.comment.trim(),
+      k: token,
+      st: "new",
     };
 
     // Сохраняем ДО отправки: openTelegramLink закрывает мини-апп
@@ -160,6 +168,7 @@ export default function BookingScreen({
       client_name: u ? [u.first_name, u.last_name].filter(Boolean).join(" ") : "",
       client_username: u?.username ?? "",
       comment: record.c,
+      client_token: token,
     });
 
     const text = message;
@@ -368,6 +377,14 @@ export default function BookingScreen({
       <p className="notice">
         Запись подтверждается только после ответа {settings.masterName} в
         Telegram.
+      </p>
+
+      <p className="eyebrow">Какие данные мы передаём</p>
+      <p className="note">
+        Ваши имя и логин из Telegram, выбранные услугу, дату и время,
+        стоимость и комментарий (если вы его укажете) — мы отправим{" "}
+        {settings.masterName} в Telegram и сохраним в базе заявок, чтобы она
+        могла увидеть и подтвердить запись в своём кабинете.
       </p>
 
       <p className="eyebrow">Текст сообщения</p>

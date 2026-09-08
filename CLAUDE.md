@@ -51,6 +51,17 @@ Consequences that constrain every change here:
 - **`?text=` prefill is deep-link behavior, not a documented Mini App API**, and can
   silently fail. Every send screen therefore also renders the exact message in a
   `.msg-preview` block with a «Скопировать текст» fallback. Don't remove that.
+- **A confirmation travels back, but only as a status.** The master approves a request
+  in the cabinet (`status` → `'ok'`), and the client's copy lives in CloudStorage where
+  the cabinet cannot reach it. The bridge is `client_token`: an unguessable uuid the
+  client mints in `newClientToken()` ([src/storage.js](src/storage.js)), stores on its
+  own record as `k`, and writes onto the server row. «Мои записи» then calls the
+  `booking_status(uuid[])` RPC (via
+  [`fetchBookingStatuses`](src/supabase.js)) and caches the answer as `st`. A missing
+  row is **never** read as a rejection — a declined booking and a booking whose
+  best-effort insert never landed look identical from here, so the card stays
+  «Ожидает подтверждения». Statuses sync when the screen mounts, so a confirmation
+  that lands while the client is staring at the list appears when they revisit it.
 - The client's slot list hides two things: *that client's own* stored bookings, from
   `src/storage.js`, **and** server-side busyness read from the `busy_slots` view —
   other clients' requests, bookings the master entered herself, and slots she closed
@@ -121,9 +132,14 @@ seed, kept in the repo because the content is no longer in git otherwise.
   a row for itself (`status = 'new'`, `source = 'client'`, `day >= current_date` —
   enforced by the insert policy's `with check`), never `select`. Only `authenticated`
   (the signed-in master) can read or change bookings. The client reads availability
-  from the `busy_slots` view instead (day/start/duration only, no names) — if you ever
-  need more booking data on the client, widen that view; **never** grant `anon` a
-  `select` policy on `bookings` itself.
+  from the `busy_slots` view instead (day/start/duration only, no names), and its own
+  request's status from the `booking_status(uuid[])` function — a `security definer`
+  function that returns `status` and nothing else, and only for rows whose secret
+  `client_token` the caller already knows. Both are the same trick: RLS is bypassed in
+  one small place with a fixed column list. If you ever need more booking data on the
+  client, widen that view or that function; **never** grant `anon` a `select` policy on
+  `bookings` itself — it would hand every client's name, username and comment to
+  anyone holding the (public) anon key.
 - [src/content.js](src/content.js) is the client's read-only store — fetch,
   `localStorage` cache, `useContent()`. It has **no mutation functions anymore**; all
   writes to salon content happen through [src/admin/api.js](src/admin/api.js) instead.
@@ -163,7 +179,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | File | Role |
 |---|---|
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
-| [src/supabase.js](src/supabase.js) | Shared by both apps. Client + the master's session store (`useSession`, `signIn`, `signOut` — used only by the cabinet) + `submitBooking` (used only by the client, best-effort insert into `bookings`). Every export must survive `supabase === null` (env vars unset). |
+| [src/supabase.js](src/supabase.js) | Shared by both apps. Client + the master's session store (`useSession`, `signIn`, `signOut` — used only by the cabinet) + `submitBooking` and `fetchBookingStatuses` (used only by the client: a best-effort insert into `bookings`, and the status read-back through the `booking_status` RPC). Every export must survive `supabase === null` (env vars unset). |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `busyFor(bookings, key, settings)`, `serverBusyFor(busy, key, settings)`) and every function must survive `settings == null`. `busyFor` reads the client's own CloudStorage records, `serverBusyFor` the `busy_slots` rows; `BookingScreen` concatenates both before calling `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/storage.js](src/storage.js) | `CloudStorage` (gated on `isVersionAtLeast("6.9")`) mirrored onto `localStorage`. Every callback is promisified **with a 3s timeout** — some clients never fire it, which would hang «Мои записи» forever. Writes go to `localStorage` unconditionally. Client-only; the cabinet has no CloudStorage access to a client's device, which is why bookings also live in Supabase now. |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
@@ -174,8 +190,10 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
 | [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. |
 
-Stored bookings use short keys (`{id, s, d, t, m, p, c}`) because CloudStorage caps a
-value at 4096 characters. `m` (duration) and `p` (price) are denormalized on purpose:
+Stored bookings use short keys (`{id, s, d, t, m, p, c, k, st}`) because CloudStorage
+caps a value at 4096 characters — `k` is the `client_token` tying the record to its
+server row, `st` the last known status (`"new"` / `"ok"`). Both are absent on records
+written before that channel existed, and every reader must tolerate that. `m` (duration) and `p` (price) are denormalized on purpose:
 the master edits prices in the cabinet, and an old booking must keep showing what was
 agreed. The `bookings` table denormalizes the same way (`duration`, `price`,
 `service_name` columns) for the same reason, plus `service_id` can go `null` (`on
