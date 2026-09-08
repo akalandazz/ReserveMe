@@ -561,21 +561,31 @@ button {
   width: 100%;
 }
 
+/* Заголовок месяца от библиотеки не нужен — своё название и стрелки
+   рисует .month-head; у самой таблицы есть отдельный aria-label, так
+   что доступное имя сетки от этого не теряется. */
+.rdp-caption {
+  display: none;
+}
+
+/* table-layout: fixed обязателен: при auto-раскладке кнопка дня
+   (width: 100% + aspect-ratio) отдаёт браузеру бессмысленную
+   внутреннюю ширину, и первая колонка съедает всю строку. */
 .rdp-grid {
   width: 100%;
-  border-collapse: collapse;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 3px;
 }
 
+/* .rdp-weekdays висит на <tr> внутри <thead>, а не на самом <thead>. */
 .rdp-weekdays {
-  display: table-header-group;
-}
-
-.rdp-weekdays tr {
   display: table-row;
 }
 
 .rdp-weekday {
   display: table-cell;
+  width: 14.285%;
   padding-bottom: 6px;
   text-align: center;
   font-size: 10px;
@@ -595,8 +605,10 @@ button {
 
 .rdp-day {
   display: table-cell;
-  padding: 1px;
+  width: 14.285%;
+  padding: 0;
   text-align: center;
+  vertical-align: middle;
 }
 
 .rdp-day-btn {
@@ -614,6 +626,7 @@ button {
   color: var(--ink);
   font: inherit;
   font-size: 14px;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -623,6 +636,10 @@ button {
 
 .rdp-day-btn.is-closed {
   background: var(--bg);
+}
+
+.rdp-day-btn.is-today {
+  border-color: var(--accent);
 }
 
 .rdp-day-btn.is-selected {

@@ -23,17 +23,23 @@ const classNames = {
   day_button: "rdp-day-btn",
 };
 
-/** Число + полоска-индикатор количества записей, как в макете. */
-function DayButton({ day, modifiers, ...rest }) {
-  const cls = ["rdp-day-btn"];
+/**
+ * Число + полоска-индикатор количества записей, как в макете.
+ * `className` вынут из `rest` намеренно: DayPicker передаёт сюда своё
+ * `rdp-day-btn`, и если оставить его в спреде, оно затрёт все классы
+ * состояния (is-selected и прочие) — их бы просто не было видно.
+ */
+function DayButton({ day, modifiers, className, ...rest }) {
+  const cls = [className || "rdp-day-btn"];
   if (modifiers.selected) cls.push("is-selected");
+  if (modifiers.today) cls.push("is-today");
   if (modifiers.closed) cls.push("is-closed");
   if (modifiers.outside) cls.push("is-outside");
   const count = modifiers.count3 ? 3 : modifiers.count2 ? 2 : modifiers.count1 ? 1 : 0;
   const dotW = count ? Math.min(count, 3) * 6 : 6;
   return (
     <button type="button" className={cls.join(" ")} {...rest}>
-      <span>{day.date.getDate()}</span>
+      <span className="rdp-day-num">{day.date.getDate()}</span>
       <span
         className="rdp-day-dot"
         style={{ width: dotW, background: count ? undefined : "transparent" }}
@@ -86,7 +92,13 @@ export default function MonthGrid({ settings, daysOff, bookings, selectedKey, on
         hideNavigation
         showOutsideDays
         selected={parseKey(selectedKey)}
-        onSelect={(d) => d && onSelect(dateKey(d))}
+        onSelect={(d) => {
+          if (!d) return;
+          onSelect(dateKey(d));
+          // клик по дню-«хвосту» соседнего месяца перелистывает сетку —
+          // иначе выбранное число осталось бы за пределами показанного месяца.
+          setMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+        }}
         classNames={classNames}
         components={{ DayButton }}
         modifiers={{ closed, count1, count2, count3 }}
