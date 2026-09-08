@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MASTER_NAME, findService } from "../data.js";
+import { useContent } from "../content.js";
 import { isPast, labelForKey } from "../schedule.js";
 import { loadBookings, removeBooking } from "../storage.js";
 import { cancelMessage, haptic, sendToMaster, showConfirm } from "../telegram.js";
@@ -12,21 +12,24 @@ import {
 
 const CRUMB = "Мои записи";
 
-function serviceName(b) {
-  return findService(b.s)?.name ?? "Услуга";
+// Ищем по всем услугам, включая скрытые: у прошлой записи должно
+// остаться название. Цену и длительность берём из самой записи —
+// они денормализованы, чтобы правка прайса не переписывала историю.
+function serviceName(services, b) {
+  return services.find((s) => s.id === b.s)?.name ?? "Услуга";
 }
 
-/** Эмодзи из data.js живут только в сообщениях мастеру, не в интерфейсе. */
-function serviceLabelForMessage(b) {
-  const s = findService(b.s);
+/** Эмодзи живут только в сообщениях мастеру, не в интерфейсе. */
+function serviceLabelForMessage(services, b) {
+  const s = services.find((x) => x.id === b.s);
   return s ? `${s.emoji} ${s.name}` : "💅 Услуга";
 }
 
-function UpcomingCard({ booking, onCancel }) {
+function UpcomingCard({ booking, title, onCancel }) {
   return (
     <div className="book-card">
       <div className="book-head">
-        <p>{serviceName(booking)}</p>
+        <p>{title}</p>
         <span className="price sm">{booking.p} ₾</span>
       </div>
       <p className="book-meta">
@@ -54,6 +57,8 @@ export default function MyBookingsScreen({ onBack, onBook }) {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
+  const { settings, services } = useContent();
+  const masterName = settings.masterName;
 
   useEffect(() => {
     let cancelled = false;
@@ -74,14 +79,14 @@ export default function MyBookingsScreen({ onBack, onBook }) {
       const next = await removeBooking(booking.id);
       setBookings(next);
       setToast(
-        `Запись удалена у вас. Сообщите об отмене ${MASTER_NAME} в чате.`
+        `Запись удалена у вас. Сообщите об отмене ${masterName} в чате.`
       );
       // Мастер знает о записи только из чата — предлагаем написать сразу
-      showConfirm(`Сообщить об отмене ${MASTER_NAME}?`, (send) => {
+      showConfirm(`Сообщить об отмене ${masterName}?`, (send) => {
         if (!send) return;
         sendToMaster(
           cancelMessage({
-            serviceName: serviceLabelForMessage(booking),
+            serviceName: serviceLabelForMessage(services, booking),
             dateLabel: labelForKey(booking.d),
             time: booking.t,
           })
@@ -120,7 +125,12 @@ export default function MyBookingsScreen({ onBack, onBook }) {
           <p className="eyebrow">Предстоящие</p>
           <div className="stack">
             {upcoming.map((b) => (
-              <UpcomingCard key={b.id} booking={b} onCancel={cancel} />
+              <UpcomingCard
+                key={b.id}
+                booking={b}
+                title={serviceName(services, b)}
+                onCancel={cancel}
+              />
             ))}
           </div>
         </>
@@ -133,7 +143,7 @@ export default function MyBookingsScreen({ onBack, onBook }) {
             {past.map((b) => (
               <div key={b.id} className="past-row">
                 <span className="list-main">
-                  <span className="day-label">{serviceName(b)}</span>
+                  <span className="day-label">{serviceName(services, b)}</span>
                   <span className="day-meta">
                     {labelForKey(b.d)} · {b.t}
                   </span>
@@ -150,7 +160,7 @@ export default function MyBookingsScreen({ onBack, onBook }) {
       )}
 
       <p className="note">
-        Записи видны только вам. {MASTER_NAME} узнаёт о них из сообщения в чате
+        Записи видны только вам. {masterName} узнаёт о них из сообщения в чате
         — дождитесь её подтверждения.
       </p>
     </Screen>

@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
-import { MASTER_NAME, SERVICES } from "../data.js";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { refreshBusy, useContent } from "../content.js";
 import {
   buildDays,
   buildSlots,
   busyFor,
   dayLabel,
   findDay,
+  serverBusyFor,
+  toMinutes,
 } from "../schedule.js";
 import { addBooking, loadBookings } from "../storage.js";
-import { bookingMessage, copyText, haptic, sendToMaster } from "../telegram.js";
+import { submitBooking } from "../supabase.js";
+import { bookingMessage, copyText, haptic, sendToMaster, tgUser } from "../telegram.js";
 import {
   Icon,
   OptionRow,
@@ -35,6 +38,7 @@ export default function BookingScreen({
   const [bookings, setBookings] = useState([]);
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
+  const { settings, services, activeServices, daysOff, busy } = useContent();
 
   // Все хуки вызываются безусловно — ветвление только в return,
   // иначе сработает react/rules-of-hooks.
@@ -48,33 +52,59 @@ export default function BookingScreen({
     };
   }, []);
 
-  const days = useMemo(() => buildDays(), []);
+  // Занятость перечитываем на входе в каждый шаг, где она видна: пока
+  // клиент шёл по флоу, мастер могла закрыть окошко в кабинете или
+  // принять чужую заявку на то же время.
+  useEffect(() => {
+    if (step !== "book:service") refreshBusy();
+  }, [step]);
+
+  // Живая версия услуги: мастер мог поменять цену, пока клиент шёл по шагам.
+  // Фолбэк на draft.service — если услугу удалили, флоу всё равно завершается.
+  const service = useMemo(
+    () => services.find((s) => s.id === draft.service?.id) ?? draft.service,
+    [services, draft.service]
+  );
+
+  const days = useMemo(
+    () => buildDays(settings, daysOff),
+    [settings, daysOff]
+  );
   const day = findDay(days, draft.dateKey);
 
+  // Занято = свои записи (CloudStorage, живут только на этом устройстве)
+  // ПЛЮС занятость с сервера: чужие заявки и окошки, закрытые мастером
+  // в кабинете. Пересечение своей же записи с её серверной копией
+  // безвредно — перекрытие ищется через some().
+  const busyOn = useCallback(
+    (key) => [
+      ...busyFor(bookings, key, settings),
+      ...serverBusyFor(busy, key, settings),
+    ],
+    [bookings, busy, settings]
+  );
+
   const slots = useMemo(
-    () =>
-      day && draft.service
-        ? buildSlots(day, draft.service, busyFor(bookings, day.key))
-        : [],
-    [day, draft.service, bookings]
+    () => (day && service ? buildSlots(day, service, busyOn(day.key), settings) : []),
+    [day, service, busyOn, settings]
   );
 
   const message = useMemo(() => {
-    if (!draft.service || !day || !draft.time) return "";
+    if (!service || !day || !draft.time) return "";
     return bookingMessage({
-      serviceName: draft.service.name,
+      serviceName: service.name,
       dateLabel: dayLabel(day),
       time: draft.time,
-      duration: draft.service.duration,
-      price: draft.service.price,
+      duration: service.duration,
+      price: service.price,
       comment: draft.comment.trim(),
     });
-  }, [draft, day]);
+  }, [service, day, draft.time, draft.comment]);
 
-  const pickService = (service) => {
+  const pickService = (s) => {
     haptic("select");
     // время обнуляем: слот, валидный для 90 мин, может не существовать для 120
-    setDraft((d) => ({ ...d, service, time: null }));
+    setDraft((d) => ({ ...d, service: s, time: null }));
     push("book:date");
   };
 
@@ -97,22 +127,41 @@ export default function BookingScreen({
   };
 
   const submit = async () => {
-    if (sending) return;
+    // day может исчезнуть, если клиент завис на подтверждении до полуночи
+    // и выбранная дата вышла из окна записи.
+    if (sending || !service || !day || !draft.time) return;
     setSending(true);
     haptic("success");
 
     const record = {
       id: String(Date.now()),
-      s: draft.service.id,
+      s: service.id,
       d: day.key,
       t: draft.time,
-      m: draft.service.duration,
-      p: draft.service.price,
+      m: service.duration,
+      p: service.price,
       c: draft.comment.trim(),
     };
 
     // Сохраняем ДО отправки: openTelegramLink закрывает мини-апп
     await addBooking(record);
+
+    // Серверная копия для кабинета мастера (admin.html) — у него нет
+    // доступа к CloudStorage клиента. Best-effort: провал не отменяет
+    // запись и не должен задержать отправку сообщения мастеру.
+    const u = tgUser();
+    await submitBooking({
+      day: day.key,
+      start_min: toMinutes(draft.time),
+      duration: service.duration,
+      price: service.price,
+      service_id: service.id,
+      service_name: service.name,
+      client_name: u ? [u.first_name, u.last_name].filter(Boolean).join(" ") : "",
+      client_username: u?.username ?? "",
+      comment: record.c,
+    });
+
     const text = message;
     home(SAVED_TOAST);
     sendToMaster(text);
@@ -125,7 +174,7 @@ export default function BookingScreen({
         <p className="eyebrow step">Шаг 1 из 3</p>
         <Title>Выберите услугу</Title>
         <div className="stack spaced">
-          {SERVICES.map((s) => (
+          {activeServices.map((s) => (
             <OptionRow
               key={s.id}
               title={s.name}
@@ -136,6 +185,9 @@ export default function BookingScreen({
             />
           ))}
         </div>
+        {activeServices.length === 0 && (
+          <div className="blank tall">Услуги пока не добавлены</div>
+        )}
       </Screen>
     );
   }
@@ -146,11 +198,11 @@ export default function BookingScreen({
         <Steps total={3} current={2} />
         <p className="eyebrow step">Шаг 2 из 3</p>
         <Title>Выберите день</Title>
-        <p className="sub">{draft.service?.name ?? ""}</p>
+        <p className="sub">{service?.name ?? ""}</p>
         <div className="divided">
           {days.map((d) => {
             const free = d.isOpen
-              ? buildSlots(d, draft.service, busyFor(bookings, d.key)).length
+              ? buildSlots(d, service, busyOn(d.key), settings).length
               : 0;
             const disabled = !d.isOpen || free === 0;
             return (
@@ -191,7 +243,7 @@ export default function BookingScreen({
         <p className="eyebrow step">Шаг 3 из 3</p>
         <Title>Выберите время</Title>
         <p className="sub">
-          {dayLabel(day)} · {draft.service?.name ?? ""}
+          {dayLabel(day)} · {service?.name ?? ""}
         </p>
 
         {slots.length === 0 ? (
@@ -226,13 +278,21 @@ export default function BookingScreen({
   }
 
   // book:confirm
+  const gone = draft.service && !services.some((s) => s.id === draft.service.id);
+  // Дата вышла из окна записи, пока клиент был на этом экране (полночь).
+  const expired = Boolean(draft.dateKey) && !day;
+  // Время разобрали, пока клиент дописывал комментарий. Не блокируем
+  // отправку — мастер всё равно подтверждает заявку вручную, — но
+  // предупреждаем и предлагаем вернуться к сетке.
+  const taken = !expired && Boolean(draft.time) && !slots.includes(draft.time);
+
   return (
     <Screen
       crumb={CRUMB}
       onBack={back}
       footer={
         <>
-          <PrimaryButton onClick={submit} disabled={sending}>
+          <PrimaryButton onClick={submit} disabled={sending || expired}>
             {sending ? "Отправляем…" : "Отправить заявку"}
           </PrimaryButton>
           <TextButton onClick={copy}>
@@ -243,10 +303,37 @@ export default function BookingScreen({
     >
       <Title>Подтвердите заявку</Title>
 
+      {gone && (
+        <p className="notice">
+          Эта услуга больше не в прайсе. Заявку отправить можно, но цену лучше
+          уточнить в чате.
+        </p>
+      )}
+
+      {expired && (
+        <>
+          <p className="notice">
+            Эта дата больше не доступна для записи. Выберите, пожалуйста, другой
+            день.
+          </p>
+          <TextButton onClick={() => home()}>Начать заново</TextButton>
+        </>
+      )}
+
+      {taken && (
+        <>
+          <p className="notice">
+            Это время только что стало занято. Заявку отправить можно, но лучше
+            выбрать другое окошко.
+          </p>
+          <TextButton onClick={back}>Выбрать другое время</TextButton>
+        </>
+      )}
+
       <dl className="summary">
         <div className="summary-row">
           <dt>Услуга</dt>
-          <dd>{draft.service?.name}</dd>
+          <dd>{service?.name}</dd>
         </div>
         <div className="summary-row">
           <dt>Дата</dt>
@@ -258,11 +345,11 @@ export default function BookingScreen({
         </div>
         <div className="summary-row">
           <dt>Длительность</dt>
-          <dd>{draft.service?.duration} мин</dd>
+          <dd>{service?.duration} мин</dd>
         </div>
         <div className="summary-row">
           <dt>Стоимость</dt>
-          <dd>{draft.service?.price} ₾</dd>
+          <dd>{service?.price} ₾</dd>
         </div>
       </dl>
 
@@ -279,7 +366,8 @@ export default function BookingScreen({
       />
 
       <p className="notice">
-        Запись подтверждается только после ответа {MASTER_NAME} в Telegram.
+        Запись подтверждается только после ответа {settings.masterName} в
+        Telegram.
       </p>
 
       <p className="eyebrow">Текст сообщения</p>

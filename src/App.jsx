@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import "./index.css";
+import {
+  initContent,
+  refreshBusy,
+  refreshContent,
+  useContent,
+} from "./content.js";
 import { init } from "./telegram.js";
 import { initTheme } from "./theme.js";
+import { BootError, BootLoading } from "./ui.jsx";
 import BookingScreen from "./screens/BookingScreen.jsx";
 import ContactScreen from "./screens/ContactScreen.jsx";
 import InfoScreen from "./screens/InfoScreen.jsx";
@@ -25,10 +32,26 @@ function App() {
   // Короткое сообщение на главной после отправки заявки.
   const [toast, setToast] = useState("");
   const screen = stack[stack.length - 1];
+  const content = useContent();
 
   useEffect(() => {
     init();
     initTheme();
+    initContent();
+  }, []);
+
+  // Мини-апп живёт долго и не перезагружается: клиент свернул Telegram,
+  // вернулся через час — а мастер за это время подняла цену или закрыла
+  // окошко. Перечитываем на возврате во вкладку. Внутри флоу записи
+  // занятость обновляется ещё и на каждом шаге (BookingScreen).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshContent();
+      refreshBusy();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   const push = useCallback((next) => {
@@ -80,6 +103,14 @@ function App() {
     },
     [push]
   );
+
+  // Без контента рисовать нечего — даже имя мастера в крошке приходит из базы.
+  if (!content.settings) {
+    if (content.status === "error") {
+      return <BootError message={content.error} onRetry={refreshContent} />;
+    }
+    return <BootLoading />;
+  }
 
   if (BOOKING_STEPS.includes(screen)) {
     return (
