@@ -379,6 +379,14 @@ export default function BookingScreen({
         Telegram.
       </p>
 
+      <p className="eyebrow">Какие данные мы передаём</p>
+      <p className="note">
+        Ваши имя и логин из Telegram, выбранные услугу, дату и время,
+        стоимость и комментарий (если вы его укажете) — мы отправим{" "}
+        {settings.masterName} в Telegram и сохраним в базе заявок, чтобы она
+        могла увидеть и подтвердить запись в своём кабинете.
+      </p>
+
       <p className="eyebrow">Текст сообщения</p>
       <pre className="msg-preview">{message}</pre>
       <p className="note">
