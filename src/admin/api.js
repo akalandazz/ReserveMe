@@ -13,10 +13,10 @@ function fail(error) {
 async function run(query) {
   if (!supabase) return { ok: false, error: NOT_CONFIGURED };
   try {
-    const { error } = await query();
+    const { data, error } = await query();
     if (error) return fail(error);
     await loadAdminData();
-    return { ok: true, error: null };
+    return { ok: true, error: null, data };
   } catch (e) {
     return fail(e);
   }
@@ -103,8 +103,81 @@ export function moveBooking(id, day, startMin) {
   );
 }
 
+/** Запись, которую заводит сам мастер: сразу подтверждённая, мимо «Заявок».
+ *  clientId — существующий клиент; иначе newName/newPhone создают нового
+ *  в той же транзакции (см. create_master_booking в schema.sql). */
+export function createMasterBooking({ clientId, newName, newPhone, serviceId, day, startMin }) {
+  return run(() =>
+    supabase.rpc("create_master_booking", {
+      p_client_id: clientId ?? null,
+      p_new_name: newName ?? "",
+      p_new_phone: newPhone ?? "",
+      p_service_id: serviceId,
+      p_day: day,
+      p_start_min: startMin,
+    })
+  );
+}
+
+/** Свободные старты под услугу на дату — считает сервер (free_slots).
+ *  Только чтение, поэтому без loadAdminData. */
+export async function fetchFreeSlots(day, serviceId) {
+  if (!supabase) return { ok: false, error: NOT_CONFIGURED, slots: [] };
+  try {
+    const { data, error } = await supabase.rpc("free_slots", {
+      p_day: day,
+      p_service_id: serviceId,
+    });
+    if (error) return { ...fail(error), slots: [] };
+    return { ok: true, error: null, slots: (data ?? []).map((r) => r.start_min) };
+  } catch (e) {
+    return { ...fail(e), slots: [] };
+  }
+}
+
 /* ─── Клиенты ───────────────────────────────────────────────────── */
 
-export function updateClient(id, { phone, note }) {
-  return run(() => supabase.from("clients").update({ phone, note }).eq("id", id));
+/** Юзернейм без @ и пробелов — так он хранится и так сопоставляется
+ *  с заявками в link_booking_client(). */
+export function normalizeUsername(value) {
+  return String(value ?? "").trim().replace(/^@+/, "");
+}
+
+function clientFields({ name, telegram_username, phone }) {
+  return {
+    name: String(name ?? "").trim(),
+    telegram_username: normalizeUsername(telegram_username),
+    phone: String(phone ?? "").trim(),
+  };
+}
+
+// Уникальный индекс clients_username_uq — два клиента с одним телеграмом.
+function clientResult(res) {
+  if (!res.ok && /clients_username_uq|duplicate key/.test(res.error)) {
+    return { ...res, error: "Клиент с таким Telegram уже есть." };
+  }
+  return res;
+}
+
+export async function createClient(fields) {
+  const res = await run(() =>
+    supabase.from("clients").insert(clientFields(fields)).select("id").single()
+  );
+  return clientResult({ ...res, id: res.data?.id ?? null });
+}
+
+export async function updateClient(id, fields) {
+  return clientResult(
+    await run(() => supabase.from("clients").update(clientFields(fields)).eq("id", id))
+  );
+}
+
+export function addClientComment(clientId, body) {
+  return run(() =>
+    supabase.from("client_comments").insert({ client_id: clientId, body: body.trim() })
+  );
+}
+
+export function deleteClientComment(id) {
+  return run(() => supabase.from("client_comments").delete().eq("id", id));
 }

@@ -24,6 +24,7 @@ export default function DayPanel({
   busyThen,
   onToast,
   onError,
+  onBook,
 }) {
   const [moveId, setMoveId] = useState(null);
 
@@ -152,17 +153,37 @@ export default function DayPanel({
                       </button>
                     </span>
                   </span>
-                ) : r.isOpenSlot ? (
+                ) : r.isOpenSlot && moving ? (
                   <button
                     type="button"
                     className="free-slot slot-open"
-                    onClick={() => (moving ? moveTo(r.minute) : toggleBlock(r.minute, false))}
+                    onClick={() => moveTo(r.minute)}
                   >
                     <span className="free-slot-label">Свободно</span>
-                    <span className="free-slot-action">
-                      {moving ? "Перенести сюда" : "Закрыть"}
-                    </span>
+                    <span className="free-slot-action">Перенести сюда</span>
                   </button>
+                ) : r.isOpenSlot ? (
+                  // Два действия — строка уже не кнопка целиком, а подложка
+                  // с двумя кнопками в полную высоту (≥44px каждая).
+                  <span className="free-slot slot-open has-actions">
+                    <span className="free-slot-label">Свободно</span>
+                    <span className="free-slot-buttons">
+                      <button
+                        type="button"
+                        className="slot-btn is-book"
+                        onClick={() => onBook({ day: selectedKey, time: r.minute })}
+                      >
+                        Записать
+                      </button>
+                      <button
+                        type="button"
+                        className="slot-btn is-close"
+                        onClick={() => toggleBlock(r.minute, false)}
+                      >
+                        Закрыть
+                      </button>
+                    </span>
+                  </span>
                 ) : (
                   <button
                     type="button"

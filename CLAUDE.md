@@ -80,8 +80,8 @@ Consequences that constrain every change here:
 | | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
 |---|---|---|
 | Auth | none (anonymous) | Supabase Auth sign-in |
-| Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public) | those, plus `bookings`, `blocked_slots` (auth only) |
-| Writes | inserts its own row into `bookings` | everything |
+| Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (auth only) |
+| Writes | inserts its own row into `bookings` | everything, incl. its own confirmed bookings via `create_master_booking()` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
 
@@ -140,6 +140,21 @@ seed, kept in the repo because the content is no longer in git otherwise.
   client, widen that view or that function; **never** grant `anon` a `select` policy on
   `bookings` itself — it would hand every client's name, username and comment to
   anyone holding the (public) anon key.
+- **Clients.** `clients` rows come from the `link_booking_client()` trigger (client
+  requests, matched by username) and from the cabinet («Новый клиент», «Новая
+  запись»). Bookings link to clients by `client_id`, **never by name**: `store.js`
+  (`withClientNames`) overwrites each booking's `client_name`/`client_username` from
+  its client, so a rename in «Клиенты» shows everywhere. The trigger never overwrites
+  a non-empty client name, so a later request can't undo the master's rename.
+  Comments live in `client_comments` (the old `clients.note` is migrated and unused).
+  `client_stats` derives `visit_count`/`last_visit_at` from **past** bookings and
+  `favorite_service_id` from all of them; it must stay `security_invoker = on`.
+- **The master's own bookings** go through `create_master_booking()` (a new client
+  plus a booking in one transaction, `status = 'ok'`, `source = 'master'` — never in
+  «Заявки»). Start times come from `free_slots(day, service_id)` on the server
+  (working hours, `days_off`, overlaps with bookings and blocked slots, not in the past,
+  on the `slot_step_minutes` grid), and `create_master_booking` re-checks against it
+  under an advisory lock. The cabinet must never compute bookable times itself.
 - [src/content.js](src/content.js) is the client's read-only store — fetch,
   `localStorage` cache, `useContent()`. It has **no mutation functions anymore**; all
   writes to salon content happen through [src/admin/api.js](src/admin/api.js) instead.
@@ -188,7 +203,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. |
 | [src/admin/api.js](src/admin/api.js) | Every write the cabinet makes — services, `working_hours`, `days_off`, `blocked_slots`, `bookings`. Same `{ ok, error }`-never-throws idiom as the old `content.js` mutations, and every mutation calls `loadAdminData()` on success. |
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
-| [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. |
+| [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `NewBookingSheet.jsx` is the «Новая запись» bottom sheet, opened from the Расписание header, a free slot in `DayPanel`, or a client card; it shows errors inline, because the cabinet's toast sits in page flow under the backdrop. |
 
 Stored bookings use short keys (`{id, s, d, t, m, p, c, k, st}`) because CloudStorage
 caps a value at 4096 characters — `k` is the `client_token` tying the record to its

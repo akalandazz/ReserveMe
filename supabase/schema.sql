@@ -91,17 +91,42 @@ create index if not exists info_blocks_sort_idx on public.info_blocks (sort, id)
 --  У заявки и раньше были client_name/client_username — но построчно,
 --  без устойчивой сущности: телефон и заметка мастера должны пережить
 --  отдельную запись, а не обнуляться на следующей. Строки сюда
---  заводит только триггер link_booking_client() ниже (см. его
---  комментарий) — от анонима таблица закрыта полностью.
+--  заводят триггер link_booking_client() ниже (заявки клиентов) и
+--  мастер из кабинета («Новый клиент», «Новая запись») — от анонима
+--  таблица закрыта полностью.
 create table if not exists public.clients (
   id                 bigint generated always as identity primary key,
   name               text    not null default '',
   telegram_username  text    not null default '',
   phone              text    not null default '',
+  -- Устарело: заметка переехала в client_comments (миграция ниже
+  -- переносит её первым комментарием и обнуляет). Колонка оставлена,
+  -- чтобы закэшированный старый бандл кабинета не падал на update.
   note               text    not null default '',
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now()
 );
+
+-- ─── Комментарии мастера к клиенту ───────────────────────────────
+--  Вместо одного поля note — лента: мастер дописывает, а не
+--  переписывает, и у каждой записи есть дата.
+create table if not exists public.client_comments (
+  id         bigint generated always as identity primary key,
+  client_id  bigint not null references public.clients(id) on delete cascade,
+  body       text   not null check (length(btrim(body)) between 1 and 1000),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists client_comments_client_idx
+  on public.client_comments (client_id, created_at desc);
+
+-- Перенос старой заметки первым комментарием. Идемпотентно: после
+-- переноса note обнуляется, повторный прогон файла ничего не найдёт.
+insert into public.client_comments (client_id, body, created_at)
+  select id, left(btrim(note), 1000), updated_at
+  from public.clients
+  where btrim(note) <> '';
+update public.clients set note = '' where note <> '';
 
 -- Пустая строка не участвует в уникальности — иначе все клиенты без
 -- юзернейма схлопнулись бы в одну запись.
@@ -204,12 +229,21 @@ create trigger clients_touch_updated_at
 --  и заметка мастера) — привязка идёт через security definer триггер
 --  на INSERT bookings, тем же приёмом, что и booking_status() ниже:
 --  RLS обходится в одном контролируемом месте, а не открывается anon
---  напрямую. Сопоставление по telegram_username, если он есть (и имя
---  подтягивается свежее — мастер видит актуальное отображаемое имя);
+--  напрямую. Сопоставление по telegram_username, если он есть;
 --  иначе — по точному совпадению имени среди клиентов без юзернейма;
 --  не нашли — заводим нового. Пустые client_name/client_username
 --  (initDataUnsafe не отдал ничего) оставляют client_id пустым —
 --  запись просто не попадёт ни к одному клиенту в «Клиенты».
+--
+--  Имя уже известного клиента НЕ перезаписывается телеграмным: мастер
+--  переименовывает клиентов в кабинете, и следующая заявка не должна
+--  откатывать её правку. Телеграмное имя берётся, только если своего
+--  ещё нет.
+--
+--  Запись, которую заводит сам мастер (create_master_booking ниже),
+--  приходит уже с client_id — её не перепривязываем: совпадение по
+--  имени могло бы увести её к однофамильцу. Аноним source = 'master'
+--  подставить не может (см. политику bookings_insert_anon).
 create or replace function public.link_booking_client()
 returns trigger
 language plpgsql
@@ -219,11 +253,18 @@ as $$
 declare
   found_id bigint;
 begin
+  if new.source = 'master' and new.client_id is not null then
+    return new;
+  end if;
+
   if new.client_username <> '' then
     insert into public.clients (name, telegram_username)
     values (new.client_name, new.client_username)
     on conflict (telegram_username) where telegram_username <> ''
-    do update set name = excluded.name
+    do update set name = case
+      when public.clients.name = '' then excluded.name
+      else public.clients.name
+    end
     returning id into found_id;
   elsif new.client_name <> '' then
     select id into found_id from public.clients
@@ -348,52 +389,241 @@ revoke all on function public.booking_status(uuid[]) from public;
 grant execute on function public.booking_status(uuid[]) to anon, authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
---  clients — как bookings: телефон и заметка мастера не должны
---  светиться анониму. Строки заводит только link_booking_client()
---  (см. выше) от имени владельца функции — anon-политики нет вовсе,
---  и authenticated не может ни вставить, ни удалить строку напрямую,
---  только читать и править phone/note уже созданных.
+--  clients — как bookings: телефон и комментарии мастера не должны
+--  светиться анониму. anon-политик нет вовсе. Мастер читает, правит
+--  и заводит клиентов («Новый клиент» в кабинете); удалять строку
+--  напрямую не может никто — у клиента есть история записей.
 -- ═══════════════════════════════════════════════════════════════
 
 alter table public.clients enable row level security;
 
 drop policy if exists clients_select_auth on public.clients;
+drop policy if exists clients_insert_auth on public.clients;
 drop policy if exists clients_update_auth on public.clients;
 
 create policy clients_select_auth on public.clients
   for select to authenticated using (true);
 
+create policy clients_insert_auth on public.clients
+  for insert to authenticated with check (true);
+
 create policy clients_update_auth on public.clients
   for update to authenticated using (true) with check (true);
 
+-- ─── client_comments: только мастер ─────────────────────────────
+
+alter table public.client_comments enable row level security;
+
+drop policy if exists client_comments_select_auth on public.client_comments;
+drop policy if exists client_comments_insert_auth on public.client_comments;
+drop policy if exists client_comments_delete_auth on public.client_comments;
+
+create policy client_comments_select_auth on public.client_comments
+  for select to authenticated using (true);
+
+create policy client_comments_insert_auth on public.client_comments
+  for insert to authenticated with check (true);
+
+create policy client_comments_delete_auth on public.client_comments
+  for delete to authenticated using (true);
+
 -- ─── client_stats: клиенты + производные показатели для «Клиенты» ─
---  security_invoker (по умолчанию) — вьюха выполняется от лица
---  вызывающего и потому наследует RLS clients/bookings как есть:
---  authenticated видит всё, anon (без прямого grant) не видит ничего.
---  visit_count::int — та же причина, что у services.price integer, а
---  не numeric: PostgREST отдаёт numeric строкой JSON.
-create or replace view public.client_stats as
+--  security_invoker = on — задан ЯВНО: по умолчанию вьюха в Postgres
+--  исполняется от владельца и обходит RLS, а Supabase по default
+--  privileges выдаёт anon select на каждую новую вьюху в public —
+--  вместе это отдало бы телефоны всех клиентов по публичному ключу.
+--  С invoker вьюха наследует RLS clients/bookings: authenticated видит
+--  всё, anon — ничего.
+--
+--  visit_count / last_visit_at — только ПРОШЕДШИЕ записи (визит, а не
+--  заявка), по местному времени салона: day/start_min хранятся как
+--  тбилисские дата и минуты, а now() — в UTC.
+--  favorite_service_id — самая частая услуга среди всех записей
+--  клиента; название берётся текущее, из services.
+--  ::int — та же причина, что у services.price integer, а не numeric:
+--  PostgREST отдаёт numeric/bigint-агрегаты строкой JSON.
+--
+--  drop, а не create or replace: replace не умеет убирать колонку
+--  (note) и менять состав колонок.
+drop view if exists public.client_stats;
+create view public.client_stats
+  with (security_invoker = on) as
   select
     c.id,
     c.name,
     c.telegram_username,
     c.phone,
-    c.note,
-    count(b.id)::int as visit_count,
-    max(b.day) as last_visit_at,
-    (
-      select b2.service_name
-      from public.bookings b2
-      where b2.client_id = c.id
-      group by b2.service_id, b2.service_name
-      order by count(*) desc, max(b2.day) desc
-      limit 1
-    ) as favorite_service_name
+    c.created_at,
+    v.visit_count,
+    v.last_visit_at,
+    fav.service_id as favorite_service_id,
+    s.name as favorite_service_name
   from public.clients c
-  left join public.bookings b on b.client_id = c.id
-  group by c.id;
+  left join lateral (
+    select count(*)::int as visit_count, max(b.day) as last_visit_at
+    from public.bookings b
+    where b.client_id = c.id
+      and b.day + make_interval(mins => b.start_min)
+          < (now() at time zone 'Asia/Tbilisi')
+  ) v on true
+  left join lateral (
+    select b2.service_id
+    from public.bookings b2
+    where b2.client_id = c.id and b2.service_id is not null
+    group by b2.service_id
+    order by count(*) desc, max(b2.day) desc
+    limit 1
+  ) fav on true
+  left join public.services s on s.id = fav.service_id;
 
+revoke all on public.client_stats from anon;
 grant select on public.client_stats to authenticated;
+
+-- ─── free_slots(): свободные старты под услугу, для «Новой записи» ─
+--  Считается на сервере, а не в кабинете: там же, где проверяет
+--  create_master_booking(), — одно правило на показ и на запись.
+--  Старт подходит, если вся услуга [t, t + duration):
+--    • укладывается в рабочие часы дня недели, и день не в days_off;
+--    • не пересекает ни одну запись и ни одно закрытое окошко
+--      (у закрытого окошка длина — шаг сетки, как в busy_slots);
+--    • не в прошлом (сегодня — строго позже текущего времени);
+--    • стоит на сетке settings.slot_step_minutes от начала рабочего
+--      дня — той же, что строки панели «День», иначе «Записать» в
+--      свободной строке предлагал бы время, которого нет в списке.
+--  security invoker: читает bookings под RLS вызывающего, поэтому
+--  исполнять её может только authenticated (см. revoke ниже).
+create or replace function public.free_slots(p_day date, p_service_id text)
+returns table (start_min integer)
+language plpgsql
+stable
+security invoker
+set search_path = ''
+as $$
+declare
+  local_now timestamp := now() at time zone 'Asia/Tbilisi';
+  wh        jsonb;
+  hours     jsonb;
+  dur       integer;
+  step      integer;
+  open_min  integer;
+  close_min integer;
+  now_min   integer;
+begin
+  select st.working_hours, st.slot_step_minutes into wh, step
+    from public.settings st where st.id = 1;
+  select sv.duration into dur from public.services sv where sv.id = p_service_id;
+  if wh is null or dur is null or p_day < local_now::date then
+    return;
+  end if;
+  if exists (select 1 from public.days_off d where d.day = p_day) then
+    return;
+  end if;
+
+  hours := wh -> extract(dow from p_day)::int::text;
+  if hours is null or jsonb_typeof(hours) <> 'object' then
+    return;
+  end if;
+
+  open_min  := extract(epoch from (hours ->> 'from')::time)::int / 60;
+  close_min := extract(epoch from (hours ->> 'to')::time)::int / 60;
+  now_min   := case when p_day = local_now::date
+                 then extract(epoch from local_now::time)::int / 60
+                 else -1 end;
+
+  return query
+    select g.m
+    from generate_series(open_min, close_min - dur, step) as g(m)
+    where g.m > now_min
+      and not exists (
+        select 1 from public.bookings b
+        where b.day = p_day
+          and b.start_min < g.m + dur
+          and g.m < b.start_min + b.duration
+      )
+      and not exists (
+        select 1 from public.blocked_slots x
+        where x.day = p_day
+          and x.start_min < g.m + dur
+          and g.m < x.start_min + step
+      )
+    order by g.m;
+end
+$$;
+
+revoke all on function public.free_slots(date, text) from public, anon;
+grant execute on function public.free_slots(date, text) to authenticated;
+
+-- ─── create_master_booking(): мастер записывает клиента сама ──────
+--  Одна транзакция на «клиент + запись»: новый клиент из «+ Новый
+--  клиент» не должен остаться сиротой, если слот успели занять.
+--  Запись сразу подтверждённая (status 'ok', source 'master') — в
+--  «Заявки» она не попадает. Время перепроверяется по free_slots()
+--  под advisory-локом дня: две вкладки кабинета не запишут двоих на
+--  одно окно. (Заявка клиента лок не берёт — её мастер и так
+--  разбирает руками.)
+create or replace function public.create_master_booking(
+  p_client_id  bigint,
+  p_new_name   text,
+  p_new_phone  text,
+  p_service_id text,
+  p_day        date,
+  p_start_min  integer
+)
+returns bigint
+language plpgsql
+volatile
+security invoker
+set search_path = ''
+as $$
+declare
+  svc    public.services;
+  cl     public.clients;
+  new_id bigint;
+begin
+  select * into svc from public.services sv where sv.id = p_service_id;
+  if not found then
+    raise exception 'Услуга не найдена — обновите страницу';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('bookings:' || p_day::text));
+  if not exists (
+    select 1 from public.free_slots(p_day, p_service_id) f
+    where f.start_min = p_start_min
+  ) then
+    raise exception 'Это время уже занято — выберите другое';
+  end if;
+
+  if p_client_id is not null then
+    select * into cl from public.clients c where c.id = p_client_id;
+    if not found then
+      raise exception 'Клиент не найден — обновите страницу';
+    end if;
+  else
+    if coalesce(btrim(p_new_name), '') = '' then
+      raise exception 'Укажите имя клиента.';
+    end if;
+    insert into public.clients (name, phone)
+      values (btrim(p_new_name), coalesce(btrim(p_new_phone), ''))
+      returning * into cl;
+  end if;
+
+  insert into public.bookings (
+    day, start_min, duration, price, service_id, service_name,
+    client_name, client_username, status, source, client_id
+  ) values (
+    p_day, p_start_min, svc.duration, svc.price, svc.id, svc.name,
+    cl.name, cl.telegram_username, 'ok', 'master', cl.id
+  )
+  returning id into new_id;
+
+  return new_id;
+end
+$$;
+
+revoke all on function public.create_master_booking(bigint, text, text, text, date, integer)
+  from public, anon;
+grant execute on function public.create_master_booking(bigint, text, text, text, date, integer)
+  to authenticated;
 
 -- ─── blocked_slots: читают все (это часть доступности), пишет мастер ──
 

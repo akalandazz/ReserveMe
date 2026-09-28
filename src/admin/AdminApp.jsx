@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { dateKey } from "../schedule.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { dateKey, labelForKey, toHHMM } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
 import { initAuth, signOut, useSession } from "../supabase.js";
@@ -9,6 +9,7 @@ import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
 import ClientsSection from "./components/ClientsSection.jsx";
 import { Icon } from "./components/Icons.jsx";
+import NewBookingSheet from "./components/NewBookingSheet.jsx";
 import RequestsSection from "./components/RequestsSection.jsx";
 import ScheduleSection from "./components/ScheduleSection.jsx";
 import ServicesSection from "./components/ServicesSection.jsx";
@@ -53,6 +54,8 @@ export default function AdminApp() {
   // вкладок кабинета.
   const [calView, setCalView] = useState("month");
   const [selectedKey, setSelectedKey] = useState(() => dateKey(new Date()));
+  // Лист «Новая запись»: null — закрыт, иначе { clientId?, day, time? }.
+  const [sheet, setSheet] = useState(null);
   const toastTimer = useRef(null);
   const busyTimer = useRef(null);
   const session = useSession();
@@ -84,6 +87,21 @@ export default function AdminApp() {
     toastTimer.current = window.setTimeout(() => setToast(""), 3400);
   };
   const showError = (msg) => flash(`⚠️ ${msg}`);
+
+  // Открыть лист «Новая запись». Без даты — выбранный в календаре день,
+  // но не раньше сегодня: в прошлое записать нельзя (см. free_slots).
+  const openBooking = (init = {}) => {
+    const today = dateKey(new Date());
+    setSheet({ day: selectedKey < today ? today : selectedKey, ...init });
+  };
+  // Стабильная ссылка: NewBookingSheet подписывается на Escape по ней.
+  const closeBooking = useCallback(() => setSheet(null), []);
+  const onBooked = ({ day, startMin, name }) => {
+    setSelectedKey(day);
+    setSheet(null);
+    const when = labelForKey(day);
+    flash(`${name} записана: ${when.charAt(0).toLowerCase()}${when.slice(1)}, ${toHHMM(startMin)}.`);
+  };
 
   // Единое «занято» состояние на весь экран кабинета: пока один запрос
   // выполняется, второй такой же клик — no-op, а не гонка из двух мутаций.
@@ -160,8 +178,11 @@ export default function AdminApp() {
         {tab !== "clients" && (
           <div className="header-row">
             <h1 className="title">{TAB_TITLES[tab]}</h1>
-            {tab === "schedule" && data.settings?.masterName && (
-              <span className="header-name">{data.settings.masterName}</span>
+            {tab === "schedule" && data.settings && (
+              <button className="pill-btn is-accent" type="button" onClick={() => openBooking()}>
+                <Icon name="plus" size={14} />
+                Записать
+              </button>
             )}
           </div>
         )}
@@ -190,6 +211,7 @@ export default function AdminApp() {
                   busyThen={busyThen}
                   onToast={flash}
                   onError={showError}
+                  onBook={openBooking}
                 />
               </>
             )}
@@ -207,12 +229,14 @@ export default function AdminApp() {
             {tab === "clients" && (
               <ClientsSection
                 clients={data.clients}
+                comments={data.comments}
                 bookings={data.bookings}
                 selectedKey={selectedKey}
                 busy={busy}
                 busyThen={busyThen}
                 onToast={flash}
                 onError={showError}
+                onBook={(clientId) => openBooking({ clientId })}
               />
             )}
 
@@ -244,6 +268,16 @@ export default function AdminApp() {
       </div>
 
       <BottomNav active={tab} onChange={setTab} pendingCount={stats.pendingCount} />
+
+      {sheet && (
+        <NewBookingSheet
+          clients={data.clients}
+          services={data.services}
+          initial={sheet}
+          onClose={closeBooking}
+          onBooked={onBooked}
+        />
+      )}
     </div>
   );
 }

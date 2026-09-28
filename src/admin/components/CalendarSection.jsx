@@ -33,6 +33,7 @@ export default function CalendarSection({
   busyThen,
   onToast,
   onError,
+  onBook,
 }) {
   const shiftDay = (delta) => {
     const d = parseKey(selectedKey);
@@ -91,6 +92,7 @@ export default function CalendarSection({
         busyThen={busyThen}
         onToast={onToast}
         onError={onError}
+        onBook={onBook}
       />
     </div>
   );
