@@ -63,20 +63,43 @@ export function pluralVisits(n) {
   return pluralRu(n, ["визит", "визита", "визитов"]);
 }
 
-/** "сегодня" / "вчера" / "N дней/недель/месяцев назад" по дате day (ГГГГ-ММ-ДД). */
+export function pluralBookings(n) {
+  return pluralRu(n, ["запись", "записи", "записей"]);
+}
+
+export function pluralComments(n) {
+  return pluralRu(n, ["комментарий", "комментария", "комментариев"]);
+}
+
+/** "неделю назад", а не "1 неделю назад"; иначе "N недели/недель назад". */
+function agoRu(n, forms) {
+  return n === 1 ? `${forms[0]} назад` : `${n} ${pluralRu(n, forms)} назад`;
+}
+
+/** "сегодня" / "вчера" / "N дней назад" / "неделю назад" / "месяц назад"… по дате day (ГГГГ-ММ-ДД). */
 export function relativeVisit(day) {
   const days = Math.round(
     (parseKey(dateKey(new Date())).getTime() - parseKey(day).getTime()) / 86400000
   );
   if (days <= 0) return "сегодня";
   if (days === 1) return "вчера";
-  if (days < 7) return `${days} ${pluralRu(days, ["день", "дня", "дней"])} назад`;
-  if (days < 30) {
-    const weeks = Math.max(1, Math.round(days / 7));
-    return `${weeks} ${pluralRu(weeks, ["неделю", "недели", "недель"])} назад`;
-  }
-  const months = Math.max(1, Math.round(days / 30));
-  return `${months} ${pluralRu(months, ["месяц", "месяца", "месяцев"])} назад`;
+  if (days < 7) return agoRu(days, ["день", "дня", "дней"]);
+  if (days < 30) return agoRu(Math.max(1, Math.round(days / 7)), ["неделю", "недели", "недель"]);
+  if (days < 365) return agoRu(Math.max(1, Math.round(days / 30)), ["месяц", "месяца", "месяцев"]);
+  return agoRu(Math.round(days / 365), ["год", "года", "лет"]);
+}
+
+const fShortDate = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
+
+/** "5 окт." по ключу ГГГГ-ММ-ДД. */
+export function shortDate(key) {
+  return fShortDate.format(parseKey(key));
+}
+
+/** "сегодня" или "5 окт." по timestamptz комментария — в местной дате. */
+export function commentDate(iso) {
+  const key = dateKey(new Date(iso));
+  return key === dateKey(new Date()) ? "сегодня" : shortDate(key);
 }
 
 /* ─── Неделя ────────────────────────────────────────────────────── */

@@ -12,7 +12,7 @@ const PER_PAGE = 3;
  * клиенту сам, sendToMaster() здесь не вызывается никогда — он закрыл
  * бы мини-апп (см. CLAUDE.md).
  */
-export default function RequestsSection({ bookings, busy, busyThen, onToast, onError }) {
+export default function RequestsSection({ bookings, busy, busyThen, onToast, onError, onEdit }) {
   const [page, setPage] = useState(0);
 
   const pending = useMemo(
@@ -82,6 +82,14 @@ export default function RequestsSection({ bookings, busy, busyThen, onToast, onE
                 >
                   {approving && <span className="btn-spinner" aria-hidden="true" />}
                   {approving ? "Подтверждаем" : "Подтвердить"}
+                </button>
+                <button
+                  className="btn-edit"
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() => onEdit(b.id)}
+                >
+                  Изменить
                 </button>
                 <button
                   className="btn-decline"

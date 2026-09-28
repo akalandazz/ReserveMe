@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dateKey } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
 import { initAuth, signOut, useSession } from "../supabase.js";
+import { deleteBooking } from "./api.js";
 import { isBookingPast, weekStart } from "./calendar.js";
 import { loadAdminData, resetAdminData, useAdminData } from "./store.js";
 import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
 import ClientsSection from "./components/ClientsSection.jsx";
+import BookingSheet from "./components/BookingSheet.jsx";
 import { Icon } from "./components/Icons.jsx";
 import RequestsSection from "./components/RequestsSection.jsx";
 import ScheduleSection from "./components/ScheduleSection.jsx";
@@ -53,6 +55,16 @@ export default function AdminApp() {
   // вкладок кабинета.
   const [calView, setCalView] = useState("month");
   const [selectedKey, setSelectedKey] = useState(() => dateKey(new Date()));
+  // Лист записи: null — закрыт, иначе { kind: "new" | "edit" | "client", … }
+  // (см. BookingSheet.jsx).
+  const [sheet, setSheet] = useState(null);
+  // Клиент, которого «Клиенты» должны раскрыть — только что заведённый.
+  // Объект, а не id: повторное добавление того же id — новая ссылка.
+  const [clientFocus, setClientFocus] = useState(null);
+  // Открытое подтверждение удаления — одно на весь кабинет:
+  // { kind: "booking" | "client", id } или null. Открыть второе —
+  // значит закрыть первое, где бы оно ни стояло.
+  const [confirmDel, setConfirmDel] = useState(null);
   const toastTimer = useRef(null);
   const busyTimer = useRef(null);
   const session = useSession();
@@ -85,6 +97,24 @@ export default function AdminApp() {
   };
   const showError = (msg) => flash(`⚠️ ${msg}`);
 
+  const openBooking = (clientId) => setSheet({ kind: "new", clientId });
+  const editBooking = (bookingId) => setSheet({ kind: "edit", bookingId });
+  const editClient = (clientId) => setSheet({ kind: "client", clientId });
+  // Стабильная ссылка: BookingSheet подписывается на Escape по ней.
+  const closeBooking = useCallback(() => setSheet(null), []);
+  // Лист сохранил: тост, и — если он так сказал — показать день записи
+  // или раскрыть нового клиента.
+  const onSheetDone = ({ toast, day, view, clientId }) => {
+    setSheet(null);
+    flash(toast);
+    if (day) setSelectedKey(day);
+    if (view) {
+      setTab("schedule");
+      setCalView(view);
+    }
+    if (clientId != null) setClientFocus({ id: clientId });
+  };
+
   // Единое «занято» состояние на весь экран кабинета: пока один запрос
   // выполняется, второй такой же клик — no-op, а не гонка из двух мутаций.
   const busyThen = (key, ms, fn) => {
@@ -94,6 +124,40 @@ export default function AdminApp() {
       setBusy(null);
       fn();
     }, ms);
+  };
+
+  const switchTab = (next) => {
+    setTab(next);
+    setConfirmDel(null);
+  };
+
+  // Лист модальный, так что открытым над удаляемым он быть не должен, —
+  // но если всё же открыт на удалённом, ему больше нечего сохранять.
+  const closeSheetIf = (pred) => setSheet((s) => (s && pred(s) ? null : s));
+
+  // Жёсткое удаление записи (корзина в панели дня и в «Прошлых записях»).
+  // В отличие от «Отменить запись» в листе — клиенту ничего не пишем.
+  const removeBooking = (id) =>
+    busyThen(`del-booking-${id}`, 250, async () => {
+      const res = await deleteBooking(id);
+      if (!res.ok) {
+        showError(res.error);
+        return;
+      }
+      setConfirmDel(null);
+      closeSheetIf((s) => s.kind === "edit" && s.bookingId === id);
+      flash("Запись удалена.");
+    });
+
+  // Клиент удалён (ClientsSection): закрыть лист, если он был о нём или
+  // об одной из его записей, и забыть «раскрыть этого клиента».
+  const forgetClient = (clientId, bookingIds) => {
+    setConfirmDel(null);
+    closeSheetIf(
+      (s) =>
+        s.clientId === clientId || (s.kind === "edit" && bookingIds.includes(s.bookingId))
+    );
+    setClientFocus((f) => (f?.id === clientId ? null : f));
   };
 
   const stats = useMemo(() => {
@@ -160,7 +224,13 @@ export default function AdminApp() {
         {tab !== "clients" && (
           <div className="header-row">
             <h1 className="title">{TAB_TITLES[tab]}</h1>
-            {tab === "schedule" && data.settings?.masterName && (
+            {tab === "schedule" && data.settings && (
+              <button className="pill-btn is-accent" type="button" onClick={() => openBooking()}>
+                <Icon name="plus" size={14} />
+                Записать
+              </button>
+            )}
+            {tab === "settings" && data.settings?.masterName && (
               <span className="header-name">{data.settings.masterName}</span>
             )}
           </div>
@@ -186,10 +256,13 @@ export default function AdminApp() {
                   setView={setCalView}
                   selectedKey={selectedKey}
                   setSelectedKey={setSelectedKey}
-                  busy={busy}
-                  busyThen={busyThen}
                   onToast={flash}
                   onError={showError}
+                  onEditBooking={editBooking}
+                  busy={busy}
+                  confirmDel={confirmDel}
+                  setConfirmDel={setConfirmDel}
+                  onDeleteBooking={removeBooking}
                 />
               </>
             )}
@@ -201,18 +274,28 @@ export default function AdminApp() {
                 busyThen={busyThen}
                 onToast={flash}
                 onError={showError}
+                onEdit={editBooking}
               />
             )}
 
             {tab === "clients" && (
               <ClientsSection
                 clients={data.clients}
+                comments={data.comments}
                 bookings={data.bookings}
                 selectedKey={selectedKey}
+                focus={clientFocus}
                 busy={busy}
                 busyThen={busyThen}
                 onToast={flash}
                 onError={showError}
+                onBook={openBooking}
+                onEditBooking={editBooking}
+                onEditClient={editClient}
+                confirmDel={confirmDel}
+                setConfirmDel={setConfirmDel}
+                onDeleteBooking={removeBooking}
+                onClientDeleted={forgetClient}
               />
             )}
 
@@ -243,7 +326,20 @@ export default function AdminApp() {
         )}
       </div>
 
-      <BottomNav active={tab} onChange={setTab} pendingCount={stats.pendingCount} />
+      <BottomNav active={tab} onChange={switchTab} pendingCount={stats.pendingCount} />
+
+      {sheet && (
+        <BookingSheet
+          clients={data.clients}
+          services={data.services}
+          bookings={data.bookings}
+          settings={data.settings}
+          daysOff={data.daysOff}
+          initial={sheet}
+          onClose={closeBooking}
+          onDone={onSheetDone}
+        />
+      )}
     </div>
   );
 }

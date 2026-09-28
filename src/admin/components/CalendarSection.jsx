@@ -29,10 +29,13 @@ export default function CalendarSection({
   setView,
   selectedKey,
   setSelectedKey,
-  busy,
-  busyThen,
   onToast,
   onError,
+  onEditBooking,
+  busy,
+  confirmDel,
+  setConfirmDel,
+  onDeleteBooking,
 }) {
   const shiftDay = (delta) => {
     const d = parseKey(selectedKey);
@@ -87,10 +90,13 @@ export default function CalendarSection({
         blockedSlots={blockedSlots}
         selectedKey={selectedKey}
         onShift={shiftDay}
-        busy={busy}
-        busyThen={busyThen}
         onToast={onToast}
         onError={onError}
+        onEditBooking={onEditBooking}
+        busy={busy}
+        confirmDel={confirmDel}
+        setConfirmDel={setConfirmDel}
+        onDeleteBooking={onDeleteBooking}
       />
     </div>
   );

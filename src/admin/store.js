@@ -23,6 +23,7 @@ const EMPTY = {
   blockedSlots: [],
   bookings: [],
   clients: [],
+  comments: [], // client_comments, новые сверху
 };
 
 let snapshot = EMPTY;
@@ -89,10 +90,17 @@ export async function loadAdminData() {
         .select("*")
         .order("day", { ascending: true })
         .order("start_min", { ascending: true }),
+      // Без визитов — сверху: это новые клиенты, в том числе только
+      // что заведённый мастером, которого она сейчас заполняет.
       supabase
         .from("client_stats")
         .select("*")
-        .order("last_visit_at", { ascending: false, nullsFirst: false }),
+        .order("last_visit_at", { ascending: false, nullsFirst: true })
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("client_comments")
+        .select("id,client_id,body,created_at")
+        .order("created_at", { ascending: false }),
     ]);
   } catch {
     if (mine !== seq) return;
@@ -112,7 +120,9 @@ export async function loadAdminData() {
     return;
   }
 
-  const [settingsRes, servicesRes, daysRes, blockedRes, bookingsRes, clientsRes] = result;
+  const [settingsRes, servicesRes, daysRes, blockedRes, bookingsRes, clientsRes, commentsRes] =
+    result;
+  const clients = clientsRes.data ?? [];
   publish({
     status: "ready",
     error: null,
@@ -120,8 +130,29 @@ export async function loadAdminData() {
     services: servicesRes.data ?? [],
     daysOff: (daysRes.data ?? []).map((r) => r.day),
     blockedSlots: blockedRes.data ?? [],
-    bookings: bookingsRes.data ?? [],
-    clients: clientsRes.data ?? [],
+    bookings: withClientNames(bookingsRes.data ?? [], clients),
+    clients,
+    comments: commentsRes.data ?? [],
+  });
+}
+
+/**
+ * Имя и юзернейм на записи — от клиента по client_id, а не из
+ * client_name/client_username самой строки: те застывают в момент
+ * заявки, а мастер переименовывает клиента в «Клиенты», и новое имя
+ * должно появиться везде — в панели дня, в неделе, в заявках.
+ * Запись без client_id (клиент не определился) показывает своё.
+ */
+function withClientNames(bookings, clients) {
+  const byId = new Map(clients.map((c) => [c.id, c]));
+  return bookings.map((b) => {
+    const c = b.client_id != null ? byId.get(b.client_id) : null;
+    if (!c) return b;
+    return {
+      ...b,
+      client_name: c.name || b.client_name,
+      client_username: c.telegram_username,
+    };
   });
 }
 
