@@ -1,18 +1,13 @@
-import { useState } from "react";
-import { labelForKey } from "../../schedule.js";
-import {
-  approveBooking,
-  blockSlot,
-  closeDay,
-  deleteBooking,
-  moveBooking,
-  openDay,
-  saveWorkingHours,
-  unblockSlot,
-} from "../api.js";
+import { labelForKey, toHHMM } from "../../schedule.js";
+import { blockSlot, closeDay, openDay, saveWorkingHours, unblockSlot } from "../api.js";
 import { buildDayRows, hoursFor, parseKey } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
 
+/**
+ * Панель одного дня. Запись — карточка с одной кнопкой «Изменить»:
+ * подтвердить, перенести и отменить — всё в листе записи
+ * (BookingSheet), там же, где мастер видит сообщение для клиента.
+ */
 export default function DayPanel({
   settings,
   daysOff,
@@ -20,14 +15,10 @@ export default function DayPanel({
   blockedSlots,
   selectedKey,
   onShift,
-  busy,
-  busyThen,
   onToast,
   onError,
-  onBook,
+  onEditBooking,
 }) {
-  const [moveId, setMoveId] = useState(null);
-
   const dow = parseKey(selectedKey).getDay();
   const hours = hoursFor(settings, dow);
   const closedByOff = daysOff.includes(selectedKey);
@@ -38,8 +29,6 @@ export default function DayPanel({
     blockedSlots,
     selectedKey
   );
-  const moving = bookings.find((b) => b.id === moveId) || null;
-
   const wrap = async (promise, okMsg) => {
     const res = await promise;
     if (res.ok) {
@@ -49,27 +38,6 @@ export default function DayPanel({
     }
   };
 
-  const approve = (id) => {
-    if (busy) return;
-    busyThen(`appr-${id}`, 500, () =>
-      wrap(approveBooking(id), "Запись подтверждена. Напишите клиенту в чате.")
-    );
-  };
-  const cancel = (id) => {
-    if (busy) return;
-    busyThen(`drop-${id}`, 450, () => wrap(deleteBooking(id), "Запись отменена. Сообщите клиенту."));
-  };
-  const startMove = (id) => setMoveId(id);
-  const moveTo = (minute) => {
-    if (busy) return;
-    const id = moveId;
-    setMoveId(null);
-    const hh = String(Math.floor(minute / 60)).padStart(2, "0");
-    const mm = String(minute % 60).padStart(2, "0");
-    busyThen("move", 450, () =>
-      wrap(moveBooking(id, selectedKey, minute), `Запись перенесена на ${hh}:${mm}. Сообщите клиенту.`)
-    );
-  };
   const toggleBlock = (minute, isBlocked) =>
     wrap(isBlocked ? unblockSlot(selectedKey, minute) : blockSlot(selectedKey, minute));
   const toggleDayClosed = () => {
@@ -106,15 +74,6 @@ export default function DayPanel({
         </button>
       </div>
 
-      {moving && (
-        <div className="move-banner">
-          <span>Выберите новое время для «{moving.service_name}»</span>
-          <button className="move-cancel" type="button" onClick={() => setMoveId(null)}>
-            Отмена
-          </button>
-        </div>
-      )}
-
       {closed ? (
         <div className="day-empty">
           <p>{!hours ? "Выходной по графику" : "День закрыт вручную"}</p>
@@ -129,60 +88,41 @@ export default function DayPanel({
               <span className="day-row-time">{r.time}</span>
               <span className="day-row-body">
                 {r.type === "booking" ? (
-                  <span className="booking-card" data-status={r.booking.status}>
-                    <span className="booking-head">
-                      <span className="booking-name">{r.booking.service_name}</span>
-                      <span className="booking-price">{r.booking.price} ₾</span>
+                  <span className="booking-card has-edit" data-status={r.booking.status}>
+                    <span className="booking-body">
+                      <span className="booking-head">
+                        <span className="booking-name">
+                          {r.booking.client_name || "Клиент"} · {r.booking.service_name}
+                        </span>
+                        <span className="booking-price">{r.booking.price} ₾</span>
+                      </span>
+                      <span className="booking-meta">
+                        {r.time}–{toHHMM(r.booking.start_min + r.booking.duration)}
+                        {" · "}
+                        {r.booking.status === "new" ? "ждёт подтверждения" : "подтверждена"}
+                        {r.booking.comment ? ` · «${r.booking.comment}»` : ""}
+                      </span>
                     </span>
-                    <span className="booking-meta">
-                      {r.booking.client_name || "клиент"} · {r.time}
-                      {" · "}
-                      {r.booking.status === "new" ? "ждёт подтверждения" : "подтверждена"}
-                    </span>
-                    <span className="booking-actions">
-                      {r.booking.status === "new" && (
-                        <button className="link-btn" type="button" onClick={() => approve(r.booking.id)}>
-                          Подтвердить
-                        </button>
-                      )}
-                      <button className="link-btn" type="button" onClick={() => startMove(r.booking.id)}>
-                        Перенести
-                      </button>
-                      <button className="link-btn danger" type="button" onClick={() => cancel(r.booking.id)}>
-                        Отменить
-                      </button>
-                    </span>
+                    <button
+                      className="booking-edit"
+                      type="button"
+                      onClick={() => onEditBooking(r.booking.id)}
+                    >
+                      Изменить
+                    </button>
                   </span>
-                ) : r.isOpenSlot && moving ? (
-                  <button
-                    type="button"
-                    className="free-slot slot-open"
-                    onClick={() => moveTo(r.minute)}
-                  >
-                    <span className="free-slot-label">Свободно</span>
-                    <span className="free-slot-action">Перенести сюда</span>
-                  </button>
                 ) : r.isOpenSlot ? (
-                  // Два действия — строка уже не кнопка целиком, а подложка
-                  // с двумя кнопками в полную высоту (≥44px каждая).
+                  // Строка — подложка, не кнопка: «Закрыть» стоит в полную
+                  // её высоту (≥44px).
                   <span className="free-slot slot-open has-actions">
                     <span className="free-slot-label">Свободно</span>
-                    <span className="free-slot-buttons">
-                      <button
-                        type="button"
-                        className="slot-btn is-book"
-                        onClick={() => onBook({ day: selectedKey, time: r.minute })}
-                      >
-                        Записать
-                      </button>
-                      <button
-                        type="button"
-                        className="slot-btn is-close"
-                        onClick={() => toggleBlock(r.minute, false)}
-                      >
-                        Закрыть
-                      </button>
-                    </span>
+                    <button
+                      type="button"
+                      className="slot-btn is-close"
+                      onClick={() => toggleBlock(r.minute, false)}
+                    >
+                      Закрыть
+                    </button>
                   </span>
                 ) : (
                   <button

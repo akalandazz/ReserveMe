@@ -134,6 +134,19 @@ create unique index if not exists clients_username_uq
   on public.clients (telegram_username)
   where telegram_username <> '';
 
+-- Откуда клиент пишет мастеру — для тех, кого она заводит сама
+-- («Новая запись» → «Новый клиент»): WhatsApp, Instagram, звонок,
+-- лично, Telegram. Пустая строка — не указано (клиенты из заявок
+-- мини-аппа: у них и так есть telegram_username).
+alter table public.clients add column if not exists channel text not null default '';
+do $$
+begin
+  alter table public.clients add constraint clients_channel_chk
+    check (channel in ('', 'wa', 'ig', 'call', 'live', 'tg'));
+exception when duplicate_object then null;
+end
+$$;
+
 -- ─── Записи клиентов ───────────────────────────────────────────
 --  Раньше заявки не покидали устройство клиента (CloudStorage) и
 --  доезжали до мастера только сообщением в чат. Кабинет мастера
@@ -453,6 +466,7 @@ create view public.client_stats
     c.name,
     c.telegram_username,
     c.phone,
+    c.channel,
     c.created_at,
     v.visit_count,
     v.last_visit_at,
@@ -492,7 +506,17 @@ grant select on public.client_stats to authenticated;
 --      свободной строке предлагал бы время, которого нет в списке.
 --  security invoker: читает bookings под RLS вызывающего, поэтому
 --  исполнять её может только authenticated (см. revoke ниже).
-create or replace function public.free_slots(p_day date, p_service_id text)
+--
+--  p_exclude_id — запись, которую переносят: её собственное время не
+--  должно считаться занятым (иначе сдвинуть запись на полчаса нельзя).
+--  drop перед create: у функции сменился список аргументов, а create
+--  or replace завёл бы вторую перегрузку рядом со старой.
+drop function if exists public.free_slots(date, text);
+create or replace function public.free_slots(
+  p_day        date,
+  p_service_id text,
+  p_exclude_id bigint default null
+)
 returns table (start_min integer)
 language plpgsql
 stable
@@ -537,6 +561,7 @@ begin
       and not exists (
         select 1 from public.bookings b
         where b.day = p_day
+          and b.id is distinct from p_exclude_id
           and b.start_min < g.m + dur
           and g.m < b.start_min + b.duration
       )
@@ -550,24 +575,62 @@ begin
 end
 $$;
 
-revoke all on function public.free_slots(date, text) from public, anon;
-grant execute on function public.free_slots(date, text) to authenticated;
+revoke all on function public.free_slots(date, text, bigint) from public, anon;
+grant execute on function public.free_slots(date, text, bigint) to authenticated;
+
+-- ─── free_slot_counts(): сколько свободных стартов в каждом дне ────
+--  Для шага «Выберите день» листа записи: список из трёх недель с
+--  «свободно окошек: N» — одним запросом, а не двадцатью одним. Считает
+--  та же free_slots(), так что число всегда совпадает со списком времени
+--  на следующем шаге. p_days ограничен, чтобы случайный огромный
+--  диапазон не превратился в тяжёлый запрос.
+create or replace function public.free_slot_counts(
+  p_from       date,
+  p_days       integer,
+  p_service_id text,
+  p_exclude_id bigint default null
+)
+returns table (day date, free_count integer)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select d::date,
+         (select count(*)::int
+            from public.free_slots(d::date, p_service_id, p_exclude_id))
+  from generate_series(
+    p_from,
+    p_from + (least(greatest(p_days, 1), 62) - 1),
+    interval '1 day'
+  ) as d
+  order by 1
+$$;
+
+revoke all on function public.free_slot_counts(date, integer, text, bigint) from public, anon;
+grant execute on function public.free_slot_counts(date, integer, text, bigint) to authenticated;
 
 -- ─── create_master_booking(): мастер записывает клиента сама ──────
---  Одна транзакция на «клиент + запись»: новый клиент из «+ Новый
+--  Одна транзакция на «клиент + запись»: новый клиент из «Новый
 --  клиент» не должен остаться сиротой, если слот успели занять.
 --  Запись сразу подтверждённая (status 'ok', source 'master') — в
 --  «Заявки» она не попадает. Время перепроверяется по free_slots()
 --  под advisory-локом дня: две вкладки кабинета не запишут двоих на
 --  одно окно. (Заявка клиента лок не берёт — её мастер и так
 --  разбирает руками.)
+--  Старая шестиаргументная версия удаляется: иначе она осталась бы
+--  перегрузкой без телеграма, канала и комментария.
+drop function if exists public.create_master_booking(bigint, text, text, text, date, integer);
 create or replace function public.create_master_booking(
-  p_client_id  bigint,
-  p_new_name   text,
-  p_new_phone  text,
-  p_service_id text,
-  p_day        date,
-  p_start_min  integer
+  p_client_id    bigint,
+  p_new_name     text,
+  p_new_phone    text,
+  p_new_telegram text,
+  p_new_channel  text,
+  p_service_id   text,
+  p_day          date,
+  p_start_min    integer,
+  p_comment      text
 )
 returns bigint
 language plpgsql
@@ -602,17 +665,23 @@ begin
     if coalesce(btrim(p_new_name), '') = '' then
       raise exception 'Укажите имя клиента.';
     end if;
-    insert into public.clients (name, phone)
-      values (btrim(p_new_name), coalesce(btrim(p_new_phone), ''))
+    insert into public.clients (name, phone, telegram_username, channel)
+      values (
+        btrim(p_new_name),
+        coalesce(btrim(p_new_phone), ''),
+        regexp_replace(coalesce(btrim(p_new_telegram), ''), '^@+', ''),
+        coalesce(p_new_channel, '')
+      )
       returning * into cl;
   end if;
 
   insert into public.bookings (
     day, start_min, duration, price, service_id, service_name,
-    client_name, client_username, status, source, client_id
+    client_name, client_username, comment, status, source, client_id
   ) values (
     p_day, p_start_min, svc.duration, svc.price, svc.id, svc.name,
-    cl.name, cl.telegram_username, 'ok', 'master', cl.id
+    cl.name, cl.telegram_username, left(coalesce(btrim(p_comment), ''), 1000),
+    'ok', 'master', cl.id
   )
   returning id into new_id;
 
@@ -620,9 +689,112 @@ begin
 end
 $$;
 
-revoke all on function public.create_master_booking(bigint, text, text, text, date, integer)
+revoke all on function public.create_master_booking(bigint, text, text, text, text, text, date, integer, text)
   from public, anon;
-grant execute on function public.create_master_booking(bigint, text, text, text, date, integer)
+grant execute on function public.create_master_booking(bigint, text, text, text, text, text, date, integer, text)
+  to authenticated;
+
+-- ─── update_master_booking(): правка записи из листа «Изменить» ───
+--  Одним вызовом: данные клиента (имя/телефон/телеграм), смена клиента
+--  на другого или нового, услуга, перенос, комментарий — и запись
+--  становится подтверждённой (сохранение заявки = её подтверждение).
+--  Одна транзакция по той же причине, что у create_master_booking:
+--  новый клиент не должен остаться сиротой, если новое время заняли.
+--
+--  Время перепроверяется, только если поменялись день, старт или
+--  услуга, — и без самой этой записи (p_exclude_id в free_slots):
+--  иначе нельзя было бы сдвинуть запись на полчаса в пределах её же
+--  окна. Если услуга та же, цена и длительность остаются прежними —
+--  это то, что уже согласовано с клиентом (см. денормализацию выше).
+--  p_client_channel = null — канал клиента не трогаем (форма правки
+--  его не показывает).
+create or replace function public.update_master_booking(
+  p_id              bigint,
+  p_client_id       bigint,
+  p_client_name     text,
+  p_client_phone    text,
+  p_client_telegram text,
+  p_client_channel  text,
+  p_service_id      text,
+  p_day             date,
+  p_start_min       integer,
+  p_comment         text
+)
+returns void
+language plpgsql
+volatile
+security invoker
+set search_path = ''
+as $$
+declare
+  bk    public.bookings;
+  svc   public.services;
+  cl    public.clients;
+  nm    text := coalesce(btrim(p_client_name), '');
+  tgu   text := regexp_replace(coalesce(btrim(p_client_telegram), ''), '^@+', '');
+  moved boolean;
+begin
+  if nm = '' then
+    raise exception 'Укажите имя клиента.';
+  end if;
+
+  select * into svc from public.services sv where sv.id = p_service_id;
+  if not found then
+    raise exception 'Услуга не найдена — обновите страницу';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('bookings:' || p_day::text));
+  select * into bk from public.bookings b where b.id = p_id for update;
+  if not found then
+    raise exception 'Запись не найдена — обновите страницу';
+  end if;
+
+  moved := bk.day <> p_day
+        or bk.start_min <> p_start_min
+        or bk.service_id is distinct from p_service_id;
+  if moved and not exists (
+    select 1 from public.free_slots(p_day, p_service_id, p_id) f
+    where f.start_min = p_start_min
+  ) then
+    raise exception 'Это время уже занято — выберите другое';
+  end if;
+
+  if p_client_id is null then
+    insert into public.clients (name, phone, telegram_username, channel)
+      values (nm, coalesce(btrim(p_client_phone), ''), tgu, coalesce(p_client_channel, ''))
+      returning * into cl;
+  else
+    update public.clients c
+       set name = nm,
+           phone = coalesce(btrim(p_client_phone), ''),
+           telegram_username = tgu,
+           channel = coalesce(p_client_channel, c.channel)
+     where c.id = p_client_id
+     returning * into cl;
+    if not found then
+      raise exception 'Клиент не найден — обновите страницу';
+    end if;
+  end if;
+
+  update public.bookings b set
+    day             = p_day,
+    start_min       = p_start_min,
+    service_id      = svc.id,
+    service_name    = case when bk.service_id is distinct from svc.id then svc.name     else b.service_name end,
+    duration        = case when bk.service_id is distinct from svc.id then svc.duration else b.duration     end,
+    price           = case when bk.service_id is distinct from svc.id then svc.price    else b.price        end,
+    client_id       = cl.id,
+    client_name     = cl.name,
+    client_username = cl.telegram_username,
+    comment         = left(coalesce(btrim(p_comment), ''), 1000),
+    status          = 'ok'
+  where b.id = p_id;
+end
+$$;
+
+revoke all on function public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text)
+  from public, anon;
+grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text)
   to authenticated;
 
 -- ─── blocked_slots: читают все (это часть доступности), пишет мастер ──

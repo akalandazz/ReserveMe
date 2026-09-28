@@ -151,10 +151,24 @@ seed, kept in the repo because the content is no longer in git otherwise.
   `favorite_service_id` from all of them; it must stay `security_invoker = on`.
 - **The master's own bookings** go through `create_master_booking()` (a new client
   plus a booking in one transaction, `status = 'ok'`, `source = 'master'` — never in
-  «Заявки»). Start times come from `free_slots(day, service_id)` on the server
-  (working hours, `days_off`, overlaps with bookings and blocked slots, not in the past,
-  on the `slot_step_minutes` grid), and `create_master_booking` re-checks against it
-  under an advisory lock. The cabinet must never compute bookable times itself.
+  «Заявки»). Start times come from `free_slots(day, service_id, exclude_id)` on the
+  server (working hours, `days_off`, overlaps with bookings and blocked slots, not in
+  the past, on the `slot_step_minutes` grid), and the per-day counts in the sheet's
+  «Выберите день» step come from `free_slot_counts()`, which wraps the same function.
+  `create_master_booking` re-checks under an advisory lock. The cabinet must never
+  compute bookable times itself.
+- **Editing any booking** (the day view's «Изменить», a request's «Изменить», a client's
+  «Изменить» when they have an upcoming booking) goes through `update_master_booking()`:
+  client data, a switch to another or a new client, service, day/time and comment in
+  one transaction, and saving **always confirms** (`status → 'ok'`). Time is re-checked
+  only when day, start or service changed, via `free_slots(…, p_id)` so the booking
+  doesn't collide with itself. Same service keeps the row's agreed `price`/`duration`.
+  There is no separate approve/move/cancel UI in the day view anymore — that all lives
+  in the sheet, next to the message the master copies for the client
+  ([src/admin/messages.js](src/admin/messages.js)).
+- `clients.channel` (`wa`/`ig`/`call`/`live`/`tg`, or `''`) records where a client the
+  master registered herself writes from. It picks the contact link in «Клиенты» and the
+  «Отправьте в …» hint; clients from Mini App requests leave it empty.
 - [src/content.js](src/content.js) is the client's read-only store — fetch,
   `localStorage` cache, `useContent()`. It has **no mutation functions anymore**; all
   writes to salon content happen through [src/admin/api.js](src/admin/api.js) instead.
@@ -203,7 +217,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. |
 | [src/admin/api.js](src/admin/api.js) | Every write the cabinet makes — services, `working_hours`, `days_off`, `blocked_slots`, `bookings`. Same `{ ok, error }`-never-throws idiom as the old `content.js` mutations, and every mutation calls `loadAdminData()` on success. |
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
-| [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `NewBookingSheet.jsx` is the «Новая запись» bottom sheet, opened from the Расписание header, a free slot in `DayPanel`, or a client card; it shows errors inline, because the cabinet's toast sits in page flow under the backdrop. |
+| [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `BookingSheet.jsx` is the one bottom sheet for bookings and clients, in three modes: `new` (the 4-step «Записать» wizard — client → service → day → time → check, from the Расписание header or a client card), `edit` (an existing booking or request, opened on the check step) and `client` («Новый клиент», or «Изменить» on a client with no upcoming booking). It shows errors inline, because the cabinet's toast sits in page flow under the backdrop, and reports back through `onDone({ toast, day?, view?, clientId? })`. |
 
 Stored bookings use short keys (`{id, s, d, t, m, p, c, k, st}`) because CloudStorage
 caps a value at 4096 characters — `k` is the `client_token` tying the record to its

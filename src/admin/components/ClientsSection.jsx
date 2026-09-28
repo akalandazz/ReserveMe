@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { labelForKey, toHHMM } from "../../schedule.js";
-import { addClientComment, createClient, deleteClientComment, updateClient } from "../api.js";
+import { CHANNELS, addClientComment, deleteClientComment } from "../api.js";
 import {
   commentDate,
   isBookingPast,
@@ -15,30 +15,42 @@ const MODES = [
   { id: "all", label: "Все" },
 ];
 
-// Ещё не сохранённый клиент из «Новый клиент» — живёт только здесь,
-// в базу попадает по «Сохранить». «Отмена» просто убирает его.
-const NEW_ID = "new";
-const NEW_CLIENT = { id: NEW_ID, name: "", telegram_username: "", phone: "", visit_count: 0 };
-const EMPTY_DRAFT = { name: "", telegram_username: "", phone: "" };
 const VISITS_PREVIEW = 3;
 
 function monogram(name) {
   return (name || "").trim().charAt(0).toUpperCase() || "?";
 }
 
-function telegramUrl(username) {
-  return `https://t.me/${username}`;
+const channelLabel = (id) => CHANNELS.find((c) => c.id === id)?.label ?? "";
+
+/** Куда ведёт круглая кнопка в строке: Telegram, WhatsApp или звонок. */
+function contactLink(c) {
+  if (c.telegram_username) {
+    return {
+      href: `https://t.me/${c.telegram_username}`,
+      label: "Написать в Telegram",
+      icon: "telegram",
+    };
+  }
+  const phone = String(c.phone || "").replace(/[^\d+]/g, "");
+  if (!phone) return null;
+  if (c.channel === "wa") {
+    return {
+      href: `https://wa.me/${phone.replace(/\D/g, "")}`,
+      label: "Написать в WhatsApp",
+      icon: "chat",
+    };
+  }
+  return { href: `tel:${phone}`, label: "Позвонить", icon: "phone" };
 }
 
-/**
- * Ближайшая ещё не прошедшая запись клиента — от режима «За
- * день»/«Все» не зависит: список всех записей уже загружен целиком
- * (см. store.js), лишний запрос не нужен.
- */
+/** Ближайшая ещё не прошедшая запись клиента. */
 function nextBookingFor(bookings, clientId) {
-  return bookings
-    .filter((b) => b.client_id === clientId && !isBookingPast(b))
-    .sort((a, b) => a.day.localeCompare(b.day) || a.start_min - b.start_min)[0] ?? null;
+  return (
+    bookings
+      .filter((b) => b.client_id === clientId && !isBookingPast(b))
+      .sort((a, b) => a.day.localeCompare(b.day) || a.start_min - b.start_min)[0] ?? null
+  );
 }
 
 /** Прошедшие записи клиента, новые сверху — те же, что считает visit_count. */
@@ -48,25 +60,45 @@ function pastBookingsFor(bookings, clientId) {
     .sort((a, b) => b.day.localeCompare(a.day) || b.start_min - a.start_min);
 }
 
+/**
+ * «Клиенты». Данные клиента здесь не правятся — «Изменить» открывает
+ * лист записи (BookingSheet): ближайшую запись клиента, если она есть
+ * (там же и данные клиента), иначе — лист только с клиентом. Тем же
+ * листом заводится «Новый клиент»; после сохранения AdminApp передаёт
+ * его id в focus, и мы раскрываем его в «Все».
+ */
 export default function ClientsSection({
   clients,
   comments,
   bookings,
   selectedKey,
+  focus,
   busy,
   busyThen,
-  onToast,
   onError,
   onBook,
+  onEditBooking,
+  onEditClient,
 }) {
   const [mode, setMode] = useState("day");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState(null);
-  const [editId, setEditId] = useState(null);
-  const [draft, setDraft] = useState(EMPTY_DRAFT);
-  const [pendingNew, setPendingNew] = useState(false);
   const [commentText, setCommentText] = useState("");
   const [allVisits, setAllVisits] = useState(false);
+
+  // Новый focus — раскрыть этого клиента. Сравнение во время рендера,
+  // а не эффект: иначе на кадр мелькнул бы старый список.
+  const [seenFocus, setSeenFocus] = useState(focus);
+  if (focus !== seenFocus) {
+    setSeenFocus(focus);
+    if (focus) {
+      setMode("all");
+      setQuery("");
+      setOpenId(focus.id);
+      setCommentText("");
+      setAllVisits(false);
+    }
+  }
 
   const dayRows = useMemo(() => {
     const seen = new Set();
@@ -83,7 +115,7 @@ export default function ClientsSection({
 
   const base = mode === "day" ? dayRows : clients;
 
-  const filtered = useMemo(() => {
+  const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return base;
     return base.filter((c) =>
@@ -92,8 +124,6 @@ export default function ClientsSection({
         .some((v) => v.toLowerCase().includes(q))
     );
   }, [base, query]);
-
-  const rows = pendingNew ? [NEW_CLIENT, ...filtered] : filtered;
 
   const commentsByClient = useMemo(() => {
     const map = new Map();
@@ -105,61 +135,9 @@ export default function ClientsSection({
   }, [comments]);
 
   const toggleOpen = (id) => {
-    const next = openId === id ? null : id;
-    setOpenId(next);
-    setEditId(null);
+    setOpenId((cur) => (cur === id ? null : id));
     setCommentText("");
     setAllVisits(false);
-    // Несохранённый новый клиент исчезает, как только мастер ушла из него.
-    if (pendingNew && next !== NEW_ID) setPendingNew(false);
-  };
-
-  const addNew = () => {
-    setMode("all");
-    setQuery("");
-    setPendingNew(true);
-    setOpenId(NEW_ID);
-    setEditId(NEW_ID);
-    setDraft(EMPTY_DRAFT);
-    setCommentText("");
-  };
-
-  const startEdit = (c) => {
-    setDraft({
-      name: c.name || "",
-      telegram_username: c.telegram_username || "",
-      phone: c.phone || "",
-    });
-    setEditId(c.id);
-  };
-
-  const cancelEdit = () => {
-    if (editId === NEW_ID) {
-      setPendingNew(false);
-      setOpenId(null);
-    }
-    setEditId(null);
-  };
-
-  const saveEdit = (c) => {
-    if (!draft.name.trim()) {
-      onToast("Укажите имя клиента.");
-      return;
-    }
-    const isNew = c.id === NEW_ID;
-    busyThen(`client-${c.id}`, 400, async () => {
-      const res = isNew ? await createClient(draft) : await updateClient(c.id, draft);
-      if (!res.ok) {
-        onError(res.error);
-        return;
-      }
-      onToast("Данные клиента сохранены.");
-      setEditId(null);
-      if (isNew) {
-        setPendingNew(false);
-        setOpenId(res.id);
-      }
-    });
   };
 
   const addComment = (clientId) => {
@@ -186,22 +164,6 @@ export default function ClientsSection({
         ? "Никого не нашлось"
         : "Клиентов пока нет";
 
-  const field = (c, key, label, type = "text") => (
-    <>
-      <label className="eyebrow" htmlFor={`client-${key}-${c.id}`}>
-        {label}
-      </label>
-      <input
-        id={`client-${key}-${c.id}`}
-        type={type}
-        className="field"
-        autoComplete="off"
-        value={draft[key]}
-        onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
-      />
-    </>
-  );
-
   return (
     <div>
       <div className="header-row">
@@ -211,7 +173,7 @@ export default function ClientsSection({
             {mode === "day" ? labelForKey(selectedKey) : `${clients.length} всего`}
           </span>
         </div>
-        <button className="pill-btn has-icon" type="button" onClick={addNew}>
+        <button className="pill-btn has-icon" type="button" onClick={() => onEditClient(null)}>
           <Icon name="plus" size={14} />
           Новый клиент
         </button>
@@ -225,7 +187,10 @@ export default function ClientsSection({
               type="button"
               className="view-btn"
               aria-pressed={mode === m.id ? "true" : "false"}
-              onClick={() => setMode(m.id)}
+              onClick={() => {
+                setMode(m.id);
+                setOpenId(null);
+              }}
             >
               {m.label}
             </button>
@@ -247,149 +212,142 @@ export default function ClientsSection({
       ) : (
         <div className="clients-panel">
           {rows.map((c) => {
-            const isNew = c.id === NEW_ID;
             const expanded = openId === c.id;
-            const editing = editId === c.id;
-            const saving = busy === `client-${c.id}`;
-            const next = expanded && !isNew ? nextBookingFor(bookings, c.id) : null;
-            const past = expanded && !isNew ? pastBookingsFor(bookings, c.id) : [];
+            const next = expanded ? nextBookingFor(bookings, c.id) : null;
+            const past = expanded ? pastBookingsFor(bookings, c.id) : [];
             const shownPast = allVisits ? past : past.slice(0, VISITS_PREVIEW);
             const notes = commentsByClient.get(c.id) ?? [];
+            const link = contactLink(c);
 
-            const subtitle = isNew
-              ? "Заполните данные клиента"
-              : mode === "day"
+            const handle = c.telegram_username
+              ? `@${c.telegram_username}`
+              : [
+                  c.phone || "без контактов",
+                  c.channel && c.channel !== "tg" && channelLabel(c.channel),
+                ]
+                  .filter(Boolean)
+                  .join(" · ");
+            const subtitle = [
+              handle,
+              `${c.visit_count} ${pluralVisits(c.visit_count)}`,
+              mode === "day"
                 ? [c.dayTime, c.dayService].filter(Boolean).join(" · ")
-                : [
-                    c.telegram_username && `@${c.telegram_username}`,
-                    `${c.visit_count} ${pluralVisits(c.visit_count)}`,
-                    c.last_visit_at && `была ${relativeVisit(c.last_visit_at)}`,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ");
+                : c.last_visit_at
+                  ? `была ${relativeVisit(c.last_visit_at)}`
+                  : "ещё не была",
+            ]
+              .filter(Boolean)
+              .join(" · ");
 
             return (
-              <div
-                className="client-row"
-                key={c.id}
-                data-expanded={expanded ? "true" : "false"}
-              >
+              <div className="client-row" key={c.id} data-expanded={expanded ? "true" : "false"}>
                 <div className="client-row-top">
-                  <button
-                    type="button"
-                    className="client-row-head"
-                    onClick={() => toggleOpen(c.id)}
-                  >
+                  <button type="button" className="client-row-head" onClick={() => toggleOpen(c.id)}>
                     <span className="client-monogram">{monogram(c.name)}</span>
                     <span className="client-main">
-                      <span className="client-name">
-                        {isNew ? "Новый клиент" : c.name || "Без имени"}
-                      </span>
-                      {subtitle && <span className="client-sub">{subtitle}</span>}
+                      <span className="client-name">{c.name || "Без имени"}</span>
+                      <span className="client-sub">{subtitle}</span>
                     </span>
                   </button>
-                  {c.telegram_username && (
+                  {link && (
                     <a
-                      className="round-btn"
-                      href={telegramUrl(c.telegram_username)}
+                      className="round-btn contact-btn"
+                      href={link.href}
                       target="_blank"
                       rel="noopener"
-                      aria-label="Написать в Telegram"
+                      aria-label={link.label}
                     >
-                      <Icon name="telegram" size={15} />
+                      <Icon name={link.icon} size={16} />
                     </a>
                   )}
                 </div>
 
                 {expanded && (
                   <div className="client-detail">
-                    {editing ? (
-                      <>
-                        {field(c, "name", "Имя")}
-                        {field(c, "telegram_username", "Telegram")}
-                        {field(c, "phone", "Телефон", "tel")}
-                        <div className="client-edit-actions">
-                          <button className="btn-cancel-draft" type="button" onClick={cancelEdit}>
-                            Отмена
-                          </button>
-                          <button
-                            className="btn-save"
-                            type="button"
-                            disabled={saving}
-                            onClick={() => saveEdit(c)}
-                          >
-                            {saving && <span className="btn-spinner" aria-hidden="true" />}
-                            {saving ? "Сохраняем" : "Сохранить"}
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="client-actions">
-                          <button className="btn-save" type="button" onClick={() => onBook(c.id)}>
-                            Записать
-                          </button>
-                          <button className="btn-outline" type="button" onClick={() => startEdit(c)}>
-                            Изменить
-                          </button>
-                        </div>
+                    <div className="client-facts">
+                      <span>
+                        Телефон: <span className="client-fact">{c.phone || "—"}</span>
+                      </span>
+                      <span>
+                        Чаще всего:{" "}
+                        <span className="client-fact">{c.favorite_service_name || "—"}</span>
+                      </span>
+                      <span>
+                        {next
+                          ? `Ближайшая запись: ${labelForKey(next.day)}, ${toHHMM(next.start_min)}`
+                          : "Записей пока нет"}
+                      </span>
+                    </div>
 
-                        <dl className="client-info">
-                          <div>
-                            <dt className="client-label">Телефон</dt>
-                            <dd>{c.phone || "Не указан"}</dd>
+                    <div className="client-actions">
+                      <button className="btn-save" type="button" onClick={() => onBook(c.id)}>
+                        Записать
+                      </button>
+                      <button
+                        className="btn-outline"
+                        type="button"
+                        onClick={() => (next ? onEditBooking(next.id) : onEditClient(c.id))}
+                      >
+                        Изменить
+                      </button>
+                    </div>
+
+                    <p className="client-label client-section">Прошлые записи · {past.length}</p>
+                    <div className="visits-box">
+                      {past.length === 0 ? (
+                        <p className="visits-empty">Ещё не было визитов</p>
+                      ) : (
+                        shownPast.map((b) => (
+                          <div className="visit-row" key={b.id}>
+                            <span className="visit-date">{shortDate(b.day)}</span>
+                            <span className="visit-service">{b.service_name}</span>
+                            <span className="visit-price">{b.price} ₾</span>
                           </div>
-                          <div>
-                            <dt className="client-label">Чаще всего</dt>
-                            <dd>{c.favorite_service_name || "—"}</dd>
-                          </div>
-                          <div>
-                            <dt className="client-label">Ближайшая запись</dt>
-                            <dd>
-                              {next
-                                ? `${labelForKey(next.day)}, ${toHHMM(next.start_min)}`
-                                : "Не запланирована"}
-                            </dd>
-                          </div>
-                        </dl>
-                      </>
+                        ))
+                      )}
+                    </div>
+                    {past.length > VISITS_PREVIEW && (
+                      <button
+                        className="link-btn visits-toggle"
+                        type="button"
+                        onClick={() => setAllVisits((v) => !v)}
+                      >
+                        {allVisits ? "Свернуть" : `Показать все ${past.length}`}
+                      </button>
                     )}
 
-                    {!isNew && (
-                      <>
-                        <p className="client-label client-section">Комментарии</p>
-                        {notes.length > 0 && (
-                          <ul className="comment-list">
-                            {notes.map((cm) => (
-                              <li className="comment" key={cm.id}>
-                                <span className="comment-main">
-                                  <span className="comment-text">{cm.body}</span>
-                                  <span className="comment-date">{commentDate(cm.created_at)}</span>
-                                </span>
-                                <button
-                                  className="comment-del"
-                                  type="button"
-                                  aria-label="Удалить комментарий"
-                                  disabled={!!busy}
-                                  onClick={() => removeComment(cm.id)}
-                                >
-                                  <Icon name="x" size={13} />
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                        <textarea
-                          className="field comment-input"
-                          rows={2}
-                          placeholder="Написать комментарий…"
-                          aria-label="Новый комментарий"
-                          value={commentText}
-                          onChange={(e) => setCommentText(e.target.value)}
-                        />
+                    <p className="client-label client-section">Комментарии</p>
+                    <div className="comment-stack">
+                      {notes.map((cm) => (
+                        <div className="comment" key={cm.id}>
+                          <span className="comment-main">
+                            <span className="comment-text">{cm.body}</span>
+                            <span className="comment-date">{commentDate(cm.created_at)}</span>
+                          </span>
+                          <button
+                            className="comment-del"
+                            type="button"
+                            aria-label="Удалить комментарий"
+                            disabled={!!busy}
+                            onClick={() => removeComment(cm.id)}
+                          >
+                            <Icon name="x" size={13} />
+                          </button>
+                        </div>
+                      ))}
+                      <textarea
+                        className="field comment-input"
+                        rows={2}
+                        placeholder="Написать комментарий…"
+                        aria-label="Новый комментарий"
+                        value={commentText}
+                        onChange={(e) => setCommentText(e.target.value)}
+                      />
+                      <div className="comment-add-row">
                         <button
-                          className="btn-save comment-add"
+                          className="comment-add"
                           type="button"
+                          data-ready={commentText.trim() ? "true" : "false"}
                           disabled={!commentText.trim() || busy === "comment-add"}
                           onClick={() => addComment(c.id)}
                         >
@@ -398,34 +356,8 @@ export default function ClientsSection({
                           )}
                           Добавить
                         </button>
-
-                        <p className="client-label client-section">
-                          Прошлые записи · {past.length}
-                        </p>
-                        <div className="visits-box">
-                          {past.length === 0 ? (
-                            <p className="visits-empty">Ещё не было визитов</p>
-                          ) : (
-                            shownPast.map((b) => (
-                              <div className="visit-row" key={b.id}>
-                                <span className="visit-date">{shortDate(b.day)}</span>
-                                <span className="visit-service">{b.service_name}</span>
-                                <span className="visit-price">{b.price} ₾</span>
-                              </div>
-                            ))
-                          )}
-                          {past.length > VISITS_PREVIEW && (
-                            <button
-                              className="link-btn visits-toggle"
-                              type="button"
-                              onClick={() => setAllVisits((v) => !v)}
-                            >
-                              {allVisits ? "Свернуть" : `Показать все ${past.length}`}
-                            </button>
-                          )}
-                        </div>
-                      </>
-                    )}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

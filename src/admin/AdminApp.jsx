@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { dateKey, labelForKey, toHHMM } from "../schedule.js";
+import { dateKey } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
 import { initAuth, signOut, useSession } from "../supabase.js";
@@ -8,8 +8,8 @@ import { loadAdminData, resetAdminData, useAdminData } from "./store.js";
 import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
 import ClientsSection from "./components/ClientsSection.jsx";
+import BookingSheet from "./components/BookingSheet.jsx";
 import { Icon } from "./components/Icons.jsx";
-import NewBookingSheet from "./components/NewBookingSheet.jsx";
 import RequestsSection from "./components/RequestsSection.jsx";
 import ScheduleSection from "./components/ScheduleSection.jsx";
 import ServicesSection from "./components/ServicesSection.jsx";
@@ -54,8 +54,12 @@ export default function AdminApp() {
   // вкладок кабинета.
   const [calView, setCalView] = useState("month");
   const [selectedKey, setSelectedKey] = useState(() => dateKey(new Date()));
-  // Лист «Новая запись»: null — закрыт, иначе { clientId?, day, time? }.
+  // Лист записи: null — закрыт, иначе { kind: "new" | "edit" | "client", … }
+  // (см. BookingSheet.jsx).
   const [sheet, setSheet] = useState(null);
+  // Клиент, которого «Клиенты» должны раскрыть — только что заведённый.
+  // Объект, а не id: повторное добавление того же id — новая ссылка.
+  const [clientFocus, setClientFocus] = useState(null);
   const toastTimer = useRef(null);
   const busyTimer = useRef(null);
   const session = useSession();
@@ -88,19 +92,22 @@ export default function AdminApp() {
   };
   const showError = (msg) => flash(`⚠️ ${msg}`);
 
-  // Открыть лист «Новая запись». Без даты — выбранный в календаре день,
-  // но не раньше сегодня: в прошлое записать нельзя (см. free_slots).
-  const openBooking = (init = {}) => {
-    const today = dateKey(new Date());
-    setSheet({ day: selectedKey < today ? today : selectedKey, ...init });
-  };
-  // Стабильная ссылка: NewBookingSheet подписывается на Escape по ней.
+  const openBooking = (clientId) => setSheet({ kind: "new", clientId });
+  const editBooking = (bookingId) => setSheet({ kind: "edit", bookingId });
+  const editClient = (clientId) => setSheet({ kind: "client", clientId });
+  // Стабильная ссылка: BookingSheet подписывается на Escape по ней.
   const closeBooking = useCallback(() => setSheet(null), []);
-  const onBooked = ({ day, startMin, name }) => {
-    setSelectedKey(day);
+  // Лист сохранил: тост, и — если он так сказал — показать день записи
+  // или раскрыть нового клиента.
+  const onSheetDone = ({ toast, day, view, clientId }) => {
     setSheet(null);
-    const when = labelForKey(day);
-    flash(`${name} записана: ${when.charAt(0).toLowerCase()}${when.slice(1)}, ${toHHMM(startMin)}.`);
+    flash(toast);
+    if (day) setSelectedKey(day);
+    if (view) {
+      setTab("schedule");
+      setCalView(view);
+    }
+    if (clientId != null) setClientFocus({ id: clientId });
   };
 
   // Единое «занято» состояние на весь экран кабинета: пока один запрос
@@ -184,6 +191,9 @@ export default function AdminApp() {
                 Записать
               </button>
             )}
+            {tab === "settings" && data.settings?.masterName && (
+              <span className="header-name">{data.settings.masterName}</span>
+            )}
           </div>
         )}
 
@@ -207,11 +217,9 @@ export default function AdminApp() {
                   setView={setCalView}
                   selectedKey={selectedKey}
                   setSelectedKey={setSelectedKey}
-                  busy={busy}
-                  busyThen={busyThen}
                   onToast={flash}
                   onError={showError}
-                  onBook={openBooking}
+                  onEditBooking={editBooking}
                 />
               </>
             )}
@@ -223,6 +231,7 @@ export default function AdminApp() {
                 busyThen={busyThen}
                 onToast={flash}
                 onError={showError}
+                onEdit={editBooking}
               />
             )}
 
@@ -232,11 +241,13 @@ export default function AdminApp() {
                 comments={data.comments}
                 bookings={data.bookings}
                 selectedKey={selectedKey}
+                focus={clientFocus}
                 busy={busy}
                 busyThen={busyThen}
-                onToast={flash}
                 onError={showError}
-                onBook={(clientId) => openBooking({ clientId })}
+                onBook={openBooking}
+                onEditBooking={editBooking}
+                onEditClient={editClient}
               />
             )}
 
@@ -270,12 +281,15 @@ export default function AdminApp() {
       <BottomNav active={tab} onChange={setTab} pendingCount={stats.pendingCount} />
 
       {sheet && (
-        <NewBookingSheet
+        <BookingSheet
           clients={data.clients}
           services={data.services}
+          bookings={data.bookings}
+          settings={data.settings}
+          daysOff={data.daysOff}
           initial={sheet}
           onClose={closeBooking}
-          onBooked={onBooked}
+          onDone={onSheetDone}
         />
       )}
     </div>
