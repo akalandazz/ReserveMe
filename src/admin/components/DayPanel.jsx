@@ -4,9 +4,11 @@ import { buildDayRows, hoursFor, parseKey } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
 
 /**
- * Панель одного дня. Запись — карточка с одной кнопкой «Изменить»:
+ * Панель одного дня. Запись — карточка с кнопкой «Изменить»:
  * подтвердить, перенести и отменить — всё в листе записи
  * (BookingSheet), там же, где мастер видит сообщение для клиента.
+ * Рядом корзина — удалить запись молча, без сообщения клиенту
+ * (ошибочная или тестовая запись), через подтверждение под карточкой.
  */
 export default function DayPanel({
   settings,
@@ -18,6 +20,10 @@ export default function DayPanel({
   onToast,
   onError,
   onEditBooking,
+  busy,
+  confirmDel,
+  setConfirmDel,
+  onDeleteBooking,
 }) {
   const dow = parseKey(selectedKey).getDay();
   const hours = hoursFor(settings, dow);
@@ -37,6 +43,11 @@ export default function DayPanel({
       onError(res.error);
     }
   };
+
+  const isConfirming = (id) => confirmDel?.kind === "booking" && confirmDel.id === id;
+  // Повторный тап по корзине — закрыть своё подтверждение.
+  const askDelete = (id) =>
+    setConfirmDel(isConfirming(id) ? null : { kind: "booking", id });
 
   const toggleBlock = (minute, isBlocked) =>
     wrap(isBlocked ? unblockSlot(selectedKey, minute) : blockSlot(selectedKey, minute));
@@ -88,29 +99,65 @@ export default function DayPanel({
               <span className="day-row-time">{r.time}</span>
               <span className="day-row-body">
                 {r.type === "booking" ? (
-                  <span className="booking-card has-edit" data-status={r.booking.status}>
-                    <span className="booking-body">
-                      <span className="booking-head">
-                        <span className="booking-name">
-                          {r.booking.client_name || "Клиент"} · {r.booking.service_name}
+                  <>
+                    <span className="booking-card has-edit" data-status={r.booking.status}>
+                      <span className="booking-body">
+                        <span className="booking-head">
+                          <span className="booking-name">
+                            {r.booking.client_name || "Клиент"} · {r.booking.service_name}
+                          </span>
+                          <span className="booking-price">{r.booking.price} ₾</span>
                         </span>
-                        <span className="booking-price">{r.booking.price} ₾</span>
+                        <span className="booking-meta">
+                          {r.time}–{toHHMM(r.booking.start_min + r.booking.duration)}
+                          {" · "}
+                          {r.booking.status === "new" ? "ждёт подтверждения" : "подтверждена"}
+                          {r.booking.comment ? ` · «${r.booking.comment}»` : ""}
+                        </span>
                       </span>
-                      <span className="booking-meta">
-                        {r.time}–{toHHMM(r.booking.start_min + r.booking.duration)}
-                        {" · "}
-                        {r.booking.status === "new" ? "ждёт подтверждения" : "подтверждена"}
-                        {r.booking.comment ? ` · «${r.booking.comment}»` : ""}
-                      </span>
+                      <button
+                        className="booking-edit"
+                        type="button"
+                        onClick={() => onEditBooking(r.booking.id)}
+                      >
+                        Изменить
+                      </button>
+                      <button
+                        className="booking-del"
+                        type="button"
+                        aria-label="Удалить запись"
+                        aria-expanded={isConfirming(r.booking.id) ? "true" : "false"}
+                        onClick={() => askDelete(r.booking.id)}
+                      >
+                        <Icon name="trash" size={17} />
+                      </button>
                     </span>
-                    <button
-                      className="booking-edit"
-                      type="button"
-                      onClick={() => onEditBooking(r.booking.id)}
-                    >
-                      Изменить
-                    </button>
-                  </span>
+                    {isConfirming(r.booking.id) && (
+                      <span className="del-confirm" role="group" aria-label="Удаление записи">
+                        <span className="del-confirm-text">Удалить запись без восстановления?</span>
+                        <span className="del-confirm-actions">
+                          <button
+                            className="btn-danger-fill"
+                            type="button"
+                            disabled={!!busy}
+                            onClick={() => onDeleteBooking(r.booking.id)}
+                          >
+                            {busy === `del-booking-${r.booking.id}` && (
+                              <span className="btn-spinner" aria-hidden="true" />
+                            )}
+                            Удалить
+                          </button>
+                          <button
+                            className="btn-outline"
+                            type="button"
+                            onClick={() => setConfirmDel(null)}
+                          >
+                            Нет
+                          </button>
+                        </span>
+                      </span>
+                    )}
+                  </>
                 ) : r.isOpenSlot ? (
                   // Строка — подложка, не кнопка: «Закрыть» стоит в полную
                   // её высоту (≥44px).

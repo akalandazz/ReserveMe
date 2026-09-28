@@ -165,7 +165,19 @@ seed, kept in the repo because the content is no longer in git otherwise.
   doesn't collide with itself. Same service keeps the row's agreed `price`/`duration`.
   There is no separate approve/move/cancel UI in the day view anymore — that all lives
   in the sheet, next to the message the master copies for the client
-  ([src/admin/messages.js](src/admin/messages.js)).
+  ([src/admin/messages.js](src/admin/messages.js)). The one exception is the trash
+  icon (day view card, and each «Прошлые записи» row in «Клиенты»): a **silent** hard
+  delete for a mistaken or test booking, which reminds nobody to message the client —
+  unlike the sheet's «Отменить запись», which does. Its inline confirm, like the
+  client-delete one, is gated by `confirmDel` in `AdminApp.jsx`: one open confirm
+  across the whole cabinet.
+- **Deleting a client** goes only through `delete_client(id)` (`security definer`,
+  `authenticated` only): the client, **all** their bookings (past, upcoming, pending
+  requests) and comments in one transaction, returning the deleted counts. `clients`
+  has no delete policy on purpose, and `bookings.client_id` stays `on delete set null`
+  — don't switch it to `cascade` to "simplify" this, and don't add a direct delete
+  on `clients`: either would let a client vanish while leaving (or silently taking)
+  bookings through some other path. A missing client returns zeros, not an error.
 - `clients.channel` (`wa`/`ig`/`call`/`live`/`tg`, or `''`) records where a client the
   master registered herself writes from. It picks the contact link in «Клиенты» and the
   «Отправьте в …» hint; clients from Mini App requests leave it empty.

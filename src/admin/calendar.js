@@ -63,6 +63,14 @@ export function pluralVisits(n) {
   return pluralRu(n, ["визит", "визита", "визитов"]);
 }
 
+export function pluralBookings(n) {
+  return pluralRu(n, ["запись", "записи", "записей"]);
+}
+
+export function pluralComments(n) {
+  return pluralRu(n, ["комментарий", "комментария", "комментариев"]);
+}
+
 /** "неделю назад", а не "1 неделю назад"; иначе "N недели/недель назад". */
 function agoRu(n, forms) {
   return n === 1 ? `${forms[0]} назад` : `${n} ${pluralRu(n, forms)} назад`;

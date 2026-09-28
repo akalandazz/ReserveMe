@@ -3,6 +3,7 @@ import { dateKey } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
 import { initAuth, signOut, useSession } from "../supabase.js";
+import { deleteBooking } from "./api.js";
 import { isBookingPast, weekStart } from "./calendar.js";
 import { loadAdminData, resetAdminData, useAdminData } from "./store.js";
 import BottomNav from "./components/BottomNav.jsx";
@@ -60,6 +61,10 @@ export default function AdminApp() {
   // Клиент, которого «Клиенты» должны раскрыть — только что заведённый.
   // Объект, а не id: повторное добавление того же id — новая ссылка.
   const [clientFocus, setClientFocus] = useState(null);
+  // Открытое подтверждение удаления — одно на весь кабинет:
+  // { kind: "booking" | "client", id } или null. Открыть второе —
+  // значит закрыть первое, где бы оно ни стояло.
+  const [confirmDel, setConfirmDel] = useState(null);
   const toastTimer = useRef(null);
   const busyTimer = useRef(null);
   const session = useSession();
@@ -119,6 +124,40 @@ export default function AdminApp() {
       setBusy(null);
       fn();
     }, ms);
+  };
+
+  const switchTab = (next) => {
+    setTab(next);
+    setConfirmDel(null);
+  };
+
+  // Лист модальный, так что открытым над удаляемым он быть не должен, —
+  // но если всё же открыт на удалённом, ему больше нечего сохранять.
+  const closeSheetIf = (pred) => setSheet((s) => (s && pred(s) ? null : s));
+
+  // Жёсткое удаление записи (корзина в панели дня и в «Прошлых записях»).
+  // В отличие от «Отменить запись» в листе — клиенту ничего не пишем.
+  const removeBooking = (id) =>
+    busyThen(`del-booking-${id}`, 250, async () => {
+      const res = await deleteBooking(id);
+      if (!res.ok) {
+        showError(res.error);
+        return;
+      }
+      setConfirmDel(null);
+      closeSheetIf((s) => s.kind === "edit" && s.bookingId === id);
+      flash("Запись удалена.");
+    });
+
+  // Клиент удалён (ClientsSection): закрыть лист, если он был о нём или
+  // об одной из его записей, и забыть «раскрыть этого клиента».
+  const forgetClient = (clientId, bookingIds) => {
+    setConfirmDel(null);
+    closeSheetIf(
+      (s) =>
+        s.clientId === clientId || (s.kind === "edit" && bookingIds.includes(s.bookingId))
+    );
+    setClientFocus((f) => (f?.id === clientId ? null : f));
   };
 
   const stats = useMemo(() => {
@@ -220,6 +259,10 @@ export default function AdminApp() {
                   onToast={flash}
                   onError={showError}
                   onEditBooking={editBooking}
+                  busy={busy}
+                  confirmDel={confirmDel}
+                  setConfirmDel={setConfirmDel}
+                  onDeleteBooking={removeBooking}
                 />
               </>
             )}
@@ -244,10 +287,15 @@ export default function AdminApp() {
                 focus={clientFocus}
                 busy={busy}
                 busyThen={busyThen}
+                onToast={flash}
                 onError={showError}
                 onBook={openBooking}
                 onEditBooking={editBooking}
                 onEditClient={editClient}
+                confirmDel={confirmDel}
+                setConfirmDel={setConfirmDel}
+                onDeleteBooking={removeBooking}
+                onClientDeleted={forgetClient}
               />
             )}
 
@@ -278,7 +326,7 @@ export default function AdminApp() {
         )}
       </div>
 
-      <BottomNav active={tab} onChange={setTab} pendingCount={stats.pendingCount} />
+      <BottomNav active={tab} onChange={switchTab} pendingCount={stats.pendingCount} />
 
       {sheet && (
         <BookingSheet

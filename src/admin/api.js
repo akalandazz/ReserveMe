@@ -93,6 +93,8 @@ export function approveBooking(id) {
   return run(() => supabase.from("bookings").update({ status: "ok" }).eq("id", id));
 }
 
+/** Удаление без восстановления. Уже удалённая запись — не ошибка:
+ *  delete по несуществующему id просто ничего не находит. */
 export function deleteBooking(id) {
   return run(() => supabase.from("bookings").delete().eq("id", id));
 }
@@ -231,6 +233,20 @@ export async function updateClient(id, fields) {
   return clientResult(
     await run(() => supabase.from("clients").update(clientFields(fields)).eq("id", id))
   );
+}
+
+/** Клиент со всеми его записями и комментариями — одной транзакцией
+ *  (delete_client в schema.sql). Уже удалённый — ok с нулями.
+ *  counts: { bookings, comments } — сколько удалилось. */
+export async function deleteClient(id) {
+  const res = await run(() => supabase.rpc("delete_client", { p_id: id }).single());
+  return {
+    ...res,
+    counts: {
+      bookings: res.data?.bookings_deleted ?? 0,
+      comments: res.data?.comments_deleted ?? 0,
+    },
+  };
 }
 
 export function addClientComment(clientId, body) {

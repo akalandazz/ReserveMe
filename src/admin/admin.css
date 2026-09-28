@@ -2599,6 +2599,118 @@ input:focus {
   color: var(--ink);
 }
 
+/* ─── Удаление записи и клиента ───────────────────────────────────
+   Корзина открывает подтверждение под строкой; открытое одно на весь
+   кабинет (confirmDel в AdminApp.jsx). 36px в панели дня, 30px в
+   плотных строках «Прошлых записей».                               */
+
+.booking-del {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  margin-left: -4px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--danger);
+  cursor: pointer;
+}
+
+.booking-del[aria-expanded="true"] {
+  border-color: var(--danger);
+}
+
+.visit-del {
+  display: grid;
+  place-items: center;
+  flex: none;
+  align-self: center;
+  width: 30px;
+  height: 30px;
+  margin: -5px -6px -5px -2px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.visit-del[aria-expanded="true"] {
+  color: var(--danger);
+}
+
+.del-confirm {
+  display: block;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 14px;
+  background: var(--card);
+  animation: fadeUp 0.2s ease both;
+}
+
+.del-confirm.is-dense {
+  margin: 0 -6px 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+.del-confirm-text {
+  display: block;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.del-confirm.is-dense .del-confirm-text {
+  font-size: 13px;
+}
+
+.del-confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.del-confirm-actions > button {
+  flex: 1;
+  min-height: 44px;
+}
+
+.btn-danger-fill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--danger);
+  color: var(--on-accent);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn-danger-fill:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.client-del-btn {
+  width: 100%;
+  margin-top: 18px;
+  color: var(--danger);
+}
+
+.client-del-box {
+  margin-top: 18px;
+}
+
 /* ─── Отклик и фокус ──────────────────────────────────────────── */
 
 :focus-visible {

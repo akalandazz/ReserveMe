@@ -405,7 +405,8 @@ grant execute on function public.booking_status(uuid[]) to anon, authenticated;
 --  clients — как bookings: телефон и комментарии мастера не должны
 --  светиться анониму. anon-политик нет вовсе. Мастер читает, правит
 --  и заводит клиентов («Новый клиент» в кабинете); удалять строку
---  напрямую не может никто — у клиента есть история записей.
+--  напрямую не может никто — у клиента есть история записей. Удаляет
+--  клиента только delete_client() — вместе с его записями.
 -- ═══════════════════════════════════════════════════════════════
 
 alter table public.clients enable row level security;
@@ -796,6 +797,56 @@ revoke all on function public.update_master_booking(bigint, bigint, text, text, 
   from public, anon;
 grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text)
   to authenticated;
+
+-- ─── delete_client(): «Удалить клиента» вместе со всем, что к нему ─
+--  привязано. Записи (прошлые, будущие и неподтверждённые заявки) и
+--  комментарии уходят в той же транзакции, что и карточка. Каскадом
+--  по внешнему ключу этого не сделать: bookings.client_id — on delete
+--  set null, и так и должно остаться для всех прочих путей, иначе
+--  записи тихо пропадали бы из расписания.
+--
+--  security definer: прямого delete-права на clients нет ни у кого
+--  (см. RLS clients выше) — удалить клиента можно только так, целиком,
+--  а не оставив его записи сиротами. Исполнять может только
+--  authenticated, как и остальные функции мастера.
+--
+--  Идемпотентна: уже удалённый клиент — не ошибка, а нули в ответе
+--  (второй тап или вторая вкладка кабинета).
+--
+--  Больше к клиенту ничего не привязано: visit_count, last_visit_at и
+--  любимая услуга — это вьюха client_stats, она пересчитывается сама.
+create or replace function public.delete_client(p_id bigint)
+returns table (bookings_deleted integer, comments_deleted integer)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  nb integer := 0;
+  nc integer := 0;
+begin
+  -- Блокировка строки: заявка, которую link_booking_client() сейчас
+  -- привязывает к этому клиенту, дождётся конца транзакции и не
+  -- проскочит мимо удаления.
+  perform 1 from public.clients c where c.id = p_id for update;
+  if not found then
+    return query select 0, 0;
+    return;
+  end if;
+
+  delete from public.bookings b where b.client_id = p_id;
+  get diagnostics nb = row_count;
+  delete from public.client_comments cm where cm.client_id = p_id;
+  get diagnostics nc = row_count;
+  delete from public.clients c where c.id = p_id;
+
+  return query select nb, nc;
+end
+$$;
+
+revoke all on function public.delete_client(bigint) from public, anon;
+grant execute on function public.delete_client(bigint) to authenticated;
 
 -- ─── blocked_slots: читают все (это часть доступности), пишет мастер ──
 

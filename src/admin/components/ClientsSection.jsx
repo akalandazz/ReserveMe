@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { labelForKey, toHHMM } from "../../schedule.js";
-import { CHANNELS, addClientComment, deleteClientComment } from "../api.js";
+import { CHANNELS, addClientComment, deleteClient, deleteClientComment } from "../api.js";
 import {
   commentDate,
   isBookingPast,
+  pluralBookings,
+  pluralComments,
   pluralVisits,
   relativeVisit,
   shortDate,
@@ -75,10 +77,15 @@ export default function ClientsSection({
   focus,
   busy,
   busyThen,
+  onToast,
   onError,
   onBook,
   onEditBooking,
   onEditClient,
+  confirmDel,
+  setConfirmDel,
+  onDeleteBooking,
+  onClientDeleted,
 }) {
   const [mode, setMode] = useState("day");
   const [query, setQuery] = useState("");
@@ -138,6 +145,33 @@ export default function ClientsSection({
     setOpenId((cur) => (cur === id ? null : id));
     setCommentText("");
     setAllVisits(false);
+    setConfirmDel(null);
+  };
+
+  const isConfirming = (kind, id) => confirmDel?.kind === kind && confirmDel.id === id;
+  // Повторный тап по той же корзине — закрыть своё подтверждение.
+  const askDelete = (kind, id) => setConfirmDel(isConfirming(kind, id) ? null : { kind, id });
+
+  // Клиент целиком: карточка, все записи (и будущие, и заявки) и
+  // комментарии — одной транзакцией на сервере (delete_client).
+  const removeClient = (c) => {
+    const bookingIds = bookings.filter((b) => b.client_id === c.id).map((b) => b.id);
+    busyThen(`del-client-${c.id}`, 250, async () => {
+      const res = await deleteClient(c.id);
+      if (!res.ok) {
+        onError(res.error);
+        return;
+      }
+      setOpenId((cur) => (cur === c.id ? null : cur));
+      setCommentText("");
+      setAllVisits(false);
+      onClientDeleted(c.id, bookingIds);
+      onToast(
+        c.name
+          ? `${c.name} удалена вместе со всеми записями.`
+          : "Клиент удалён вместе со всеми записями."
+      );
+    });
   };
 
   const addComment = (clientId) => {
@@ -190,6 +224,7 @@ export default function ClientsSection({
               onClick={() => {
                 setMode(m.id);
                 setOpenId(null);
+                setConfirmDel(null);
               }}
             >
               {m.label}
@@ -217,6 +252,10 @@ export default function ClientsSection({
             const past = expanded ? pastBookingsFor(bookings, c.id) : [];
             const shownPast = allVisits ? past : past.slice(0, VISITS_PREVIEW);
             const notes = commentsByClient.get(c.id) ?? [];
+            // Всё, что уйдёт вместе с клиентом: и прошлые, и будущие, и заявки.
+            const ownBookings = expanded
+              ? bookings.filter((b) => b.client_id === c.id).length
+              : 0;
             const link = contactLink(c);
 
             const handle = c.telegram_username
@@ -298,11 +337,47 @@ export default function ClientsSection({
                         <p className="visits-empty">Ещё не было визитов</p>
                       ) : (
                         shownPast.map((b) => (
-                          <div className="visit-row" key={b.id}>
-                            <span className="visit-date">{shortDate(b.day)}</span>
-                            <span className="visit-service">{b.service_name}</span>
-                            <span className="visit-price">{b.price} ₾</span>
-                          </div>
+                          <Fragment key={b.id}>
+                            <div className="visit-row">
+                              <span className="visit-date">{shortDate(b.day)}</span>
+                              <span className="visit-service">{b.service_name}</span>
+                              <span className="visit-price">{b.price} ₾</span>
+                              <button
+                                className="visit-del"
+                                type="button"
+                                aria-label="Удалить запись"
+                                aria-expanded={isConfirming("booking", b.id) ? "true" : "false"}
+                                onClick={() => askDelete("booking", b.id)}
+                              >
+                                <Icon name="trash" size={15} />
+                              </button>
+                            </div>
+                            {isConfirming("booking", b.id) && (
+                              <div className="del-confirm is-dense" role="group" aria-label="Удаление записи">
+                                <span className="del-confirm-text">Удалить запись?</span>
+                                <span className="del-confirm-actions">
+                                  <button
+                                    className="btn-danger-fill"
+                                    type="button"
+                                    disabled={!!busy}
+                                    onClick={() => onDeleteBooking(b.id)}
+                                  >
+                                    {busy === `del-booking-${b.id}` && (
+                                      <span className="btn-spinner" aria-hidden="true" />
+                                    )}
+                                    Удалить
+                                  </button>
+                                  <button
+                                    className="btn-outline"
+                                    type="button"
+                                    onClick={() => setConfirmDel(null)}
+                                  >
+                                    Нет
+                                  </button>
+                                </span>
+                              </div>
+                            )}
+                          </Fragment>
                         ))
                       )}
                     </div>
@@ -358,6 +433,44 @@ export default function ClientsSection({
                         </button>
                       </div>
                     </div>
+
+                    {isConfirming("client", c.id) ? (
+                      <div className="del-confirm client-del-box" role="group" aria-label="Удаление клиента">
+                        <p className="del-confirm-text">
+                          Удалить {c.name || "этого клиента"} из базы? Вместе с карточкой удалятся{" "}
+                          {ownBookings} {pluralBookings(ownBookings)} (прошлые и будущие) и{" "}
+                          {notes.length} {pluralComments(notes.length)}. Это нельзя отменить.
+                        </p>
+                        <span className="del-confirm-actions">
+                          <button
+                            className="btn-danger-fill"
+                            type="button"
+                            disabled={!!busy}
+                            onClick={() => removeClient(c)}
+                          >
+                            {busy === `del-client-${c.id}` && (
+                              <span className="btn-spinner" aria-hidden="true" />
+                            )}
+                            Удалить всё
+                          </button>
+                          <button
+                            className="btn-outline"
+                            type="button"
+                            onClick={() => setConfirmDel(null)}
+                          >
+                            Оставить
+                          </button>
+                        </span>
+                      </div>
+                    ) : (
+                      <button
+                        className="btn-outline client-del-btn"
+                        type="button"
+                        onClick={() => askDelete("client", c.id)}
+                      >
+                        Удалить клиента
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
