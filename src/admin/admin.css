@@ -1845,17 +1845,6 @@ input:focus {
   text-align: center;
 }
 
-.client-tg-link {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 44px;
-  margin-top: 8px;
-  color: var(--accent);
-  font-size: 13px;
-  text-decoration: none;
-}
-
 /* ─── Лист «Новая запись» ─────────────────────────────────────── */
 
 @keyframes fadeIn {

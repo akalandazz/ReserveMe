@@ -424,17 +424,6 @@ export default function ClientsSection({
                             </button>
                           )}
                         </div>
-
-                        {c.telegram_username && (
-                          <a
-                            className="client-tg-link"
-                            href={telegramUrl(c.telegram_username)}
-                            target="_blank"
-                            rel="noopener"
-                          >
-                            Написать в Telegram
-                          </a>
-                        )}
                       </>
                     )}
                   </div>
