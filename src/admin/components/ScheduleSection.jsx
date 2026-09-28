@@ -55,7 +55,7 @@ export default function ScheduleSection({ settings, onError }) {
         {DOW_ORDER.map((dow) => {
           const h = hours[dow];
           return (
-            <div className="hours-row" key={dow}>
+            <div className={h ? "hours-row" : "hours-row is-closed"} key={dow}>
               <span className="hours-day-label">{LABELS[dow]}</span>
               <span className="hours-controls">
                 {h ? (
@@ -100,8 +100,15 @@ export default function ScheduleSection({ settings, onError }) {
                   <span className="hours-closed-label">Выходной</span>
                 )}
               </span>
-              <button className="hours-toggle" type="button" onClick={() => toggle(dow)}>
-                {h ? "Выходной" : "Открыть"}
+              <button
+                className="hours-switch"
+                type="button"
+                role="switch"
+                aria-checked={Boolean(h)}
+                aria-label="Рабочий день"
+                onClick={() => toggle(dow)}
+              >
+                <span className="hours-knob" />
               </button>
             </div>
           );
