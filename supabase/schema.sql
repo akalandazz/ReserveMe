@@ -291,8 +291,34 @@ create trigger clients_touch_updated_at
 --  окном записи, тексты обрезаются, служебные поля выставляются здесь.
 --  Старые бандлы клиента продолжают работать: они шлют те же колонки,
 --  просто их значения теперь перезаписываются.
+--
+--  Время тоже проверяется: рабочий день недели, не в days_off, услуга
+--  укладывается в часы, старт стоит на сетке. Сетка — та же, что у
+--  buildSlots() в src/schedule.js: от начала рабочего дня, а для
+--  «сегодня» — от полуночи (там earliest округляется до шага), поэтому
+--  подходит любая из двух. Пересечения с чужими заявками НЕ проверяются:
+--  две заявки на одно окно — обычное дело, их разбирает мастер.
+--
+--  Потолок max_per_hour на все заявки клиентов салона за скользящий
+--  час: anon-ключ публичный, и без него скрипт закрыл бы клиентам всё
+--  расписание через busy_slots за минуту. Потолок не отличает людей —
+--  личность клиента (initDataUnsafe) не проверена, и пока её не
+--  проверяет сервер, другого ключа для лимита нет. Поднимите число, если
+--  настоящих заявок в час бывает больше.
+--
+--  Отказ триггера клиент не видит: вставка best-effort (submitBooking),
+--  сообщение мастеру всё равно уходит.
+--
+--  security definer — не для services/settings (их anon читает и так), а
+--  для подсчёта потолка: select по bookings анониму закрыт RLS, и под
+--  invoker он всегда видел бы ноль заявок.
+--
 --  Имя триггера — до bookings_link_client по алфавиту: Postgres вызывает
 --  before-триггеры в порядке имён, и привязка видит уже очищенную строку.
+create index if not exists bookings_client_created_idx
+  on public.bookings (created_at)
+  where source = 'client';
+
 create or replace function public.guard_client_booking()
 returns trigger
 language plpgsql
@@ -300,9 +326,13 @@ security definer
 set search_path = ''
 as $$
 declare
-  svc   public.services;
-  ahead integer;
-  today date := (now() at time zone 'Asia/Tbilisi')::date;
+  max_per_hour constant integer := 30;
+  svc       public.services;
+  st        public.settings;
+  hours     jsonb;
+  open_min  integer;
+  close_min integer;
+  today     date := (now() at time zone 'Asia/Tbilisi')::date;
 begin
   if new.source <> 'client' then
     return new;
@@ -313,9 +343,41 @@ begin
     raise exception 'Услуга не найдена';
   end if;
 
-  select st.booking_days_ahead into ahead from public.settings st where st.id = 1;
-  if new.day < today or new.day > today + coalesce(ahead, 14) then
+  select * into st from public.settings s where s.id = 1;
+  if not found then
+    raise exception 'Салон не настроен';
+  end if;
+
+  -- today - 1: список дней клиент строит по часам устройства, а у
+  -- клиента западнее Тбилиси «сегодня» ещё вчерашнее по Тбилиси.
+  if new.day < today - 1 or new.day > today + st.booking_days_ahead then
     raise exception 'День вне окна записи';
+  end if;
+
+  if exists (select 1 from public.days_off d where d.day = new.day) then
+    raise exception 'В этот день мастер не принимает';
+  end if;
+
+  hours := st.working_hours -> extract(dow from new.day)::int::text;
+  if hours is null or jsonb_typeof(hours) <> 'object' then
+    raise exception 'В этот день мастер не принимает';
+  end if;
+  open_min  := extract(epoch from (hours ->> 'from')::time)::int / 60;
+  close_min := extract(epoch from (hours ->> 'to')::time)::int / 60;
+  if new.start_min < open_min
+     or new.start_min + svc.duration > close_min
+     or ((new.start_min - open_min) % st.slot_step_minutes <> 0
+         and new.start_min % st.slot_step_minutes <> 0) then
+    raise exception 'Такого времени нет в расписании';
+  end if;
+
+  -- Лок — чтобы параллельные вставки не прошли потолок все разом,
+  -- посчитав одно и то же число.
+  perform pg_advisory_xact_lock(hashtext('bookings:client-rate'));
+  if (select count(*) from public.bookings b
+       where b.source = 'client'
+         and b.created_at > now() - interval '1 hour') >= max_per_hour then
+    raise exception 'Слишком много заявок — попробуйте позже';
   end if;
 
   new.duration        := svc.duration;
@@ -423,7 +485,7 @@ stable
 security invoker
 set search_path = ''
 as $$
-  select auth.role() = 'authenticated'
+  select coalesce(auth.jwt() ->> 'role', '') = 'authenticated'
      and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
 $$;
 
@@ -476,13 +538,15 @@ create policy bookings_select_auth on public.bookings
 
 -- Клиент мини-аппа создаёт только свою собственную новую заявку —
 -- не может подделать статус "ok" или дату задним числом. Дата — по
--- Тбилиси: current_date в базе — UTC, и с полуночи до 04:00 местного
--- пропустил бы «вчера». Остальное в строке чистит guard_client_booking().
+-- Тбилиси, а не current_date (в базе это UTC), и с запасом в один день:
+-- у клиента западнее Тбилиси «сегодня» по часам устройства — ещё
+-- вчерашнее по Тбилиси (то же правило в guard_client_booking(), который
+-- чистит и проверяет остальное в строке).
 create policy bookings_insert_anon on public.bookings
   for insert to anon
   with check (
     status = 'new' and source = 'client'
-    and day >= (now() at time zone 'Asia/Tbilisi')::date
+    and day >= (now() at time zone 'Asia/Tbilisi')::date - 1
   );
 
 create policy bookings_insert_auth on public.bookings
@@ -578,8 +642,9 @@ create policy client_comments_delete_auth on public.client_comments
 --  visit_count / last_visit_at — только ПРОШЕДШИЕ записи (визит, а не
 --  заявка), по местному времени салона: day/start_min хранятся как
 --  тбилисские дата и минуты, а now() — в UTC.
---  favorite_service_id — самая частая услуга среди всех записей
---  клиента; название берётся текущее, из services.
+--  favorite_service_id — самая частая услуга среди ПОДТВЕРЖДЁННЫХ
+--  записей клиента (прошлых и будущих; неразобранная заявка — ещё не
+--  выбор клиента); название берётся текущее, из services.
 --  ::int — та же причина, что у services.price integer, а не numeric:
 --  PostgREST отдаёт numeric/bigint-агрегаты строкой JSON.
 --

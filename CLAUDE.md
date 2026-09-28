@@ -129,7 +129,9 @@ seed, kept in the repo because the content is no longer in git otherwise.
   can register, become `authenticated`, and both rewrite the price list and read every
   client's name, phone and comment out of `bookings`.
 - **`bookings` RLS is asymmetric, unlike every other table**: `anon` may only `insert`
-  a row for itself (`status = 'new'`, `source = 'client'`, `day >= current_date` —
+  a row for itself (`status = 'new'`, `source = 'client'`, `day` no earlier than
+  yesterday **in Tbilisi** — the database clock is UTC, and a client west of Tbilisi
+  builds its day list from a device clock that's still on the Tbilisi "yesterday" —
   enforced by the insert policy's `with check`), never `select`. Only `authenticated`
   (the signed-in master) can read or change bookings. The client reads availability
   from the `busy_slots` view instead (day/start/duration only, no names), and its own
@@ -138,8 +140,13 @@ seed, kept in the repo because the content is no longer in git otherwise.
   `client_token` the caller already knows. Both are the same trick: RLS is bypassed in
   one small place with a fixed column list. The anon row's contents are not trusted
   either: the `guard_client_booking()` trigger overwrites `duration`/`price`/
-  `service_name` from `services`, bounds `day` to the booking window and truncates
-  the text fields — don't move those values back to "whatever the client sent".
+  `service_name` from `services`, bounds `day` to the booking window, rejects a start
+  that isn't a real slot (day off, outside working hours, off the grid — the grid
+  must stay in step with `buildSlots` in `schedule.js`), caps client requests at
+  `max_per_hour` salon-wide (the anon key is public, and the client's identity is
+  unverified, so there's no per-person key to limit by) and truncates the text
+  fields — don't move those values back to "whatever the client sent". A rejection
+  is invisible to the client (the insert is best-effort); the message still goes out.
   Every write policy (and every read on `bookings`/`clients`/`client_comments`) checks
   `public.is_master()`, not just the `authenticated` role, because Supabase's
   Anonymous Sign-ins also hand out `authenticated`; `security definer` master
@@ -154,8 +161,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
   its client, so a rename in «Клиенты» shows everywhere. The trigger never overwrites
   a non-empty client name, so a later request can't undo the master's rename.
   Comments live in `client_comments` (the old `clients.note` is migrated and unused).
-  `client_stats` derives `visit_count`/`last_visit_at` from **past** bookings and
-  `favorite_service_id` from all of them; it must stay `security_invoker = on`.
+  `client_stats` derives `visit_count`/`last_visit_at` from **past confirmed**
+  bookings and `favorite_service_id` from all confirmed ones (`status = 'ok'` — an
+  unhandled request is neither a visit nor a choice); it must stay
+  `security_invoker = on`.
 - **The master's own bookings** go through `create_master_booking()` (a new client
   plus a booking in one transaction, `status = 'ok'`, `source = 'master'` — never in
   «Заявки»). Start times come from `free_slots(day, service_id, exclude_id)` on the
@@ -176,7 +185,8 @@ seed, kept in the repo because the content is no longer in git otherwise.
   backs that up at the table level for `status = 'ok'` rows only.
   The cabinet store reads `bookings`, `client_stats` and `client_comments` page by page
   (`selectAll` in `store.js`) — a plain select stops silently at PostgREST's
-  `max_rows` (1000 on Supabase).
+  `max_rows` (1000 on Supabase). It pages up to the server's `count`, not "until a
+  short page", so a lower `max_rows` can't truncate it again.
   There is no separate approve/move/cancel UI in the day view anymore — that all lives
   in the sheet, next to the message the master copies for the client
   ([src/admin/messages.js](src/admin/messages.js)). The one exception is the trash
@@ -240,8 +250,8 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
 | [src/theme.js](src/theme.js) | Light/dark resolution and the manual override, shared by both apps. No React. |
 | [src/ui.jsx](src/ui.jsx) | Client-only presentational primitives. `<Screen>` owns the whole chrome — sticky crumb bar, toast slot, sticky footer. The footer is `position: sticky` inside a `100dvh` flex column, which is what keeps the last list row from hiding under the button without a padding hack. |
-| [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. |
-| [src/admin/api.js](src/admin/api.js) | Every write the cabinet makes — services, `working_hours`, `days_off`, `blocked_slots`, `bookings`. Same `{ ok, error }`-never-throws idiom as the old `content.js` mutations, and every mutation calls `loadAdminData()` on success. |
+| [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. `loadAdminData(parts)` reloads only the named parts (keys of `LOADERS`; all of them by default, and always all while the snapshot isn't `"ready"`), each with its own stale-response counter. |
+| [src/admin/api.js](src/admin/api.js) | Every write the cabinet makes — services, `working_hours`, `days_off`, `blocked_slots`, `bookings`. Same `{ ok, error }`-never-throws idiom as the old `content.js` mutations, and every mutation reloads, on success, the store parts it may have changed (`run(query, parts)`). A new write must name everything it touches — e.g. a booking change also touches `clients`, because `client_stats` counts visits. |
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
 | [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `BookingSheet.jsx` is the one bottom sheet for bookings and clients, in three modes: `new` (the 4-step «Записать» wizard — client → service → day → time → check, from the Расписание header or a client card), `edit` (an existing booking or request, opened on the check step) and `client` («Новый клиент», or «Изменить» on a client with no upcoming booking). It shows errors inline, because the cabinet's toast sits in page flow under the backdrop, and reports back through `onDone({ toast, day?, view?, clientId? })`. |
 

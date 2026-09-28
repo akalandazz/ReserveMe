@@ -1,7 +1,8 @@
 // Запросы кабинета мастера: услуги, график, дни без записи, закрытые
-// окошки, записи клиентов. Каждая мутация на успехе перечитывает данные
-// (loadAdminData) — подписанные компоненты обновляются сами, как в
-// src/content.js. Никогда не бросает — всегда { ok, error }.
+// окошки, записи клиентов. Каждая мутация на успехе перечитывает те
+// части данных, которые могла изменить (loadAdminData(parts)), —
+// подписанные компоненты обновляются сами, как в src/content.js.
+// Никогда не бросает — всегда { ok, error }.
 
 import { NOT_CONFIGURED, supabase } from "../supabase.js";
 import { loadAdminData } from "./store.js";
@@ -16,12 +17,22 @@ function fail(error) {
   return { ok: false, error: error?.message || "Не удалось сохранить" };
 }
 
-async function run(query) {
+// Что перечитать после мутации (ключи LOADERS в store.js).
+// Запись меняет client_stats (визиты, любимая услуга, новый клиент из
+// create/update_master_booking), поэтому вместе с bookings — clients.
+const BOOKINGS = ["bookings", "clients"];
+// Переименование клиента — имена на записях пересчитываются в store.js
+// из уже загруженных записей, bookings перечитывать не нужно.
+const CLIENTS = ["clients"];
+// favorite_service_name в client_stats берётся из services.
+const SERVICES = ["services", "clients"];
+
+async function run(query, parts) {
   if (!supabase) return { ok: false, error: NOT_CONFIGURED };
   try {
     const { data, error } = await query();
     if (error) return fail(error);
-    await loadAdminData();
+    await loadAdminData(parts);
     return { ok: true, error: null, data };
   } catch (e) {
     return fail(e);
@@ -37,17 +48,19 @@ async function run(query) {
 export function createService({ name, price, duration }) {
   // Латиницей и цифрами — проходит check (id ~ '^[a-z][a-z0-9_]{1,31}$').
   const id = "svc" + Date.now().toString(36);
-  return run(() => supabase.from("services").insert({ id, name, price, duration }));
+  return run(() => supabase.from("services").insert({ id, name, price, duration }), ["services"]);
 }
 
 export function updateService(id, { name, price, duration }) {
-  return run(() =>
-    supabase.from("services").update({ name, price, duration }).eq("id", id)
+  return run(
+    () => supabase.from("services").update({ name, price, duration }).eq("id", id),
+    SERVICES
   );
 }
 
+/** service_id записей уходит в null (on delete set null) — перечитываем и их. */
 export function deleteService(id) {
-  return run(() => supabase.from("services").delete().eq("id", id));
+  return run(() => supabase.from("services").delete().eq("id", id), [...SERVICES, "bookings"]);
 }
 
 /** Первое нарушенное правило (те же ограничения, что в schema.sql) или null. */
@@ -66,30 +79,35 @@ export function validateServiceFields(s) {
 /* ─── График ────────────────────────────────────────────────────── */
 
 export function saveWorkingHours(workingHours) {
-  return run(() =>
-    supabase.from("settings").update({ working_hours: workingHours }).eq("id", 1)
+  return run(
+    () => supabase.from("settings").update({ working_hours: workingHours }).eq("id", 1),
+    ["settings"]
   );
 }
 
 /* ─── Дни без записи ────────────────────────────────────────────── */
 
 export function closeDay(day) {
-  return run(() => supabase.from("days_off").insert({ day }));
+  return run(() => supabase.from("days_off").insert({ day }), ["daysOff"]);
 }
 
 export function openDay(day) {
-  return run(() => supabase.from("days_off").delete().eq("day", day));
+  return run(() => supabase.from("days_off").delete().eq("day", day), ["daysOff"]);
 }
 
 /* ─── Закрытые окошки ───────────────────────────────────────────── */
 
 export function blockSlot(day, startMin) {
-  return run(() => supabase.from("blocked_slots").insert({ day, start_min: startMin }));
+  return run(
+    () => supabase.from("blocked_slots").insert({ day, start_min: startMin }),
+    ["blockedSlots"]
+  );
 }
 
 export function unblockSlot(day, startMin) {
-  return run(() =>
-    supabase.from("blocked_slots").delete().eq("day", day).eq("start_min", startMin)
+  return run(
+    () => supabase.from("blocked_slots").delete().eq("day", day).eq("start_min", startMin),
+    ["blockedSlots"]
   );
 }
 
@@ -98,13 +116,13 @@ export function unblockSlot(day, startMin) {
 /** Подтверждение заявки — через approve_booking (schema.sql): она не даст
  *  подтвердить заявку поверх уже подтверждённой записи на то же время. */
 export function approveBooking(id) {
-  return run(() => supabase.rpc("approve_booking", { p_id: id }));
+  return run(() => supabase.rpc("approve_booking", { p_id: id }), BOOKINGS);
 }
 
 /** Удаление без восстановления. Уже удалённая запись — не ошибка:
  *  delete по несуществующему id просто ничего не находит. */
 export function deleteBooking(id) {
-  return run(() => supabase.from("bookings").delete().eq("id", id));
+  return run(() => supabase.from("bookings").delete().eq("id", id), BOOKINGS);
 }
 
 /** Запись, которую заводит сам мастер: сразу подтверждённая, мимо «Заявок».
@@ -125,7 +143,8 @@ export async function createMasterBooking({ clientId, newClient, serviceId, day,
         p_day: day,
         p_start_min: startMin,
         p_comment: String(comment ?? "").trim(),
-      })
+      }),
+      BOOKINGS
     )
   );
 }
@@ -149,7 +168,8 @@ export async function updateMasterBooking(id, { clientId, client, serviceId, day
         p_day: day,
         p_start_min: startMin,
         p_comment: String(comment ?? "").trim(),
-      })
+      }),
+      BOOKINGS
     )
   );
 }
@@ -231,15 +251,19 @@ function clientResult(res) {
 }
 
 export async function createClient(fields) {
-  const res = await run(() =>
-    supabase.from("clients").insert(clientFields(fields)).select("id").single()
+  const res = await run(
+    () => supabase.from("clients").insert(clientFields(fields)).select("id").single(),
+    CLIENTS
   );
   return clientResult({ ...res, id: res.data?.id ?? null });
 }
 
 export async function updateClient(id, fields) {
   return clientResult(
-    await run(() => supabase.from("clients").update(clientFields(fields)).eq("id", id))
+    await run(
+      () => supabase.from("clients").update(clientFields(fields)).eq("id", id),
+      CLIENTS
+    )
   );
 }
 
@@ -247,7 +271,10 @@ export async function updateClient(id, fields) {
  *  (delete_client в schema.sql). Уже удалённый — ok с нулями.
  *  counts: { bookings, comments } — сколько удалилось. */
 export async function deleteClient(id) {
-  const res = await run(() => supabase.rpc("delete_client", { p_id: id }).single());
+  const res = await run(
+    () => supabase.rpc("delete_client", { p_id: id }).single(),
+    [...BOOKINGS, "comments"]
+  );
   return {
     ...res,
     counts: {
@@ -258,11 +285,12 @@ export async function deleteClient(id) {
 }
 
 export function addClientComment(clientId, body) {
-  return run(() =>
-    supabase.from("client_comments").insert({ client_id: clientId, body: body.trim() })
+  return run(
+    () => supabase.from("client_comments").insert({ client_id: clientId, body: body.trim() }),
+    ["comments"]
   );
 }
 
 export function deleteClientComment(id) {
-  return run(() => supabase.from("client_comments").delete().eq("id", id));
+  return run(() => supabase.from("client_comments").delete().eq("id", id), ["comments"]);
 }

@@ -58,107 +58,156 @@ function toAdminSettings(row) {
 }
 
 // PostgREST отдаёт не больше max_rows строк за запрос (в Supabase по
-// умолчанию 1000) и молча обрезает остальное. Растущие таблицы читаем
-// страницами, пока страница не придёт неполной. build() должен задавать
-// однозначный порядок (с id в конце) — иначе страницы перекроются.
+// умолчанию 1000, но его можно и уменьшить) и молча обрезает остальное.
+// Растущие таблицы читаем страницами до числа строк, которое первый
+// запрос посчитал на сервере, — а не «пока страница не придёт неполной»:
+// при max_rows меньше PAGE первая же страница выглядела бы последней.
+// build(opts) должен задавать однозначный порядок (с id в конце) —
+// иначе страницы перекроются.
 const PAGE = 1000;
 
 async function selectAll(build) {
   const rows = [];
-  for (let from = 0; ; from += PAGE) {
-    const res = await build().range(from, from + PAGE - 1);
+  let total = null;
+  for (;;) {
+    const query = total === null ? build({ count: "exact" }) : build();
+    const res = await query.range(rows.length, rows.length + PAGE - 1);
     if (res.error) return res;
-    rows.push(...(res.data ?? []));
-    if (!res.data || res.data.length < PAGE) return { data: rows, error: null };
+    const page = res.data ?? [];
+    if (total === null) total = res.count ?? Infinity;
+    rows.push(...page);
+    if (!page.length || rows.length >= total) break;
   }
+  // Страницы — отдельные запросы: строка, вставленная между ними раньше
+  // по порядку, сдвигает смещение, и последняя строка прошлой страницы
+  // приходит второй раз. Дубль убираем здесь; строка, которую так
+  // «перешагнули», появится при следующей загрузке.
+  const seen = new Set();
+  const data = rows.filter((r) => {
+    if (seen.has(r.id)) return false;
+    seen.add(r.id);
+    return true;
+  });
+  return { data, error: null };
 }
 
-// Два быстрых обновления дают два запроса, ответы могут прийти в
-// обратном порядке. Актуален только последний.
-let seq = 0;
+// Части снапшота и откуда каждая читается. Мутации в api.js
+// перечитывают только те части, которые меняли: заметка к клиенту не
+// должна тянуть за собой всю историю записей.
+const LOADERS = {
+  settings: () =>
+    supabase
+      .from("settings")
+      .select("master_name,slot_step_minutes,working_hours")
+      .eq("id", 1)
+      .maybeSingle(),
+  services: () =>
+    supabase
+      .from("services")
+      .select("*")
+      .order("sort", { ascending: true })
+      .order("id", { ascending: true }),
+  daysOff: () => supabase.from("days_off").select("day").order("day", { ascending: true }),
+  blockedSlots: () => supabase.from("blocked_slots").select("day,start_min"),
+  bookings: () =>
+    selectAll((opts) =>
+      supabase
+        .from("bookings")
+        .select("*", opts)
+        .order("day", { ascending: true })
+        .order("start_min", { ascending: true })
+        .order("id", { ascending: true })
+    ),
+  // Без визитов — сверху: это новые клиенты, в том числе только
+  // что заведённый мастером, которого она сейчас заполняет.
+  clients: () =>
+    selectAll((opts) =>
+      supabase
+        .from("client_stats")
+        .select("*", opts)
+        .order("last_visit_at", { ascending: false, nullsFirst: true })
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+    ),
+  comments: () =>
+    selectAll((opts) =>
+      supabase
+        .from("client_comments")
+        .select("id,client_id,body,created_at", opts)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+    ),
+};
 
-export async function loadAdminData() {
+const PARTS = Object.keys(LOADERS);
+
+const PARSE = {
+  settings: toAdminSettings,
+  daysOff: (rows) => (rows ?? []).map((r) => r.day),
+};
+
+// Записи как пришли из базы, до withClientNames: перечитали только
+// клиентов (переименование) — имена на записях пересчитываются из них.
+let rawBookings = [];
+
+// Два быстрых обновления дают два запроса, ответы могут прийти в
+// обратном порядке. Актуален только последний — по каждой части
+// отдельно, чтобы перечитка комментариев не отменяла перечитку записей.
+const seq = Object.fromEntries(PARTS.map((p) => [p, 0]));
+
+/**
+ * Перечитать данные кабинета. parts — какие части снапшота (ключи
+ * LOADERS); по умолчанию все. Пока снапшот не "ready", читается всё:
+ * частичная загрузка поверх пустого или сломанного снапшота показала
+ * бы кабинет без половины данных.
+ */
+export async function loadAdminData(parts = PARTS) {
   if (!supabase) {
     publish({ ...EMPTY, status: "error", error: NOT_CONFIGURED });
     return;
   }
 
-  publish({ ...snapshot, status: snapshot.settings ? snapshot.status : "loading" });
-  const mine = ++seq;
+  if (snapshot.status !== "ready") {
+    parts = PARTS;
+    publish({ ...snapshot, status: snapshot.settings ? snapshot.status : "loading" });
+  }
+  const tickets = parts.map((p) => ++seq[p]);
+  const isFresh = (i) => seq[parts[i]] === tickets[i];
 
-  let result;
+  let results;
   try {
-    result = await Promise.all([
-      supabase
-        .from("settings")
-        .select("master_name,slot_step_minutes,working_hours")
-        .eq("id", 1)
-        .maybeSingle(),
-      supabase
-        .from("services")
-        .select("*")
-        .order("sort", { ascending: true })
-        .order("id", { ascending: true }),
-      supabase.from("days_off").select("day").order("day", { ascending: true }),
-      supabase.from("blocked_slots").select("day,start_min"),
-      selectAll(() =>
-        supabase
-          .from("bookings")
-          .select("*")
-          .order("day", { ascending: true })
-          .order("start_min", { ascending: true })
-          .order("id", { ascending: true })
-      ),
-      // Без визитов — сверху: это новые клиенты, в том числе только
-      // что заведённый мастером, которого она сейчас заполняет.
-      selectAll(() =>
-        supabase
-          .from("client_stats")
-          .select("*")
-          .order("last_visit_at", { ascending: false, nullsFirst: true })
-          .order("created_at", { ascending: false })
-          .order("id", { ascending: false })
-      ),
-      selectAll(() =>
-        supabase
-          .from("client_comments")
-          .select("id,client_id,body,created_at")
-          .order("created_at", { ascending: false })
-          .order("id", { ascending: false })
-      ),
-    ]);
+    results = await Promise.all(parts.map((p) => LOADERS[p]()));
   } catch {
-    if (mine !== seq) return;
+    if (!parts.some((_, i) => isFresh(i))) return;
     publish({ ...snapshot, status: "error", error: "Нет связи с сервером" });
     return;
   }
 
-  if (mine !== seq) return; // обогнал более свежий запрос
+  // Части, которые обогнал более свежий запрос, отбрасываем.
+  const fresh = parts.flatMap((p, i) => (isFresh(i) ? [[p, results[i]]] : []));
+  if (!fresh.length) return;
 
-  const failed = result.find((r) => r.error);
+  const failed = fresh.find(([, r]) => r.error);
   if (failed) {
     publish({
       ...snapshot,
       status: "error",
-      error: failed.error.message || "Не удалось загрузить данные",
+      error: failed[1].error.message || "Не удалось загрузить данные",
     });
     return;
   }
 
-  const [settingsRes, servicesRes, daysRes, blockedRes, bookingsRes, clientsRes, commentsRes] =
-    result;
-  const clients = clientsRes.data ?? [];
-  publish({
-    status: "ready",
-    error: null,
-    settings: toAdminSettings(settingsRes.data),
-    services: servicesRes.data ?? [],
-    daysOff: (daysRes.data ?? []).map((r) => r.day),
-    blockedSlots: blockedRes.data ?? [],
-    bookings: withClientNames(bookingsRes.data ?? [], clients),
-    clients,
-    comments: commentsRes.data ?? [],
-  });
+  const next = { ...snapshot, status: "ready", error: null };
+  for (const [p, r] of fresh) {
+    if (p === "bookings") rawBookings = r.data ?? [];
+    else next[p] = PARSE[p] ? PARSE[p](r.data) : (r.data ?? []);
+  }
+  // Ссылка на bookings меняется, только если менялись записи или клиенты,
+  // — иначе useMemo по bookings в секциях пересчитывался бы зря.
+  if (fresh.some(([p]) => p === "bookings" || p === "clients")) {
+    next.bookings = withClientNames(rawBookings, next.clients);
+  }
+  publish(next);
 }
 
 /**
@@ -183,6 +232,7 @@ function withClientNames(bookings, clients) {
 
 /** При выходе — иначе следующий вошедший на миг увидит чужие данные. */
 export function resetAdminData() {
-  seq++; // отменяем недошедший запрос
+  for (const p of PARTS) seq[p]++; // отменяем недошедшие запросы
+  rawBookings = [];
   publish(EMPTY);
 }
