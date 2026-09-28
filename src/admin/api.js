@@ -7,6 +7,12 @@ import { NOT_CONFIGURED, supabase } from "../supabase.js";
 import { loadAdminData } from "./store.js";
 
 function fail(error) {
+  // Ограничение bookings_no_overlap_ok (schema.sql) — последняя линия
+  // защиты от двух подтверждённых записей на одно время; его текст
+  // Postgres пишет по-английски.
+  if (/bookings_no_overlap_ok/.test(error?.message ?? "")) {
+    return { ok: false, error: "Это время уже занято подтверждённой записью — выберите другое" };
+  }
   return { ok: false, error: error?.message || "Не удалось сохранить" };
 }
 
@@ -89,8 +95,10 @@ export function unblockSlot(day, startMin) {
 
 /* ─── Записи ────────────────────────────────────────────────────── */
 
+/** Подтверждение заявки — через approve_booking (schema.sql): она не даст
+ *  подтвердить заявку поверх уже подтверждённой записи на то же время. */
 export function approveBooking(id) {
-  return run(() => supabase.from("bookings").update({ status: "ok" }).eq("id", id));
+  return run(() => supabase.rpc("approve_booking", { p_id: id }));
 }
 
 /** Удаление без восстановления. Уже удалённая запись — не ошибка:

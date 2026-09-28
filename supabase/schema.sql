@@ -192,8 +192,53 @@ alter table public.bookings add column if not exists client_token uuid;
 alter table public.bookings add column if not exists client_id bigint references public.clients(id) on delete set null;
 
 create index if not exists bookings_day_idx on public.bookings (day, start_min);
-create index if not exists bookings_client_token_idx on public.bookings (client_token);
 create index if not exists bookings_client_id_idx on public.bookings (client_id);
+-- Для on delete set null при удалении услуги — иначе полный проход по bookings.
+create index if not exists bookings_service_id_idx on public.bookings (service_id);
+-- Токен — случайный uuid, двух одинаковых быть не должно; уникальный
+-- индекс заменяет прежний обычный.
+drop index if exists public.bookings_client_token_idx;
+create unique index if not exists bookings_client_token_uq
+  on public.bookings (client_token)
+  where client_token is not null;
+
+-- Потолки длины текстов: вставлять в bookings может аноним, и без них
+-- одна строка могла бы нести мегабайты. not valid — старые строки не
+-- перепроверяются (повторный прогон на живой базе не упадёт), новые и
+-- изменённые — проверяются.
+do $$
+begin
+  alter table public.bookings add constraint bookings_text_len_chk
+    check (length(comment) <= 1000
+       and length(client_name) <= 128
+       and length(client_username) <= 64
+       and length(service_name) <= 80) not valid;
+exception when duplicate_object then null;
+end
+$$;
+
+-- Две ПОДТВЕРЖДЁННЫЕ записи не могут пересекаться по времени — это
+-- гарантия самой базы, поверх проверок в функциях ниже. Заявки ('new')
+-- пересекаться могут: их мастер разбирает руками.
+-- Если в базе уже лежат пересекающиеся подтверждённые записи, ограничение
+-- не создастся (notice в выводе) — разведите их в кабинете и прогоните
+-- файл ещё раз.
+create extension if not exists btree_gist with schema extensions;
+do $$
+begin
+  if exists (select 1 from pg_constraint where conname = 'bookings_no_overlap_ok') then
+    return;
+  end if;
+  alter table public.bookings add constraint bookings_no_overlap_ok
+    exclude using gist (
+      day with =,
+      int4range(start_min, start_min + duration) with &&
+    ) where (status = 'ok');
+exception
+  when exclusion_violation then
+    raise notice 'bookings_no_overlap_ok не создано: есть пересекающиеся подтверждённые записи';
+end
+$$;
 
 -- ─── Закрытые вручную окошки ─────────────────────────────────────
 --  «Закрыть» отдельный слот в панели дня кабинета мастера, не трогая
@@ -236,6 +281,61 @@ drop trigger if exists clients_touch_updated_at on public.clients;
 create trigger clients_touch_updated_at
   before update on public.clients
   for each row execute function public.touch_updated_at();
+
+-- ─── Заявка клиента: сервер решает, что в ней лежит ─────────────
+--  Anon-политика проверяет только status/source/day, а остальные
+--  колонки аноним присылает какие хочет: длительность 600 минут на
+--  каждый день вперёд закрыла бы клиентам всё расписание через
+--  busy_slots. Поэтому у заявок клиента (source = 'client') длительность,
+--  цена и название услуги всегда берутся из services, день ограничен
+--  окном записи, тексты обрезаются, служебные поля выставляются здесь.
+--  Старые бандлы клиента продолжают работать: они шлют те же колонки,
+--  просто их значения теперь перезаписываются.
+--  Имя триггера — до bookings_link_client по алфавиту: Postgres вызывает
+--  before-триггеры в порядке имён, и привязка видит уже очищенную строку.
+create or replace function public.guard_client_booking()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  svc   public.services;
+  ahead integer;
+  today date := (now() at time zone 'Asia/Tbilisi')::date;
+begin
+  if new.source <> 'client' then
+    return new;
+  end if;
+
+  select * into svc from public.services s where s.id = new.service_id;
+  if not found then
+    raise exception 'Услуга не найдена';
+  end if;
+
+  select st.booking_days_ahead into ahead from public.settings st where st.id = 1;
+  if new.day < today or new.day > today + coalesce(ahead, 14) then
+    raise exception 'День вне окна записи';
+  end if;
+
+  new.duration        := svc.duration;
+  new.price           := svc.price;
+  new.service_name    := svc.name;
+  new.status          := 'new';
+  new.client_id       := null; -- выставит link_booking_client()
+  new.client_name     := left(btrim(coalesce(new.client_name, '')), 128);
+  new.client_username := left(btrim(coalesce(new.client_username, '')), 64);
+  new.comment         := left(btrim(coalesce(new.comment, '')), 1000);
+  new.created_at      := now();
+  new.updated_at      := now();
+  return new;
+end
+$$;
+
+drop trigger if exists bookings_guard_client on public.bookings;
+create trigger bookings_guard_client
+  before insert on public.bookings
+  for each row execute function public.guard_client_booking();
 
 -- ─── Привязка заявки к клиенту ───────────────────────────────────
 --  Аноним не имеет и не должен иметь доступа к clients (там телефон
@@ -308,6 +408,27 @@ create trigger bookings_link_client
 --  иначе её название не найдётся для прошлой записи.
 -- ═══════════════════════════════════════════════════════════════
 
+-- ─── is_master(): кто считается мастером ─────────────────────────
+--  Роль authenticated — не то же самое, что «мастер»: включённые в
+--  дашборде Anonymous Sign-ins тоже выдают authenticated, любому, без
+--  пароля. Поэтому каждое право на запись (и на чтение bookings/clients)
+--  проверяет эту функцию, а не только роль: пользователь должен быть
+--  не анонимным. Выключенная регистрация по-прежнему обязательна.
+--  В политиках вызывается как (select public.is_master()) — так Postgres
+--  считает её один раз на запрос, а не на каждую строку.
+create or replace function public.is_master()
+returns boolean
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select auth.role() = 'authenticated'
+     and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
+$$;
+
+grant execute on function public.is_master() to anon, authenticated;
+
 alter table public.settings    enable row level security;
 alter table public.services    enable row level security;
 alter table public.days_off    enable row level security;
@@ -325,11 +446,11 @@ begin
     execute format(
       'create policy %I_select_public on public.%I for select to anon, authenticated using (true)', t, t);
     execute format(
-      'create policy %I_insert_auth on public.%I for insert to authenticated with check (true)', t, t);
+      'create policy %I_insert_auth on public.%I for insert to authenticated with check ((select public.is_master()))', t, t);
     execute format(
-      'create policy %I_update_auth on public.%I for update to authenticated using (true) with check (true)', t, t);
+      'create policy %I_update_auth on public.%I for update to authenticated using ((select public.is_master())) with check ((select public.is_master()))', t, t);
     execute format(
-      'create policy %I_delete_auth on public.%I for delete to authenticated using (true)', t, t);
+      'create policy %I_delete_auth on public.%I for delete to authenticated using ((select public.is_master()))', t, t);
   end loop;
 end
 $$;
@@ -351,22 +472,27 @@ drop policy if exists bookings_update_auth  on public.bookings;
 drop policy if exists bookings_delete_auth  on public.bookings;
 
 create policy bookings_select_auth on public.bookings
-  for select to authenticated using (true);
+  for select to authenticated using ((select public.is_master()));
 
 -- Клиент мини-аппа создаёт только свою собственную новую заявку —
--- не может подделать статус "ok" или дату задним числом.
+-- не может подделать статус "ok" или дату задним числом. Дата — по
+-- Тбилиси: current_date в базе — UTC, и с полуночи до 04:00 местного
+-- пропустил бы «вчера». Остальное в строке чистит guard_client_booking().
 create policy bookings_insert_anon on public.bookings
   for insert to anon
-  with check (status = 'new' and source = 'client' and day >= current_date);
+  with check (
+    status = 'new' and source = 'client'
+    and day >= (now() at time zone 'Asia/Tbilisi')::date
+  );
 
 create policy bookings_insert_auth on public.bookings
-  for insert to authenticated with check (true);
+  for insert to authenticated with check ((select public.is_master()));
 
 create policy bookings_update_auth on public.bookings
-  for update to authenticated using (true) with check (true);
+  for update to authenticated using ((select public.is_master())) with check ((select public.is_master()));
 
 create policy bookings_delete_auth on public.bookings
-  for delete to authenticated using (true);
+  for delete to authenticated using ((select public.is_master()));
 
 -- ─── booking_status(): статус своей заявки для анонимного клиента ─
 --  Мастер подтверждает заявку в кабинете (status → 'ok'), но у клиента
@@ -416,13 +542,13 @@ drop policy if exists clients_insert_auth on public.clients;
 drop policy if exists clients_update_auth on public.clients;
 
 create policy clients_select_auth on public.clients
-  for select to authenticated using (true);
+  for select to authenticated using ((select public.is_master()));
 
 create policy clients_insert_auth on public.clients
-  for insert to authenticated with check (true);
+  for insert to authenticated with check ((select public.is_master()));
 
 create policy clients_update_auth on public.clients
-  for update to authenticated using (true) with check (true);
+  for update to authenticated using ((select public.is_master())) with check ((select public.is_master()));
 
 -- ─── client_comments: только мастер ─────────────────────────────
 
@@ -433,13 +559,13 @@ drop policy if exists client_comments_insert_auth on public.client_comments;
 drop policy if exists client_comments_delete_auth on public.client_comments;
 
 create policy client_comments_select_auth on public.client_comments
-  for select to authenticated using (true);
+  for select to authenticated using ((select public.is_master()));
 
 create policy client_comments_insert_auth on public.client_comments
-  for insert to authenticated with check (true);
+  for insert to authenticated with check ((select public.is_master()));
 
 create policy client_comments_delete_auth on public.client_comments
-  for delete to authenticated using (true);
+  for delete to authenticated using ((select public.is_master()));
 
 -- ─── client_stats: клиенты + производные показатели для «Клиенты» ─
 --  security_invoker = on — задан ЯВНО: по умолчанию вьюха в Postgres
@@ -478,13 +604,14 @@ create view public.client_stats
     select count(*)::int as visit_count, max(b.day) as last_visit_at
     from public.bookings b
     where b.client_id = c.id
+      and b.status = 'ok' -- неподтверждённая заявка — не визит
       and b.day + make_interval(mins => b.start_min)
           < (now() at time zone 'Asia/Tbilisi')
   ) v on true
   left join lateral (
     select b2.service_id
     from public.bookings b2
-    where b2.client_id = c.id and b2.service_id is not null
+    where b2.client_id = c.id and b2.service_id is not null and b2.status = 'ok'
     group by b2.service_id
     order by count(*) desc, max(b2.day) desc
     limit 1
@@ -759,6 +886,19 @@ begin
   ) then
     raise exception 'Это время уже занято — выберите другое';
   end if;
+  -- Время не менялось, но сохранение подтверждает заявку: она не должна
+  -- лечь поверх уже подтверждённой записи (две заявки клиентов на одно
+  -- окно — обычное дело, см. CLAUDE.md).
+  if not moved and bk.status <> 'ok' and exists (
+    select 1 from public.bookings o
+    where o.day = bk.day
+      and o.id <> bk.id
+      and o.status = 'ok'
+      and o.start_min < bk.start_min + bk.duration
+      and bk.start_min < o.start_min + o.duration
+  ) then
+    raise exception 'На это время уже есть подтверждённая запись — выберите другое';
+  end if;
 
   if p_client_id is null then
     insert into public.clients (name, phone, telegram_username, channel)
@@ -798,6 +938,54 @@ revoke all on function public.update_master_booking(bigint, bigint, text, text, 
 grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text)
   to authenticated;
 
+-- ─── approve_booking(): «Подтвердить» в «Заявках» ─────────────────
+--  Раньше это был голый update status = 'ok' из кабинета — две
+--  пересекающиеся заявки подтверждались обе. Теперь подтверждение
+--  проверяет, что окно не занято другой ПОДТВЕРЖДЁННОЙ записью, под
+--  тем же advisory-локом дня, что create/update_master_booking.
+--  Повторное подтверждение — не ошибка.
+create or replace function public.approve_booking(p_id bigint)
+returns void
+language plpgsql
+volatile
+security invoker
+set search_path = ''
+as $$
+declare
+  bk public.bookings;
+begin
+  select * into bk from public.bookings b where b.id = p_id;
+  if not found then
+    raise exception 'Заявка не найдена — обновите страницу';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('bookings:' || bk.day::text));
+  select * into bk from public.bookings b where b.id = p_id for update;
+  if not found then
+    raise exception 'Заявка не найдена — обновите страницу';
+  end if;
+  if bk.status = 'ok' then
+    return;
+  end if;
+
+  if exists (
+    select 1 from public.bookings o
+    where o.day = bk.day
+      and o.id <> bk.id
+      and o.status = 'ok'
+      and o.start_min < bk.start_min + bk.duration
+      and bk.start_min < o.start_min + o.duration
+  ) then
+    raise exception 'На это время уже есть подтверждённая запись — перенесите заявку через «Изменить»';
+  end if;
+
+  update public.bookings b set status = 'ok' where b.id = p_id;
+end
+$$;
+
+revoke all on function public.approve_booking(bigint) from public, anon;
+grant execute on function public.approve_booking(bigint) to authenticated;
+
 -- ─── delete_client(): «Удалить клиента» вместе со всем, что к нему ─
 --  привязано. Записи (прошлые, будущие и неподтверждённые заявки) и
 --  комментарии уходят в той же транзакции, что и карточка. Каскадом
@@ -826,6 +1014,11 @@ declare
   nb integer := 0;
   nc integer := 0;
 begin
+  -- security definer обходит RLS — право проверяем сами, как политики.
+  if not public.is_master() then
+    raise exception 'Нет доступа';
+  end if;
+
   -- Блокировка строки: заявка, которую link_booking_client() сейчас
   -- привязывает к этому клиенту, дождётся конца транзакции и не
   -- проскочит мимо удаления.
@@ -860,10 +1053,10 @@ create policy blocked_slots_select_public on public.blocked_slots
   for select to anon, authenticated using (true);
 
 create policy blocked_slots_insert_auth on public.blocked_slots
-  for insert to authenticated with check (true);
+  for insert to authenticated with check ((select public.is_master()));
 
 create policy blocked_slots_delete_auth on public.blocked_slots
-  for delete to authenticated using (true);
+  for delete to authenticated using ((select public.is_master()));
 
 -- ─── busy_slots: занятость без персональных данных ───────────────
 --  Вьюха отдаёт только day/start_min/duration — ни имён, ни цены,
@@ -877,11 +1070,15 @@ create policy blocked_slots_delete_auth on public.blocked_slots
 --  Клиент (serverBusyFor в src/schedule.js) подставляет вместо нуля шаг
 --  сетки: интервал нулевой длины не перекрыл бы ничего, и закрытый слот
 --  остался бы кликабельным.
+--  Прошлое отрезано в самой вьюхе: клиенту оно не нужно, а без фильтра
+--  анонимный ключ читал бы всю историю занятости салона.
 create or replace view public.busy_slots
   with (security_invoker = off) as
   select day, start_min, duration from public.bookings
+    where day >= (now() at time zone 'Asia/Tbilisi')::date
   union all
-  select day, start_min, 0 as duration from public.blocked_slots;
+  select day, start_min, 0 as duration from public.blocked_slots
+    where day >= (now() at time zone 'Asia/Tbilisi')::date;
 
 grant select on public.busy_slots to anon, authenticated;
 

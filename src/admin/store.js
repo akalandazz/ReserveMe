@@ -57,6 +57,22 @@ function toAdminSettings(row) {
   };
 }
 
+// PostgREST отдаёт не больше max_rows строк за запрос (в Supabase по
+// умолчанию 1000) и молча обрезает остальное. Растущие таблицы читаем
+// страницами, пока страница не придёт неполной. build() должен задавать
+// однозначный порядок (с id в конце) — иначе страницы перекроются.
+const PAGE = 1000;
+
+async function selectAll(build) {
+  const rows = [];
+  for (let from = 0; ; from += PAGE) {
+    const res = await build().range(from, from + PAGE - 1);
+    if (res.error) return res;
+    rows.push(...(res.data ?? []));
+    if (!res.data || res.data.length < PAGE) return { data: rows, error: null };
+  }
+}
+
 // Два быстрых обновления дают два запроса, ответы могут прийти в
 // обратном порядке. Актуален только последний.
 let seq = 0;
@@ -85,22 +101,31 @@ export async function loadAdminData() {
         .order("id", { ascending: true }),
       supabase.from("days_off").select("day").order("day", { ascending: true }),
       supabase.from("blocked_slots").select("day,start_min"),
-      supabase
-        .from("bookings")
-        .select("*")
-        .order("day", { ascending: true })
-        .order("start_min", { ascending: true }),
+      selectAll(() =>
+        supabase
+          .from("bookings")
+          .select("*")
+          .order("day", { ascending: true })
+          .order("start_min", { ascending: true })
+          .order("id", { ascending: true })
+      ),
       // Без визитов — сверху: это новые клиенты, в том числе только
       // что заведённый мастером, которого она сейчас заполняет.
-      supabase
-        .from("client_stats")
-        .select("*")
-        .order("last_visit_at", { ascending: false, nullsFirst: true })
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("client_comments")
-        .select("id,client_id,body,created_at")
-        .order("created_at", { ascending: false }),
+      selectAll(() =>
+        supabase
+          .from("client_stats")
+          .select("*")
+          .order("last_visit_at", { ascending: false, nullsFirst: true })
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+      ),
+      selectAll(() =>
+        supabase
+          .from("client_comments")
+          .select("id,client_id,body,created_at")
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+      ),
     ]);
   } catch {
     if (mine !== seq) return;

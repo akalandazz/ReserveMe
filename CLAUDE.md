@@ -136,7 +136,14 @@ seed, kept in the repo because the content is no longer in git otherwise.
   request's status from the `booking_status(uuid[])` function — a `security definer`
   function that returns `status` and nothing else, and only for rows whose secret
   `client_token` the caller already knows. Both are the same trick: RLS is bypassed in
-  one small place with a fixed column list. If you ever need more booking data on the
+  one small place with a fixed column list. The anon row's contents are not trusted
+  either: the `guard_client_booking()` trigger overwrites `duration`/`price`/
+  `service_name` from `services`, bounds `day` to the booking window and truncates
+  the text fields — don't move those values back to "whatever the client sent".
+  Every write policy (and every read on `bookings`/`clients`/`client_comments`) checks
+  `public.is_master()`, not just the `authenticated` role, because Supabase's
+  Anonymous Sign-ins also hand out `authenticated`; `security definer` master
+  functions (`delete_client`) call it themselves. If you ever need more booking data on the
   client, widen that view or that function; **never** grant `anon` a `select` policy on
   `bookings` itself — it would hand every client's name, username and comment to
   anyone holding the (public) anon key.
@@ -163,6 +170,13 @@ seed, kept in the repo because the content is no longer in git otherwise.
   one transaction, and saving **always confirms** (`status → 'ok'`). Time is re-checked
   only when day, start or service changed, via `free_slots(…, p_id)` so the booking
   doesn't collide with itself. Same service keeps the row's agreed `price`/`duration`.
+  «Подтвердить» in «Заявки» goes through `approve_booking()`, never a bare
+  `update status = 'ok'`: two client requests for one slot are normal, two confirmed
+  bookings are not. The `bookings_no_overlap_ok` exclusion constraint (`btree_gist`)
+  backs that up at the table level for `status = 'ok'` rows only.
+  The cabinet store reads `bookings`, `client_stats` and `client_comments` page by page
+  (`selectAll` in `store.js`) — a plain select stops silently at PostgREST's
+  `max_rows` (1000 on Supabase).
   There is no separate approve/move/cancel UI in the day view anymore — that all lives
   in the sheet, next to the message the master copies for the client
   ([src/admin/messages.js](src/admin/messages.js)). The one exception is the trash
