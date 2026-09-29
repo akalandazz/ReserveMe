@@ -249,6 +249,35 @@ function withClientNames(bookings, clients) {
   });
 }
 
+// Период опроса — VITE_ADMIN_POLL_SECONDS (.env.example), по умолчанию 20 с.
+const ADMIN_POLL_MS = (Number(import.meta.env.VITE_ADMIN_POLL_SECONDS) || 20) * 1000;
+
+/**
+ * Опрос записей, пока кабинет открыт и на экране. Заявки и отмены
+ * клиентов приходят сами по себе, а пуша нет — без опроса мастер видела
+ * бы их только после возврата во вкладку или перезапуска. Клиент меняет
+ * только bookings (вставка заявки, cancel_own_booking), а триггер
+ * link_booking_client — ещё clients; остальное пишет сам кабинет и
+ * перечитывает после своих записей (run() в api.js).
+ *
+ * Скрытая вкладка не опрашивает (её догонит перечитка на возврате, см.
+ * AdminApp.jsx), и опрос не наслаивается: пока прошлый не ответил,
+ * следующий тик пропускается. Опоздавший ответ опроса после мутации
+ * отбросит seq в loadAdminData.
+ * @returns {() => void} остановить опрос.
+ */
+export function pollAdminData(ms = ADMIN_POLL_MS) {
+  if (!supabase) return () => {};
+  let inflight = null;
+  const id = window.setInterval(() => {
+    if (inflight || document.visibilityState !== "visible") return;
+    inflight = loadAdminData(["bookings", "clients"]).finally(() => {
+      inflight = null;
+    });
+  }, ms);
+  return () => window.clearInterval(id);
+}
+
 /** При выходе — иначе следующий вошедший на миг увидит чужие данные. */
 export function resetAdminData() {
   for (const p of PARTS) seq[p]++; // отменяем недошедшие запросы

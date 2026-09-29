@@ -64,7 +64,8 @@ Consequences that constrain every change here:
   client mints in `newClientToken()` ([src/storage.js](src/storage.js)), stores on its
   own record as `k`, and writes onto the server row.
   [`syncBookings()`](src/sync.js) calls the `booking_status(uuid[])` RPC on launch,
-  on return to the tab (`App.jsx`) and when «Мои записи» mounts, caches the answer as
+  on return to the tab (`App.jsx`), when «Мои записи» mounts and on each poll while home
+  or «Мои записи» is open, caches the answer as
   `st` — plus the row's current `d`/`t`/`m`/`p`/`s`, because the master can move a
   booking or change its service without changing its status — and the change is shown
   as a toast — that toast is the client's only
@@ -78,7 +79,12 @@ Consequences that constrain every change here:
   `status = 'cancelled'`, one without (the master's own) is deleted as before. A client
   cancelling in «Мои записи» calls `cancel_own_booking(token)` **before**
   `sendToMaster`; the row becomes `cancelled`/`client` with `cancel_seen = false` and
-  shows in «Заявки» → «Отмены» until the master taps «Понятно». Cancelled rows free
+  shows in «Заявки» → «Отмены» until the master taps «Понятно». There's no push toward
+  the cabinet either: it polls `bookings` + `clients` every `VITE_ADMIN_POLL_SECONDS`
+  (default 20) while visible
+  (`pollAdminData()` in [src/admin/store.js](src/admin/store.js), skipped while a poll
+  is in flight) and reloads them on return to the tab (`AdminApp.jsx`) — that's how new
+  requests and client cancellations appear without a reload. Cancelled rows free
   the slot (`busy_slots`, `free_slots` skip them), can't be approved or edited, and
   `store.js` strips them from `bookings` in one place (`splitBookings`) — no section
   filters them itself.
@@ -249,8 +255,11 @@ seed, kept in the repo because the content is no longer in git otherwise.
   frame only. `refreshAll()` (content + availability, concurrent calls joined into one
   request) runs on launch, on **every screen change** (booking steps are screens) and
   whenever the tab becomes visible again (`App.jsx`) — a Mini App can sit open for hours
-  while the master edits the schedule. On `book:time`/`book:confirm` availability is
-  also polled every 30 s while visible. `submit()` in `BookingScreen` re-reads both
+  while the master edits the schedule. `App.jsx` also polls every `VITE_CLIENT_POLL_SECONDS` (default 20; see
+  `.env.example`) while visible:
+  `refreshAll()` on every screen, `syncBookings()` only on home and «Мои записи» —
+  the status toast lives on home, and a sync mid-booking would record the new status
+  silently. `submit()` in `BookingScreen` re-reads both
   (2 s cap) **before** saving and before `sendToMaster`; if price, duration, the service
   itself, the day or the slot differs from what's on screen, it doesn't send and shows
   the fresh data instead — a warning the client already saw doesn't block. A timeout
@@ -292,7 +301,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
 | [src/theme.js](src/theme.js) | Light/dark resolution and the manual override, shared by both apps. No React. |
 | [src/ui.jsx](src/ui.jsx) | Client-only presentational primitives. `<Screen>` owns the whole chrome — sticky crumb bar, toast slot, sticky footer. The footer is `position: sticky` inside a `100dvh` flex column, which is what keeps the last list row from hiding under the button without a padding hack. |
-| [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. `loadAdminData(parts)` reloads only the named parts (keys of `LOADERS`; all of them by default, and always all while the snapshot isn't `"ready"`), each with its own stale-response counter. |
+| [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. `loadAdminData(parts)` reloads only the named parts (keys of `LOADERS`; all of them by default, and always all while the snapshot isn't `"ready"`), each with its own stale-response counter. `pollAdminData()` re-reads `bookings`/`clients` on a timer while the tab is visible — the cabinet's only channel for client-side changes. |
 | [src/admin/api.js](src/admin/api.js) | Every write the cabinet makes — services, `working_hours`, `days_off`, `blocked_slots`, `bookings`. Same `{ ok, error }`-never-throws idiom as the old `content.js` mutations, and every mutation reloads, on success, the store parts it may have changed (`run(query, parts)`). A new write must name everything it touches — e.g. a booking change also touches `clients`, because `client_stats` counts visits. |
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
 | [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `BookingSheet.jsx` is the one bottom sheet for bookings and clients, in three modes: `new` (the 4-step «Записать» wizard — client → service → day → time → check, from the Расписание header or a client card), `edit` (an existing booking or request, opened on the check step) and `client` («Новый клиент», or «Изменить» on a client with no upcoming booking). It shows errors inline, because the cabinet's toast sits in page flow under the backdrop, and reports back through `onDone({ toast, day?, view?, clientId? })`. |
