@@ -65,7 +65,9 @@ Consequences that constrain every change here:
   own record as `k`, and writes onto the server row.
   [`syncBookings()`](src/sync.js) calls the `booking_status(uuid[])` RPC on launch,
   on return to the tab (`App.jsx`) and when «Мои записи» mounts, caches the answer as
-  `st`, and the change is shown as a toast — that toast is the client's only
+  `st` — plus the row's current `d`/`t`/`m`/`p`/`s`, because the master can move a
+  booking or change its service without changing its status — and the change is shown
+  as a toast — that toast is the client's only
   "notification". The same sync **re-sends** a request whose best-effort insert
   never provably landed (`sv !== true`; a duplicate `client_token` counts as landed).
   A missing row is read as a cancellation **only** when `sv === true`; otherwise it
@@ -162,7 +164,8 @@ seed, kept in the repo because the content is no longer in git otherwise.
   (the signed-in master) can read or change bookings. The client reads availability
   from the `busy_slots` view instead (day/start/duration only, no names), and its own
   request's status from the `booking_status(uuid[])` function — a `security definer`
-  function that returns `status` and nothing else, and only for rows whose secret
+  function that returns `status`, `cancelled_by` and the booking's own day/start/
+  duration/price/service_id — never names, username or comment — and only for rows whose secret
   `client_token` the caller already knows. Both are the same trick: RLS is bypassed in
   one small place with a fixed column list. The anon row's contents are not trusted
   either: the `guard_client_booking()` trigger overwrites `duration`/`price`/

@@ -593,17 +593,25 @@ create policy bookings_delete_auth on public.bookings
 --
 --  cancelled_by — чтобы клиент не показывал «отменена мастером» записи,
 --  которую отменил сам с другого устройства.
+--  day/start_min/duration/price/service_id — мастер может перенести
+--  запись или сменить услугу (update_master_booking), не меняя статус;
+--  без них у клиента в «Мои записи» оставались бы старые день и время.
+--  Это те же данные, что клиент сам прислал, — ничего чужого.
 --  drop перед create: сменился состав возвращаемых колонок, а create or
 --  replace этого не умеет.
 drop function if exists public.booking_status(uuid[]);
 create function public.booking_status(p_tokens uuid[])
-returns table (client_token uuid, status text, cancelled_by text)
+returns table (
+  client_token uuid, status text, cancelled_by text,
+  day date, start_min integer, duration integer, price integer, service_id text
+)
 language sql
 security definer
 stable
 set search_path = ''
 as $$
-  select b.client_token, b.status, b.cancelled_by
+  select b.client_token, b.status, b.cancelled_by,
+         b.day, b.start_min, b.duration, b.price, b.service_id
   from public.bookings b
   -- Пустой массив и null отсекаются здесь же: = any('{}') не вернёт строк.
   where b.client_token = any (p_tokens)

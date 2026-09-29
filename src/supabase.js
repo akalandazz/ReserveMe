@@ -202,8 +202,10 @@ export async function submitBooking(row) {
 
 /**
  * @param {string[]} tokens — client_token'ы своих записей.
- * @returns {Promise<Map<string,{status:string,cancelledBy:string}>|null>}
- *   токен → статус и кто отменил ("client" | "master" | "").
+ * @returns {Promise<Map<string,{status:string,cancelledBy:string,day?:string,
+ *   start?:number,duration?:number,price?:number,serviceId?:string|null}>|null>}
+ *   токен → статус, кто отменил ("client" | "master" | "") и текущие
+ *   день/время/услуга строки — мастер могла перенести запись.
  *   null — «спросить не удалось» (нет сети, таймаут, Supabase не настроен);
  *   пустая Map — «спросили, таких строк нет». Вызывающий в обоих случаях
  *   обязан оставить прежний статус: пропавшая строка неотличима от
@@ -217,7 +219,18 @@ export async function fetchBookingStatuses(tokens) {
   );
   if (!res || res.error || !Array.isArray(res.data)) return null;
   return new Map(
-    res.data.map((r) => [r.client_token, { status: r.status, cancelledBy: r.cancelled_by ?? "" }])
+    res.data.map((r) => [
+      r.client_token,
+      {
+        status: r.status,
+        cancelledBy: r.cancelled_by ?? "",
+        day: r.day,
+        start: r.start_min,
+        duration: r.duration,
+        price: r.price,
+        serviceId: r.service_id,
+      },
+    ])
   );
 }
 

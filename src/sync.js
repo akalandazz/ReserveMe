@@ -2,7 +2,8 @@
 //
 // Локальная копия (src/storage.js) — источник правды для «Мои записи»,
 // но решения мастера живут только на сервере. syncBookings() сводит их:
-//  - подтягивает статус ("ok" / "cancelled") через booking_status();
+//  - подтягивает статус ("ok" / "cancelled") через booking_status(),
+//    а с ним день, время и услугу — мастер могла перенести запись;
 //  - досылает заявку, чей best-effort insert при записи не доехал
 //    (sv !== true): openTelegramLink закрывает мини-апп сразу после
 //    submitBooking, и медленный запрос мог оборваться — мастер тогда не
@@ -12,7 +13,7 @@
 // Ни одна ошибка сети не меняет статус: пропавшая строка значит «отменена»,
 // только если мы точно знаем, что она была в базе (sv === true).
 
-import { isPast, labelForKey, toMinutes } from "./schedule.js";
+import { isPast, labelForKey, toHHMM, toMinutes } from "./schedule.js";
 import { loadBookings, saveBookings } from "./storage.js";
 import { fetchBookingStatuses, submitBooking } from "./supabase.js";
 import { tgUser } from "./telegram.js";
@@ -42,7 +43,8 @@ let inflight = null;
 /**
  * @returns {Promise<{ list: object[], changes: object[] }>} list — записи
  *   после синхронизации (уже сохранённые); changes — записи, чей статус
- *   только что стал "ok" или "cancelled" (для тоста).
+ *   только что стал "ok" или "cancelled" или которые мастер перенесла
+ *   (moved: "time" | "details") — для тоста.
  */
 export function syncBookings() {
   if (!inflight) {
@@ -92,10 +94,19 @@ async function run() {
     if (row.status === "cancelled" && row.cancelledBy === "client") continue;
 
     let nb = b.sv === true ? b : { ...b, sv: true };
+    let change = null;
     if (row.status !== b.st) {
       nb = { ...nb, st: row.status };
-      if (row.status === "ok" || row.status === "cancelled") changes.push(nb);
+      if (row.status === "ok" || row.status === "cancelled") change = nb;
     }
+    // Мастер перенесла запись или сменила услугу (update_master_booking):
+    // статус тот же "ok", а день, время, цена — уже другие.
+    const upd = row.status === "cancelled" ? {} : serverFields(b, row);
+    if (Object.keys(upd).length > 0) {
+      nb = { ...nb, ...upd };
+      change = { ...nb, moved: "d" in upd || "t" in upd ? "time" : "details" };
+    }
+    if (change) changes.push(change);
     next.push(nb);
   }
 
@@ -106,14 +117,29 @@ async function run() {
   return { list: await saveBookings(next), changes };
 }
 
+/** Поля локальной записи, которые на сервере уже другие. Пустые серверные
+ *  значения не трогают локальные: service_id после удаления услуги — null,
+ *  а старый сервер (до новых колонок booking_status) их не присылает. */
+function serverFields(b, row) {
+  const f = {};
+  if (row.day && row.day !== b.d) f.d = row.day;
+  if (Number.isInteger(row.start) && toHHMM(row.start) !== b.t) f.t = toHHMM(row.start);
+  if (Number.isInteger(row.duration) && row.duration !== b.m) f.m = row.duration;
+  if (Number.isInteger(row.price) && row.price !== b.p) f.p = row.price;
+  if (row.serviceId && row.serviceId !== b.s) f.s = row.serviceId;
+  return f;
+}
+
 const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
 
 /** Текст тоста о решении мастера, или "" если сказать нечего. */
 export function changesToast(changes) {
   if (changes.length === 0) return "";
-  if (changes.length > 1) return "Статус ваших записей обновился — загляните в «Мои записи».";
+  if (changes.length > 1) return "Ваши записи обновились — загляните в «Мои записи».";
   const [b] = changes;
   const when = `${lower(labelForKey(b.d))}, ${b.t}`;
+  if (b.moved === "time") return `Мастер перенесла запись: ${when}`;
+  if (b.moved === "details") return `Мастер изменила запись: ${when}`;
   return b.st === "ok"
     ? `Запись подтверждена ✓ ${when}`
     : `Мастер отменила запись: ${when}`;

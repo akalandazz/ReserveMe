@@ -60,10 +60,10 @@ export function bookingRow(id, fields) {
     id,
     day: fields.day,
     start_min: fields.start_min ?? 600,
-    duration: 90,
-    price: 60,
-    service_id: "manicure",
-    service_name: "Маникюр",
+    duration: fields.duration ?? 90,
+    price: fields.price ?? 60,
+    service_id: fields.service_id ?? "manicure",
+    service_name: fields.service_name || "Маникюр",
     client_id: null,
     client_name: fields.client_name ?? "Анна",
     client_username: fields.client_username ?? "",
@@ -220,7 +220,10 @@ async function handle(route, state) {
         hint: null,
       });
     }
-    rows.push(bookingRow(state.nextId++, body));
+    // Как guard_client_booking(): длительность и цена — из services, не от клиента.
+    const svc = state.tables.services?.find((s) => s.id === body.service_id);
+    const guarded = svc ? { duration: svc.duration, price: svc.price, service_name: svc.name } : {};
+    rows.push(bookingRow(state.nextId++, { ...body, ...guarded }));
     return route.fulfill({ status: 201, headers: cors });
   }
 
@@ -247,7 +250,16 @@ async function handle(route, state) {
       200,
       bookings
         .filter((b) => b.client_token && body.p_tokens.includes(b.client_token))
-        .map((b) => ({ client_token: b.client_token, status: b.status, cancelled_by: b.cancelled_by }))
+        .map((b) => ({
+          client_token: b.client_token,
+          status: b.status,
+          cancelled_by: b.cancelled_by,
+          day: b.day,
+          start_min: b.start_min,
+          duration: b.duration,
+          price: b.price,
+          service_id: b.service_id,
+        }))
     );
   }
   if (rpc === "cancel_own_booking" && method === "POST") {

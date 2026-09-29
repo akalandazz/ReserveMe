@@ -51,6 +51,26 @@ test.describe("Мини-апп: статус записи", () => {
     });
   });
 
+  test.describe("мастер перенесла подтверждённую запись", () => {
+    const NEW_DAY = dayKey(5);
+    test.use({
+      localBookings: [local({ st: "ok", sv: true })],
+      bookings: [bookingRow(1, { day: NEW_DAY, start_min: 840, client_token: TOKEN, status: "ok" })],
+    });
+
+    test("новые день и время — на устройстве и в тосте", async ({ miniapp }) => {
+      const { page } = miniapp;
+      await expect(page.getByText(/Мастер перенесла запись: .*14:00/)).toBeVisible();
+
+      const [stored] = await miniapp.stored();
+      expect(stored).toMatchObject({ d: NEW_DAY, t: "14:00", st: "ok", sv: true });
+      expect(stored).not.toHaveProperty("moved");
+
+      await openMyBookings(page);
+      await expect(page.locator(".book-card")).toContainText("14:00");
+    });
+  });
+
   test.describe("мастер отклонила", () => {
     test.use({
       localBookings: [local()],
