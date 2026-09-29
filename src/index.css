@@ -182,6 +182,14 @@ button {
   animation: riseIn 0.3s ease both;
 }
 
+/* Под крошкой на любом экране, пока база не отвечает (stale в content.js) */
+.stale-note {
+  margin: 10px var(--pad) 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .screen-body {
   flex: 1;
   padding: var(--pad) var(--pad) 8px;

@@ -107,7 +107,12 @@ export function findService(id) {
 /* ─── Кэш ───────────────────────────────────────────────────────
    Читаем синхронно при загрузке модуля (как readStored в theme.js):
    тогда у вернувшегося клиента settings есть уже на первом кадре,
-   и экран загрузки он не увидит вовсе.                           */
+   и экран загрузки он не увидит вовсе.
+
+   Кэш — ТОЛЬКО для первого кадра: initContent() сразу же перечитывает
+   базу, а App.jsx — на каждой смене экрана. Если перечитать не вышло,
+   stale = true, и <Screen> (src/ui.jsx) говорит клиенту, что данные
+   могли устареть.                                                */
 
 function readCache() {
   try {
@@ -148,10 +153,11 @@ if (cached) {
 // в обратном порядке. Считаем актуальным только последний запрос.
 let seq = 0;
 
+/** @returns {Promise<boolean>} true — в сторе свежий ответ базы. */
 export async function refreshContent() {
   if (!supabase) {
     publish({ ...snapshot, status: "error", error: NOT_CONFIGURED, stale: Boolean(snapshot.settings) });
-    return;
+    return false;
   }
 
   const mine = ++seq;
@@ -173,17 +179,17 @@ export async function refreshContent() {
         .order("id", { ascending: true }),
     ]);
   } catch {
-    if (mine !== seq) return;
+    if (mine !== seq) return false;
     publish({
       ...snapshot,
       status: "error",
       error: "Нет связи с сервером",
       stale: Boolean(snapshot.settings),
     });
-    return;
+    return false;
   }
 
-  if (mine !== seq) return; // обогнал более свежий запрос
+  if (mine !== seq) return false; // обогнал более свежий запрос
 
   const failed = result.find((r) => r.error);
   if (failed) {
@@ -193,7 +199,7 @@ export async function refreshContent() {
       error: failed.error.message || "Не удалось загрузить данные",
       stale: Boolean(snapshot.settings),
     });
-    return;
+    return false;
   }
 
   const [settingsRes, servicesRes, daysRes, infoRes] = result;
@@ -211,12 +217,13 @@ export async function refreshContent() {
       error: "В базе нет строки настроек. Выполните supabase/schema.sql.",
       stale: Boolean(snapshot.settings),
     });
-    return;
+    return false;
   }
 
   // Кэш пишем только при полном успехе: частичный ответ хуже устаревшего целого.
   writeCache(content);
   publish(withContent(snapshot, content, { status: "ready", error: null, stale: false }));
+  return true;
 }
 
 /* ─── Занятость ─────────────────────────────────────────────────
@@ -248,8 +255,9 @@ function toBusy(rows) {
 
 let busySeq = 0;
 
+/** @returns {Promise<boolean>} true — в сторе свежая занятость. */
 export async function refreshBusy() {
-  if (!supabase) return;
+  if (!supabase) return false;
 
   const mine = ++busySeq;
 
@@ -261,11 +269,33 @@ export async function refreshBusy() {
       // прошлое клиенту не показывается — buildDays начинает с сегодня
       .gte("day", dateKey(new Date()));
   } catch {
-    return; // молча: занятость необязательна для отрисовки экрана
+    return false; // молча: занятость необязательна для отрисовки экрана
   }
 
-  if (mine !== busySeq || res.error) return;
+  if (mine !== busySeq || res.error) return false;
   publish({ ...snapshot, busy: toBusy(res.data) });
+  return true;
+}
+
+/* ─── Всё сразу ─────────────────────────────────────────────────
+   Контент и занятость перечитываются на каждой смене экрана, на
+   возврате во вкладку и перед отправкой заявки. Эти поводы часто
+   совпадают (запуск + первый экран, быстрые «назад»), поэтому
+   одновременный вызов присоединяется к уже летящему запросу — как
+   syncBookings() в src/sync.js.                                   */
+
+let allInflight = null;
+
+/** @returns {Promise<{ content: boolean, busy: boolean }>} */
+export function refreshAll() {
+  if (!allInflight) {
+    allInflight = Promise.all([refreshContent(), refreshBusy()])
+      .then(([content, busy]) => ({ content, busy }))
+      .finally(() => {
+        allInflight = null;
+      });
+  }
+  return allInflight;
 }
 
 /**
@@ -275,6 +305,5 @@ export async function refreshBusy() {
 export function initContent() {
   if (started) return;
   started = true;
-  refreshContent();
-  refreshBusy();
+  refreshAll();
 }

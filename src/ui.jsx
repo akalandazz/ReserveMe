@@ -1,7 +1,9 @@
 // Презентационные примитивы. Без состояния — кроме ThemeToggle,
-// который только читает текущую тему из src/theme.js.
+// который только читает текущую тему из src/theme.js, и Screen,
+// который только читает флаг stale из src/content.js.
 
 import { useSyncExternalStore } from "react";
+import { useContent } from "./content.js";
 import { HAS_TG_BACK } from "./telegram.js";
 import { currentTheme, subscribeTheme, toggleTheme } from "./theme.js";
 
@@ -100,6 +102,9 @@ function ThemeToggle() {
  * поэтому внутриэкранную показываем только в браузере.
  */
 export function Screen({ crumb, onBack, toast, footer, children }) {
+  // Базу перечитать не удалось — на экране кэш, и клиент должен это знать.
+  const { stale } = useContent();
+
   return (
     <div className="shell">
       <div className="topbar">
@@ -116,6 +121,13 @@ export function Screen({ crumb, onBack, toast, footer, children }) {
         <span className="crumb">{crumb}</span>
         <ThemeToggle />
       </div>
+
+      {stale && (
+        <p className="stale-note" role="status">
+          Нет связи с сервером — показаны сохранённые данные, они могли
+          устареть.
+        </p>
+      )}
 
       {toast && <div className="toast">{toast}</div>}
 

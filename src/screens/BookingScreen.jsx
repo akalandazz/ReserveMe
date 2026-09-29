@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { refreshBusy, useContent } from "../content.js";
+import {
+  contentSnapshot,
+  refreshAll,
+  refreshBusy,
+  useContent,
+} from "../content.js";
 import {
   buildDays,
   buildSlots,
@@ -27,6 +32,23 @@ const CRUMB = "Запись";
 const SAVED_TOAST =
   "Заявка сохранена. Откройте Telegram, чтобы отправить сообщение.";
 
+// Пока клиент стоит на сетке времени или на подтверждении, занятость
+// перечитывается сама — иначе окошко, которое за это время заняли,
+// так и висело бы свободным.
+const BUSY_POLL_MS = 30_000;
+
+// Сколько ждать сверки с базой перед отправкой. Дольше — клиент ждёт
+// кнопку; не дождались — отправляем как есть (заявку не блокирует сеть).
+const FRESH_CHECK_MS = 2_000;
+
+/** Резолвится null, если promise не успел за ms. */
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
 export default function BookingScreen({
   step,
   draft,
@@ -38,6 +60,8 @@ export default function BookingScreen({
   const [bookings, setBookings] = useState([]);
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Сверка перед отправкой нашла, что данные на экране устарели.
+  const [outdated, setOutdated] = useState(false);
   const { settings, services, activeServices, daysOff, busy } = useContent();
 
   // Все хуки вызываются безусловно — ветвление только в return,
@@ -52,11 +76,16 @@ export default function BookingScreen({
     };
   }, []);
 
-  // Занятость перечитываем на входе в каждый шаг, где она видна: пока
-  // клиент шёл по флоу, мастер могла закрыть окошко в кабинете или
+  // Контент и занятость на входе в каждый шаг перечитывает App.jsx (шаг —
+  // это экран). Здесь — только опрос, пока клиент задержался на шаге,
+  // где занятость решает: мастер могла закрыть окошко в кабинете или
   // принять чужую заявку на то же время.
   useEffect(() => {
-    if (step !== "book:service") refreshBusy();
+    if (step !== "book:time" && step !== "book:confirm") return;
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") refreshBusy();
+    }, BUSY_POLL_MS);
+    return () => clearInterval(id);
   }, [step]);
 
   // Живая версия услуги: мастер мог поменять цену, пока клиент шёл по шагам.
@@ -101,6 +130,47 @@ export default function BookingScreen({
     });
   }, [service, day, draft.time, draft.comment]);
 
+  // Предупреждения шага подтверждения. Считаются здесь, а не в его
+  // ветке рендера: submit() сравнивает с ними свежий ответ базы.
+  const gone = Boolean(draft.service) && !services.some((s) => s.id === draft.service.id);
+  // Дата вышла из окна записи, пока клиент был на этом экране (полночь).
+  const expired = Boolean(draft.dateKey) && !day;
+  // Время разобрали, пока клиент дописывал комментарий. Не блокируем
+  // отправку — мастер всё равно подтверждает заявку вручную, — но
+  // предупреждаем и предлагаем вернуться к сетке.
+  const taken = !expired && Boolean(draft.time) && !slots.includes(draft.time);
+
+  /**
+   * Сверка с только что перечитанной базой: не разошлось ли то, что клиент
+   * видит на экране (и что уйдёт в сообщении), с тем, что там сейчас.
+   * Уже показанное предупреждение (gone, taken) расхождением не считается —
+   * клиент его видел и решил отправить.
+   */
+  const differsFromServer = (fresh) => {
+    const snap = contentSnapshot();
+    const now = snap.services.find((s) => s.id === draft.service?.id);
+
+    if (fresh.content) {
+      if (!now && !gone) return true;
+      if (now && (now.price !== service.price || now.duration !== service.duration)) {
+        return true;
+      }
+    }
+
+    const freshDay = findDay(buildDays(snap.settings, snap.daysOff), draft.dateKey);
+    if (!freshDay) return true;
+    const freshSlots = buildSlots(
+      freshDay,
+      now ?? service,
+      [
+        ...busyFor(bookings, freshDay.key, snap.settings),
+        ...serverBusyFor(snap.busy, freshDay.key, snap.settings),
+      ],
+      snap.settings
+    );
+    return !taken && !freshSlots.includes(draft.time);
+  };
+
   const pickService = (s) => {
     haptic("select");
     // время обнуляем: слот, валидный для 90 мин, может не существовать для 120
@@ -131,6 +201,21 @@ export default function BookingScreen({
     // и выбранная дата вышла из окна записи.
     if (sending || !service || !day || !draft.time) return;
     setSending(true);
+    setOutdated(false);
+
+    // Последняя сверка с базой — ДО сохранения и до openTelegramLink.
+    // Мастер могла поменять цену, закрыть день или окошко, пока клиент
+    // дописывал комментарий: тогда не отправляем, а показываем свежие
+    // данные (экран перерисуется из стора) и просим проверить ещё раз.
+    // База не ответила вовремя — отправляем как есть.
+    const fresh = await withTimeout(refreshAll(), FRESH_CHECK_MS);
+    if (fresh && (fresh.content || fresh.busy) && differsFromServer(fresh)) {
+      haptic("warning");
+      setOutdated(true);
+      setSending(false);
+      return;
+    }
+
     haptic("success");
 
     // Секрет, по которому «Мои записи» потом спросят у сервера, не
@@ -277,14 +362,6 @@ export default function BookingScreen({
   }
 
   // book:confirm
-  const gone = draft.service && !services.some((s) => s.id === draft.service.id);
-  // Дата вышла из окна записи, пока клиент был на этом экране (полночь).
-  const expired = Boolean(draft.dateKey) && !day;
-  // Время разобрали, пока клиент дописывал комментарий. Не блокируем
-  // отправку — мастер всё равно подтверждает заявку вручную, — но
-  // предупреждаем и предлагаем вернуться к сетке.
-  const taken = !expired && Boolean(draft.time) && !slots.includes(draft.time);
-
   return (
     <Screen
       crumb={CRUMB}
@@ -301,6 +378,13 @@ export default function BookingScreen({
       }
     >
       <Title>Подтвердите заявку</Title>
+
+      {outdated && (
+        <p className="notice" role="alert">
+          Пока вы оформляли заявку, данные обновились. Проверьте услугу, дату,
+          время и цену ниже и отправьте ещё раз.
+        </p>
+      )}
 
       {gone && (
         <p className="notice">
