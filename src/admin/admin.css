@@ -1887,6 +1887,22 @@ input:focus {
   white-space: nowrap;
 }
 
+.visit-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.visit-tag {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--accent);
+}
+
 .visit-price {
   flex: none;
   font-family: var(--serif);

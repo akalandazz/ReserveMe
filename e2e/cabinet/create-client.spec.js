@@ -52,7 +52,7 @@ test.describe("Кабинет: новый клиент", () => {
     await expect(row).toContainText("@anna_nails");
     await expect(row).toContainText("ещё не была");
     await expect(row).toContainText("Телефон: +995 555 12 34 56");
-    await expect(row).toContainText("Записей пока нет");
+    await expect(row).toContainText("Предстоящие записи · 0");
     await expect(row.getByRole("link", { name: "Написать в Telegram" })).toHaveAttribute(
       "href",
       "https://t.me/anna_nails"
