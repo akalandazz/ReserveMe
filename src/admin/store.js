@@ -249,6 +249,9 @@ function withClientNames(bookings, clients) {
   });
 }
 
+// Период опроса — VITE_ADMIN_POLL_SECONDS (.env.example), по умолчанию 20 с.
+const ADMIN_POLL_MS = (Number(import.meta.env.VITE_ADMIN_POLL_SECONDS) || 20) * 1000;
+
 /**
  * Опрос записей, пока кабинет открыт и на экране. Заявки и отмены
  * клиентов приходят сами по себе, а пуша нет — без опроса мастер видела
@@ -263,7 +266,7 @@ function withClientNames(bookings, clients) {
  * отбросит seq в loadAdminData.
  * @returns {() => void} остановить опрос.
  */
-export function pollAdminData(ms = 20_000) {
+export function pollAdminData(ms = ADMIN_POLL_MS) {
   if (!supabase) return () => {};
   let inflight = null;
   const id = window.setInterval(() => {

@@ -64,7 +64,7 @@ Consequences that constrain every change here:
   client mints in `newClientToken()` ([src/storage.js](src/storage.js)), stores on its
   own record as `k`, and writes onto the server row.
   [`syncBookings()`](src/sync.js) calls the `booking_status(uuid[])` RPC on launch,
-  on return to the tab (`App.jsx`), when «Мои записи» mounts and every 20 s while home
+  on return to the tab (`App.jsx`), when «Мои записи» mounts and on each poll while home
   or «Мои записи» is open, caches the answer as
   `st` — plus the row's current `d`/`t`/`m`/`p`/`s`, because the master can move a
   booking or change its service without changing its status — and the change is shown
@@ -80,7 +80,8 @@ Consequences that constrain every change here:
   cancelling in «Мои записи» calls `cancel_own_booking(token)` **before**
   `sendToMaster`; the row becomes `cancelled`/`client` with `cancel_seen = false` and
   shows in «Заявки» → «Отмены» until the master taps «Понятно». There's no push toward
-  the cabinet either: it polls `bookings` + `clients` every 20 s while visible
+  the cabinet either: it polls `bookings` + `clients` every `VITE_ADMIN_POLL_SECONDS`
+  (default 20) while visible
   (`pollAdminData()` in [src/admin/store.js](src/admin/store.js), skipped while a poll
   is in flight) and reloads them on return to the tab (`AdminApp.jsx`) — that's how new
   requests and client cancellations appear without a reload. Cancelled rows free
@@ -254,7 +255,8 @@ seed, kept in the repo because the content is no longer in git otherwise.
   frame only. `refreshAll()` (content + availability, concurrent calls joined into one
   request) runs on launch, on **every screen change** (booking steps are screens) and
   whenever the tab becomes visible again (`App.jsx`) — a Mini App can sit open for hours
-  while the master edits the schedule. `App.jsx` also polls every 20 s while visible:
+  while the master edits the schedule. `App.jsx` also polls every `VITE_CLIENT_POLL_SECONDS` (default 20; see
+  `.env.example`) while visible:
   `refreshAll()` on every screen, `syncBookings()` only on home and «Мои записи» —
   the status toast lives on home, and a sync mid-booking would record the new status
   silently. `submit()` in `BookingScreen` re-reads both

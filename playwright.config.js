@@ -33,6 +33,12 @@ export default defineConfig({
     url: `http://localhost:${PORT}/admin.html`,
     reuseExistingServer: false,
     timeout: 120_000,
-    env: { VITE_SUPABASE_URL: SUPABASE_URL, VITE_SUPABASE_ANON_KEY: ANON_KEY },
+    // Опрос — ровно 20 с, что бы ни стояло в .env: тесты мотают часы на 20_000.
+    env: {
+      VITE_SUPABASE_URL: SUPABASE_URL,
+      VITE_SUPABASE_ANON_KEY: ANON_KEY,
+      VITE_CLIENT_POLL_SECONDS: "20",
+      VITE_ADMIN_POLL_SECONDS: "20",
+    },
   },
 });

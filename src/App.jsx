@@ -21,7 +21,8 @@ import WaitlistScreen from "./screens/WaitlistScreen.jsx";
 
 const HOME = "menu";
 const EMPTY_DRAFT = { service: null, dateKey: null, time: null, comment: "" };
-const POLL_MS = 20_000;
+// Период опроса — VITE_CLIENT_POLL_SECONDS (.env.example), по умолчанию 20 с.
+const POLL_MS = (Number(import.meta.env.VITE_CLIENT_POLL_SECONDS) || 20) * 1000;
 
 // Шаги записи — элементы того же стека, что и экраны.
 // Благодаря этому кнопка «назад» проходит флоу в обратном порядке
