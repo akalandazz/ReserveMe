@@ -64,7 +64,8 @@ Consequences that constrain every change here:
   client mints in `newClientToken()` ([src/storage.js](src/storage.js)), stores on its
   own record as `k`, and writes onto the server row.
   [`syncBookings()`](src/sync.js) calls the `booking_status(uuid[])` RPC on launch,
-  on return to the tab (`App.jsx`) and when «Мои записи» mounts, caches the answer as
+  on return to the tab (`App.jsx`), when «Мои записи» mounts and every 20 s while home
+  or «Мои записи» is open, caches the answer as
   `st` — plus the row's current `d`/`t`/`m`/`p`/`s`, because the master can move a
   booking or change its service without changing its status — and the change is shown
   as a toast — that toast is the client's only
@@ -253,8 +254,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
   frame only. `refreshAll()` (content + availability, concurrent calls joined into one
   request) runs on launch, on **every screen change** (booking steps are screens) and
   whenever the tab becomes visible again (`App.jsx`) — a Mini App can sit open for hours
-  while the master edits the schedule. On `book:time`/`book:confirm` availability is
-  also polled every 30 s while visible. `submit()` in `BookingScreen` re-reads both
+  while the master edits the schedule. `App.jsx` also polls every 20 s while visible:
+  `refreshAll()` on every screen, `syncBookings()` only on home and «Мои записи» —
+  the status toast lives on home, and a sync mid-booking would record the new status
+  silently. `submit()` in `BookingScreen` re-reads both
   (2 s cap) **before** saving and before `sendToMaster`; if price, duration, the service
   itself, the day or the slot differs from what's on screen, it doesn't send and shows
   the fresh data instead — a warning the client already saw doesn't block. A timeout

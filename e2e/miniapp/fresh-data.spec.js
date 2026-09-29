@@ -2,8 +2,8 @@ import { SUPABASE_URL } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
 // Клиент всегда видит свежие данные: контент и занятость перечитываются
-// на каждой смене экрана (App.jsx), занятость — ещё и опросом на шагах
-// времени и подтверждения, а перед отправкой заявки BookingScreen сверяет
+// на каждой смене экрана и опросом, пока экран открыт (App.jsx), а перед
+// отправкой заявки BookingScreen сверяет
 // экран с базой (src/content.js → refreshAll).
 
 /** Ключ "ГГГГ-ММ-ДД" через daysAhead дней. */
@@ -102,8 +102,18 @@ test.describe("Мини-апп: свежие данные", () => {
     expect(await page.evaluate(() => window.__chats)).toBe(0);
   });
 
-  test.describe("опрос занятости", () => {
+  test.describe("опрос", () => {
     test.use({ fakeClock: true });
+
+    test("цена, поменянная в базе, видна без перехода по экранам", async ({ miniapp }) => {
+      const { page, backend } = miniapp;
+      await page.getByRole("button", { name: /Услуги и цены/ }).click();
+      await expect(page.locator(".list-row")).toContainText("60 ₾");
+
+      backend.tables.services[0].price = 75;
+      await page.clock.fastForward(20_000);
+      await expect(page.locator(".list-row")).toContainText("75 ₾");
+    });
 
     test("окошко, которое заняли, пока клиент смотрит на сетку, пропадает само", async ({
       miniapp,

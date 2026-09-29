@@ -21,6 +21,7 @@ import WaitlistScreen from "./screens/WaitlistScreen.jsx";
 
 const HOME = "menu";
 const EMPTY_DRAFT = { service: null, dateKey: null, time: null, comment: "" };
+const POLL_MS = 20_000;
 
 // Шаги записи — элементы того же стека, что и экраны.
 // Благодаря этому кнопка «назад» проходит флоу в обратном порядке
@@ -68,6 +69,21 @@ function App() {
   useEffect(() => {
     refreshAll();
     if (screen === HOME || screen === "my") sync();
+  }, [screen, sync]);
+
+  // Пока мини-апп открыт и на экране — опрос: мастер правит цены, график и
+  // решает по заявкам, пока клиент смотрит на экран. refreshAll() и
+  // syncBookings() сами сливают одновременные вызовы, так что медленная
+  // сеть запросы не копит. Статусы — только на главной и в «Мои записи»,
+  // как выше: тост живёт на главной, а синхронизация посреди записи
+  // сохранила бы новый статус молча, и тоста клиент бы уже не увидел.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      refreshAll();
+      if (screen === HOME || screen === "my") sync();
+    }, POLL_MS);
+    return () => clearInterval(id);
   }, [screen, sync]);
 
   // Мини-апп живёт долго и не перезагружается: клиент свернул Telegram,

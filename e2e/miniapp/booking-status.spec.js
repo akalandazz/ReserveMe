@@ -51,6 +51,24 @@ test.describe("Мини-апп: статус записи", () => {
     });
   });
 
+  test.describe("мастер подтвердила, пока клиент на главной", () => {
+    test.use({
+      fakeClock: true,
+      localBookings: [local()],
+      bookings: [bookingRow(1, { day: DAY, client_token: TOKEN, status: "new" })],
+    });
+
+    test("тост появляется сам, без перезапуска", async ({ miniapp }) => {
+      const { page, backend } = miniapp;
+      await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
+
+      backend.tables.bookings[0].status = "ok";
+      await page.clock.fastForward(20_000);
+      await expect(page.getByText("Запись подтверждена ✓")).toBeVisible();
+      await expect(page.getByText("Ближайшая запись · подтверждена")).toBeVisible();
+    });
+  });
+
   test.describe("мастер перенесла подтверждённую запись", () => {
     const NEW_DAY = dayKey(5);
     test.use({
