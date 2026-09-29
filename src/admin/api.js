@@ -125,6 +125,37 @@ export function deleteBooking(id) {
   return run(() => supabase.from("bookings").delete().eq("id", id), BOOKINGS);
 }
 
+/** Есть ли у записи клиент в мини-аппе, который узнает об отмене сам
+ *  (booking_status по client_token, см. src/sync.js). */
+export const clientSeesStatus = (booking) => !!booking?.client_token;
+
+/**
+ * «Отклонить», «Отменить запись», корзина. Запись из мини-аппа не
+ * удаляется, а получает status "cancelled": удалённую строку клиент не
+ * отличил бы от заявки, которая не доехала, и видел бы «Ожидает
+ * подтверждения» до самого дня записи. Записи без client_token (мастер
+ * завела сама) спросить о статусе некому — их удаляем, как раньше.
+ */
+export function cancelBooking(booking) {
+  if (!clientSeesStatus(booking)) return deleteBooking(booking.id);
+  return run(
+    () =>
+      supabase
+        .from("bookings")
+        .update({ status: "cancelled", cancelled_by: "master", cancel_seen: true })
+        .eq("id", booking.id),
+    BOOKINGS
+  );
+}
+
+/** «Понятно» на отмене клиента в «Заявках». */
+export function ackCancellation(id) {
+  return run(
+    () => supabase.from("bookings").update({ cancel_seen: true }).eq("id", id),
+    ["bookings"]
+  );
+}
+
 /** Запись, которую заводит сам мастер: сразу подтверждённая, мимо «Заявок».
  *  clientId — существующий клиент; иначе newClient ({name, phone,
  *  telegram_username, channel}) создаёт нового в той же транзакции

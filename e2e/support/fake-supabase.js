@@ -1,5 +1,6 @@
 // Поддельный Supabase для e2e: Auth (вход по паролю) и PostgREST —
-// ровно столько, сколько читает и пишет кабинет.
+// ровно столько, сколько читают и пишут кабинет и мини-апп клиента
+// (контент, заявка, booking_status, cancel_own_booking).
 //
 // Тесты НИКОГДА не ходят в настоящий проект: в .env лежит боевая база
 // мастера, и тестовые клиенты оказались бы в её «Клиентах». Поэтому
@@ -33,7 +34,9 @@ function seed() {
       {
         id: 1,
         master_name: "Владислава",
+        master_username: "vseees",
         slot_step_minutes: 30,
+        booking_days_ahead: 14,
         working_hours: { 0: null, 1: HOURS, 2: HOURS, 3: HOURS, 4: HOURS, 5: HOURS, 6: HOURS },
       },
     ],
@@ -45,6 +48,33 @@ function seed() {
     bookings: [],
     client_stats: [],
     client_comments: [],
+    // Только для мини-аппа клиента (content.js).
+    info_blocks: [],
+    busy_slots: [],
+  };
+}
+
+/** Строка bookings — как её вернул бы select * (поля, которые читают кабинет и RPC). */
+export function bookingRow(id, fields) {
+  return {
+    id,
+    day: fields.day,
+    start_min: fields.start_min ?? 600,
+    duration: 90,
+    price: 60,
+    service_id: "manicure",
+    service_name: "Маникюр",
+    client_id: null,
+    client_name: fields.client_name ?? "Анна",
+    client_username: fields.client_username ?? "",
+    comment: "",
+    status: fields.status ?? "new",
+    source: fields.source ?? "client",
+    client_token: fields.client_token ?? null,
+    cancelled_by: fields.cancelled_by ?? "",
+    cancel_seen: fields.cancel_seen ?? false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -67,11 +97,20 @@ export function clientRow(id, fields) {
 /**
  * Ставит подделку на страницу. Возвращает живое состояние:
  *  - tables    — «база», её можно досеять до page.goto;
- *  - inserts   — каждая запись в /rest/v1 ({ table, body, headers });
+ *  - inserts   — каждая вставка в /rest/v1 ({ table, body, headers });
+ *  - changes   — каждый PATCH/DELETE ({ method, table, id, body });
+ *  - rpcs      — каждый вызов /rest/v1/rpc ({ name, body });
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
  */
 export async function installFakeSupabase(page) {
-  const state = { tables: seed(), inserts: [], unhandled: [], nextId: 100 };
+  const state = {
+    tables: seed(),
+    inserts: [],
+    changes: [],
+    rpcs: [],
+    unhandled: [],
+    nextId: 100,
+  };
 
   await page.route("**/*", async (route) => {
     const url = route.request().url();
@@ -166,6 +205,59 @@ async function handle(route, state) {
     // Клиент без визитов — сверху, как в порядке, которым читает store.js.
     state.tables.client_stats.unshift(clientRow(id, body));
     return json(201, wantsObject ? { id } : [{ id }]);
+  }
+
+  // Заявка клиента из мини-аппа (submitBooking) — return=minimal, без тела.
+  if (table === "bookings" && method === "POST") {
+    const body = req.postDataJSON();
+    state.inserts.push({ table, body, headers: req.headers() });
+    // Уникальный индекс bookings_client_token_uq.
+    if (body.client_token && rows.some((b) => b.client_token === body.client_token)) {
+      return json(409, {
+        code: "23505",
+        message: 'duplicate key value violates unique constraint "bookings_client_token_uq"',
+        details: null,
+        hint: null,
+      });
+    }
+    rows.push(bookingRow(state.nextId++, body));
+    return route.fulfill({ status: 201, headers: cors });
+  }
+
+  // update/delete из кабинета: всегда .eq("id", …).
+  const eqId = Number(url.searchParams.get("id")?.replace(/^eq\./, ""));
+  if (table === "bookings" && (method === "PATCH" || method === "DELETE") && eqId) {
+    const body = method === "PATCH" ? req.postDataJSON() : null;
+    state.changes.push({ method, table, id: eqId, body });
+    const i = rows.findIndex((b) => b.id === eqId);
+    if (i >= 0) {
+      if (method === "PATCH") rows[i] = { ...rows[i], ...body };
+      else rows.splice(i, 1);
+    }
+    return route.fulfill({ status: 204, headers: cors });
+  }
+
+  // ─── RPC мини-аппа (schema.sql) ─────────────────────────────────
+  const rpc = url.pathname.match(/^\/rest\/v1\/rpc\/([a-z_]+)$/)?.[1];
+  const bookings = state.tables.bookings;
+  if (rpc === "booking_status" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    return json(
+      200,
+      bookings
+        .filter((b) => b.client_token && body.p_tokens.includes(b.client_token))
+        .map((b) => ({ client_token: b.client_token, status: b.status, cancelled_by: b.cancelled_by }))
+    );
+  }
+  if (rpc === "cancel_own_booking" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    const b = bookings.find(
+      (x) => x.client_token === body.p_token && (x.status === "new" || x.status === "ok")
+    );
+    if (b) Object.assign(b, { status: "cancelled", cancelled_by: "client", cancel_seen: false });
+    return json(200, !!b);
   }
 
   state.unhandled.push(`${method} ${url.pathname}${url.search}`);

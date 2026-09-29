@@ -3,7 +3,7 @@ import { dateKey } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
 import { initAuth, signOut, useSession } from "../supabase.js";
-import { deleteBooking } from "./api.js";
+import { cancelBooking, clientSeesStatus } from "./api.js";
 import { isBookingPast, weekStart } from "./calendar.js";
 import { loadAdminData, resetAdminData, useAdminData } from "./store.js";
 import BottomNav from "./components/BottomNav.jsx";
@@ -81,6 +81,18 @@ export default function AdminApp() {
     else if (session.status === "guest") resetAdminData();
   }, [session.status]);
 
+  // Кабинет открыт часами, а заявки и отмены клиентов приходят сами по
+  // себе. Перечитываем записи на возврате во вкладку — иначе новая
+  // заявка или отмена видна только после перезапуска кабинета.
+  useEffect(() => {
+    if (session.status !== "signed") return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadAdminData(["bookings", "clients"]);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [session.status]);
+
   useEffect(
     () => () => {
       window.clearTimeout(toastTimer.current);
@@ -135,18 +147,24 @@ export default function AdminApp() {
   // но если всё же открыт на удалённом, ему больше нечего сохранять.
   const closeSheetIf = (pred) => setSheet((s) => (s && pred(s) ? null : s));
 
-  // Жёсткое удаление записи (корзина в панели дня и в «Прошлых записях»).
-  // В отличие от «Отменить запись» в листе — клиенту ничего не пишем.
+  // Корзина в панели дня и в «Прошлых записях». Запись из мини-аппа не
+  // удаляется, а отменяется (cancelBooking в api.js) — клиент увидит
+  // «Отменена мастером» в «Мои записи». Остальные удаляются насовсем.
   const removeBooking = (id) =>
     busyThen(`del-booking-${id}`, 250, async () => {
-      const res = await deleteBooking(id);
+      const booking = data.bookings.find((b) => b.id === id) ?? { id };
+      const res = await cancelBooking(booking);
       if (!res.ok) {
         showError(res.error);
         return;
       }
       setConfirmDel(null);
       closeSheetIf((s) => s.kind === "edit" && s.bookingId === id);
-      flash("Запись удалена.");
+      flash(
+        clientSeesStatus(booking)
+          ? "Запись отменена — клиент увидит это в «Мои записи»."
+          : "Запись удалена."
+      );
     });
 
   // Клиент удалён (ClientsSection): закрыть лист, если он был о нём или
@@ -270,6 +288,7 @@ export default function AdminApp() {
             {tab === "requests" && (
               <RequestsSection
                 bookings={data.bookings}
+                cancellations={data.cancellations}
                 busy={busy}
                 busyThen={busyThen}
                 onToast={flash}
@@ -326,7 +345,11 @@ export default function AdminApp() {
         )}
       </div>
 
-      <BottomNav active={tab} onChange={switchTab} pendingCount={stats.pendingCount} />
+      <BottomNav
+        active={tab}
+        onChange={switchTab}
+        pendingCount={stats.pendingCount + data.cancellations.length}
+      />
 
       {sheet && (
         <BookingSheet

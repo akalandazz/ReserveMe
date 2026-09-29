@@ -18,17 +18,19 @@ function menuItems(masterName) {
   ];
 }
 
-/** Предстоящие по возрастанию времени — порядок хранения произвольный. */
+/** Предстоящие по возрастанию времени — порядок хранения произвольный.
+ *  Отменённые мастером не считаются: они живут в «Мои записи» до «Убрать». */
 function sortedUpcoming(list) {
   return list
-    .filter((b) => !isPast(b))
+    .filter((b) => !isPast(b) && b.st !== "cancelled")
     .sort((a, b) => (a.d + a.t < b.d + b.t ? -1 : 1));
 }
 
-export default function MenuScreen({ onOpen, toast }) {
+export default function MenuScreen({ onOpen, toast, rev }) {
   const [upcoming, setUpcoming] = useState([]);
   const { settings } = useContent();
 
+  // rev растёт, когда синхронизация (App.jsx) поменяла статусы.
   useEffect(() => {
     // StrictMode в dev вызывает эффект дважды — флаг гасит гонку
     let cancelled = false;
@@ -38,7 +40,7 @@ export default function MenuScreen({ onOpen, toast }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [rev]);
 
   const user = tgUser();
   const greeting = user?.first_name
@@ -58,7 +60,9 @@ export default function MenuScreen({ onOpen, toast }) {
             <Icon name="clockSm" size={17} />
           </span>
           <span className="next-main">
-            <span className="kicker">Ближайшая запись</span>
+            <span className="kicker">
+              Ближайшая запись · {next.st === "ok" ? "подтверждена" : "ожидает подтверждения"}
+            </span>
             <span className="next-line">
               {labelForKey(next.d)}, {next.t}
             </span>

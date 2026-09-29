@@ -170,7 +170,11 @@ create table if not exists public.bookings (
   client_name     text    not null default '',
   client_username text    not null default '',
   comment         text    not null default '',
-  status          text    not null default 'new' check (status in ('new', 'ok')),
+  -- 'cancelled' — отменена клиентом или мастером (кто — в cancelled_by).
+  -- Строка остаётся, а не удаляется: иначе клиент не отличил бы отмену
+  -- от заявки, которая не доехала (см. booking_status() ниже). Проверка
+  -- значений — ниже, отдельным alter table.
+  status          text    not null default 'new',
   source          text    not null default 'client' check (source in ('client', 'master')),
   -- Случайный секрет, который клиент придумывает себе сам и хранит рядом
   -- с локальной записью (ключ "k" в src/storage.js). Единственная ниточка
@@ -190,6 +194,19 @@ create table if not exists public.bookings (
 -- if not exists новую колонку в существующую таблицу не добавит.
 alter table public.bookings add column if not exists client_token uuid;
 alter table public.bookings add column if not exists client_id bigint references public.clients(id) on delete set null;
+-- Кто отменил: 'client' (cancel_own_booking) или 'master' (кабинет).
+-- cancel_seen — мастер видела отмену клиента в «Заявках» («Понятно»).
+alter table public.bookings add column if not exists cancelled_by text not null default '';
+alter table public.bookings add column if not exists cancel_seen boolean not null default false;
+
+-- Проверка статуса вынесена из create table: там её не расширить на
+-- живой базе. Имя — то, что Postgres дал прежней inline-проверке.
+alter table public.bookings drop constraint if exists bookings_status_check;
+alter table public.bookings add constraint bookings_status_check
+  check (status in ('new', 'ok', 'cancelled'));
+alter table public.bookings drop constraint if exists bookings_cancelled_by_check;
+alter table public.bookings add constraint bookings_cancelled_by_check
+  check (cancelled_by in ('', 'client', 'master'));
 
 create index if not exists bookings_day_idx on public.bookings (day, start_min);
 create index if not exists bookings_client_id_idx on public.bookings (client_id);
@@ -571,15 +588,22 @@ create policy bookings_delete_auth on public.bookings
 --  контролируемом месте, с фиксированным набором колонок.
 --
 --  Токен перебрать нельзя (128-битный uuid), а знание токена не даёт
---  ничего, кроме чтения статуса: писать по-прежнему может только мастер.
-create or replace function public.booking_status(p_tokens uuid[])
-returns table (client_token uuid, status text)
+--  ничего, кроме чтения статуса и отмены своей записи
+--  (cancel_own_booking() ниже).
+--
+--  cancelled_by — чтобы клиент не показывал «отменена мастером» записи,
+--  которую отменил сам с другого устройства.
+--  drop перед create: сменился состав возвращаемых колонок, а create or
+--  replace этого не умеет.
+drop function if exists public.booking_status(uuid[]);
+create function public.booking_status(p_tokens uuid[])
+returns table (client_token uuid, status text, cancelled_by text)
 language sql
 security definer
 stable
 set search_path = ''
 as $$
-  select b.client_token, b.status
+  select b.client_token, b.status, b.cancelled_by
   from public.bookings b
   -- Пустой массив и null отсекаются здесь же: = any('{}') не вернёт строк.
   where b.client_token = any (p_tokens)
@@ -590,6 +614,39 @@ $$;
 -- Функции по умолчанию исполняемы для public — сужаем явно.
 revoke all on function public.booking_status(uuid[]) from public;
 grant execute on function public.booking_status(uuid[]) to anon, authenticated;
+
+-- ─── cancel_own_booking(): клиент отменяет свою запись ──────────────
+--  Раньше «Отменить» в «Мои записи» удаляло запись только на устройстве,
+--  а строка в bookings оставалась: мастер ничего не видела в кабинете,
+--  и окно для других клиентов оставалось занятым. Тот же приём, что у
+--  booking_status(): security definer, строка ищется только по
+--  секретному client_token, наружу — только «получилось или нет».
+--
+--  Меняются ровно три колонки: status, cancelled_by, cancel_seen.
+--  Уже отменённую или прошедшую запись не трогаем (повторный тап —
+--  не ошибка, а false).
+create or replace function public.cancel_own_booking(p_token uuid)
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+begin
+  update public.bookings b
+     set status = 'cancelled',
+         cancelled_by = 'client',
+         cancel_seen = false
+   where b.client_token = p_token
+     and b.status in ('new', 'ok')
+     -- today - 1 — то же правило, что у вставки (bookings_insert_anon).
+     and b.day >= (now() at time zone 'Asia/Tbilisi')::date - 1;
+  return found;
+end
+$$;
+
+revoke all on function public.cancel_own_booking(uuid) from public;
+grant execute on function public.cancel_own_booking(uuid) to anon, authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
 --  clients — как bookings: телефон и комментарии мастера не должны
@@ -754,6 +811,7 @@ begin
       and not exists (
         select 1 from public.bookings b
         where b.day = p_day
+          and b.status <> 'cancelled'
           and b.id is distinct from p_exclude_id
           and b.start_min < g.m + dur
           and g.m < b.start_min + b.duration
@@ -941,6 +999,11 @@ begin
   if not found then
     raise exception 'Запись не найдена — обновите страницу';
   end if;
+  -- Отменённую запись сохранение «Изменить» не воскрешает: клиент уже
+  -- видит у себя «отменена».
+  if bk.status = 'cancelled' then
+    raise exception 'Запись уже отменена — обновите страницу';
+  end if;
 
   moved := bk.day <> p_day
         or bk.start_min <> p_start_min
@@ -1031,6 +1094,9 @@ begin
   end if;
   if bk.status = 'ok' then
     return;
+  end if;
+  if bk.status = 'cancelled' then
+    raise exception 'Клиент уже отменил эту заявку — обновите страницу';
   end if;
 
   if exists (
@@ -1137,10 +1203,12 @@ create policy blocked_slots_delete_auth on public.blocked_slots
 --  остался бы кликабельным.
 --  Прошлое отрезано в самой вьюхе: клиенту оно не нужно, а без фильтра
 --  анонимный ключ читал бы всю историю занятости салона.
+--  Отменённые записи окно не занимают.
 create or replace view public.busy_slots
   with (security_invoker = off) as
   select day, start_min, duration from public.bookings
     where day >= (now() at time zone 'Asia/Tbilisi')::date
+      and status <> 'cancelled'
   union all
   select day, start_min, 0 as duration from public.blocked_slots
     where day >= (now() at time zone 'Asia/Tbilisi')::date;
