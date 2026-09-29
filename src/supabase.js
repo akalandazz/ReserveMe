@@ -36,6 +36,11 @@ export const supabase = SUPABASE_READY
         detectSessionInUrl: false,
         storageKey: "vs_sb_auth_v1",
       },
+      // Мимо HTTP-кэша браузера и вебвью Telegram: цена, выходной или
+      // занятое окошко из кэша хуже, чем лишний запрос.
+      global: {
+        fetch: (input, init) => fetch(input, { ...init, cache: "no-store" }),
+      },
     })
   : null;
 

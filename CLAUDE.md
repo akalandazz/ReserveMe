@@ -241,9 +241,19 @@ seed, kept in the repo because the content is no longer in git otherwise.
 - Availability (`refreshBusy()`, the `busy` field) loads **separately** from the four
   content tables and is deliberately **not cached**: stale busyness is worse than none,
   since it would show an already-taken slot as free, and its failure must not blank a
-  screen that only needs the price list. It refreshes on every booking step past
-  «выберите услугу» and whenever the tab becomes visible again (`App.jsx`) — a Mini App
-  can sit open for hours while the master edits the schedule.
+  screen that only needs the price list.
+- **The client always works on fresh data.** The `vs_content_v1` cache is for the first
+  frame only. `refreshAll()` (content + availability, concurrent calls joined into one
+  request) runs on launch, on **every screen change** (booking steps are screens) and
+  whenever the tab becomes visible again (`App.jsx`) — a Mini App can sit open for hours
+  while the master edits the schedule. On `book:time`/`book:confirm` availability is
+  also polled every 30 s while visible. `submit()` in `BookingScreen` re-reads both
+  (2 s cap) **before** saving and before `sendToMaster`; if price, duration, the service
+  itself, the day or the slot differs from what's on screen, it doesn't send and shows
+  the fresh data instead — a warning the client already saw doesn't block. A timeout
+  sends as before: the network never blocks a booking. When a refresh fails, `stale` is
+  set and `<Screen>` shows the «данные могли устареть» note on every screen. Supabase
+  requests from both apps bypass the HTTP cache (`cache: "no-store"` in `supabase.js`).
 - `App.jsx` gates the whole client tree on `content.settings` — without it there is
   nothing to render, not even the crumb. There is no admin branch to check before that
   gate anymore: the cabinet is a different bundle at a different URL, so a broken

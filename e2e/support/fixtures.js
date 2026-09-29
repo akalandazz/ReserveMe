@@ -13,11 +13,14 @@ import { MASTER, installFakeSupabase } from "./fake-supabase.js";
  * cabinet — кабинет мастера (admin.html) после входа по паролю;
  *   openedChats() — чаты с клиентами, которые он открыл (window.open).
  * miniapp — мини-апп клиента (index.html) на главной.
+ * fakeClock — поставить page.clock до загрузки мини-аппа, чтобы тест мог
+ *   промотать таймеры (опрос занятости в BookingScreen).
  */
 export const test = base.extend({
   clients: [[], { option: true }],
   bookings: [[], { option: true }],
   localBookings: [[], { option: true }],
+  fakeClock: [false, { option: true }],
 
   backend: async ({ page, clients, bookings }, use) => {
     const state = await installFakeSupabase(page);
@@ -57,7 +60,8 @@ export const test = base.extend({
     });
   },
 
-  miniapp: async ({ page, backend, localBookings }, use) => {
+  miniapp: async ({ page, backend, localBookings, fakeClock }, use) => {
+    if (fakeClock) await page.clock.install();
     await page.addInitScript((list) => {
       // Только при первой загрузке — перезагрузка в тесте видит то, что
       // приложение само сохранило.

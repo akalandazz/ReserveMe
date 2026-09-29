@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import "./index.css";
 import {
   initContent,
-  refreshBusy,
+  refreshAll,
   refreshContent,
   useContent,
 } from "./content.js";
@@ -51,23 +51,32 @@ function App() {
 
   const sync = useCallback(() => syncAndNotify(setBookingsRev, setToast), []);
 
+  // Первую синхронизацию записей делает эффект смены экрана ниже —
+  // стартовый экран и есть главная.
   useEffect(() => {
     init();
     initTheme();
     initContent();
-    sync();
-  }, [sync]);
+  }, []);
+
+  // Клиент всегда видит свежие данные: контент и занятость перечитываются
+  // на каждой смене экрана (шаги записи — тоже экраны). Кэш из content.js
+  // — только первый кадр. Одновременные вызовы refreshAll() сливаются в
+  // один запрос, так что быстрые «назад» базу не заваливают. Статусы
+  // своих записей — там, где клиент их видит: главная и «Мои записи»
+  // (последняя синхронизируется и сама, syncBookings() дублей не шлёт).
+  useEffect(() => {
+    refreshAll();
+    if (screen === HOME || screen === "my") sync();
+  }, [screen, sync]);
 
   // Мини-апп живёт долго и не перезагружается: клиент свернул Telegram,
   // вернулся через час — а мастер за это время подняла цену, закрыла
   // окошко или подтвердила заявку. Перечитываем на возврате во вкладку.
-  // Внутри флоу записи занятость обновляется ещё и на каждом шаге
-  // (BookingScreen).
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
-      refreshContent();
-      refreshBusy();
+      refreshAll();
       sync();
     };
     document.addEventListener("visibilitychange", onVisible);
