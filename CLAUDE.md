@@ -14,7 +14,8 @@ npm run e2e      # Playwright, e2e/ — PW_CHANNEL=msedge to use an installed br
 
 The only tests are Playwright e2e in `e2e/`. They run against their **own** Vite server
 (port 5179) built with a fake `VITE_SUPABASE_URL`, and `e2e/support/fake-supabase.js`
-answers Auth/PostgREST in the browser — never point them at the real project from
+answers Auth/PostgREST/RPC in the browser, for both `admin.html` (`cabinet` fixture)
+and `index.html` (`miniapp` fixture) — never point them at the real project from
 `.env`, it would write test clients into the master's base. The fake fails the test on
 any request it doesn't handle; extend it when a new flow reads or writes a new table.
 
@@ -56,17 +57,29 @@ Consequences that constrain every change here:
 - **`?text=` prefill is deep-link behavior, not a documented Mini App API**, and can
   silently fail. Every send screen therefore also renders the exact message in a
   `.msg-preview` block with a «Скопировать текст» fallback. Don't remove that.
-- **A confirmation travels back, but only as a status.** The master approves a request
-  in the cabinet (`status` → `'ok'`), and the client's copy lives in CloudStorage where
-  the cabinet cannot reach it. The bridge is `client_token`: an unguessable uuid the
+- **A decision travels back, but only as a status — there is no push.** The master
+  approves (`status` → `'ok'`) or declines/cancels (`'cancelled'`, `cancelled_by =
+  'master'`) in the cabinet, and the client's copy lives in CloudStorage where the
+  cabinet cannot reach it. The bridge is `client_token`: an unguessable uuid the
   client mints in `newClientToken()` ([src/storage.js](src/storage.js)), stores on its
-  own record as `k`, and writes onto the server row. «Мои записи» then calls the
-  `booking_status(uuid[])` RPC (via
-  [`fetchBookingStatuses`](src/supabase.js)) and caches the answer as `st`. A missing
-  row is **never** read as a rejection — a declined booking and a booking whose
-  best-effort insert never landed look identical from here, so the card stays
-  «Ожидает подтверждения». Statuses sync when the screen mounts, so a confirmation
-  that lands while the client is staring at the list appears when they revisit it.
+  own record as `k`, and writes onto the server row.
+  [`syncBookings()`](src/sync.js) calls the `booking_status(uuid[])` RPC on launch,
+  on return to the tab (`App.jsx`) and when «Мои записи» mounts, caches the answer as
+  `st`, and the change is shown as a toast — that toast is the client's only
+  "notification". The same sync **re-sends** a request whose best-effort insert
+  never provably landed (`sv !== true`; a duplicate `client_token` counts as landed).
+  A missing row is read as a cancellation **only** when `sv === true`; otherwise it
+  is re-sent, never read as a rejection.
+- **Bookings from the Mini App are never hard-deleted by the cabinet.** «Отклонить»,
+  the sheet's «Отменить запись» and the trash icon all go through `cancelBooking()`
+  ([src/admin/api.js](src/admin/api.js)): a row with a `client_token` becomes
+  `status = 'cancelled'`, one without (the master's own) is deleted as before. A client
+  cancelling in «Мои записи» calls `cancel_own_booking(token)` **before**
+  `sendToMaster`; the row becomes `cancelled`/`client` with `cancel_seen = false` and
+  shows in «Заявки» → «Отмены» until the master taps «Понятно». Cancelled rows free
+  the slot (`busy_slots`, `free_slots` skip them), can't be approved or edited, and
+  `store.js` strips them from `bookings` in one place (`splitBookings`) — no section
+  filters them itself.
 - The client's slot list hides two things: *that client's own* stored bookings, from
   `src/storage.js`, **and** server-side busyness read from the `busy_slots` view —
   other clients' requests, bookings the master entered herself, and slots she closed
@@ -195,9 +208,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
   There is no separate approve/move/cancel UI in the day view anymore — that all lives
   in the sheet, next to the message the master copies for the client
   ([src/admin/messages.js](src/admin/messages.js)). The one exception is the trash
-  icon (day view card, and each «Прошлые записи» row in «Клиенты»): a **silent** hard
-  delete for a mistaken or test booking, which reminds nobody to message the client —
-  unlike the sheet's «Отменить запись», which does. Its inline confirm, like the
+  icon (day view card, and each «Прошлые записи» row in «Клиенты»): it reminds nobody
+  to message the client — unlike the sheet's «Отменить запись», which does — and,
+  like every cabinet cancel, it only hard-deletes rows without a `client_token`
+  (see «Bookings from the Mini App are never hard-deleted» above). Its inline confirm, like the
   client-delete one, is gated by `confirmDel` in `AdminApp.jsx`: one open confirm
   across the whole cabinet.
 - **Deleting a client** goes only through `delete_client(id)` (`security definer`,
@@ -249,7 +263,8 @@ month/week/day is showing) and each section's own edit-in-place state.
 | File | Role |
 |---|---|
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
-| [src/supabase.js](src/supabase.js) | Shared by both apps. Client + the master's session store (`useSession`, `signIn`, `signOut` — used only by the cabinet) + `submitBooking` and `fetchBookingStatuses` (used only by the client: a best-effort insert into `bookings`, and the status read-back through the `booking_status` RPC). Every export must survive `supabase === null` (env vars unset). |
+| [src/supabase.js](src/supabase.js) | Shared by both apps. Client + the master's session store (`useSession`, `signIn`, `signOut` — used only by the cabinet) + `submitBooking`, `fetchBookingStatuses` and `cancelOwnBooking` (used only by the client: a best-effort insert into `bookings`, the status read-back through the `booking_status` RPC, and `cancel_own_booking`). Every export must survive `supabase === null` (env vars unset). |
+| [src/sync.js](src/sync.js) | Client-only. `syncBookings()` — the one place that reconciles stored bookings with their server rows (status read-back, re-sending unlanded requests), deduped by an in-flight promise because App and «Мои записи» both call it; `changesToast()` turns its result into the client's toast; `bookingRow()` builds the insert row for both `BookingScreen` and the re-send. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `busyFor(bookings, key, settings)`, `serverBusyFor(busy, key, settings)`) and every function must survive `settings == null`. `busyFor` reads the client's own CloudStorage records, `serverBusyFor` the `busy_slots` rows; `BookingScreen` concatenates both before calling `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/storage.js](src/storage.js) | `CloudStorage` (gated on `isVersionAtLeast("6.9")`) mirrored onto `localStorage`. Every callback is promisified **with a 3s timeout** — some clients never fire it, which would hang «Мои записи» forever. Writes go to `localStorage` unconditionally. Client-only; the cabinet has no CloudStorage access to a client's device, which is why bookings also live in Supabase now. |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
@@ -260,9 +275,11 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
 | [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `BookingSheet.jsx` is the one bottom sheet for bookings and clients, in three modes: `new` (the 4-step «Записать» wizard — client → service → day → time → check, from the Расписание header or a client card), `edit` (an existing booking or request, opened on the check step) and `client` («Новый клиент», or «Изменить» on a client with no upcoming booking). It shows errors inline, because the cabinet's toast sits in page flow under the backdrop, and reports back through `onDone({ toast, day?, view?, clientId? })`. |
 
-Stored bookings use short keys (`{id, s, d, t, m, p, c, k, st}`) because CloudStorage
+Stored bookings use short keys (`{id, s, d, t, m, p, c, k, st, sv}`) because CloudStorage
 caps a value at 4096 characters — `k` is the `client_token` tying the record to its
-server row, `st` the last known status (`"new"` / `"ok"`). Both are absent on records
+server row, `st` the last known status (`"new"` / `"ok"` / `"cancelled"`), `sv`
+whether the server row is known to exist (`true`; otherwise `syncBookings` re-sends
+it). All three are absent on records
 written before that channel existed, and every reader must tolerate that. `m` (duration) and `p` (price) are denormalized on purpose:
 the master edits prices in the cabinet, and an old booking must keep showing what was
 agreed. The `bookings` table denormalizes the same way (`duration`, `price`,

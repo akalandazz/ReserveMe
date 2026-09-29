@@ -21,7 +21,8 @@ const EMPTY = {
   services: [],
   daysOff: [],
   blockedSlots: [],
-  bookings: [],
+  bookings: [], // без отменённых — см. splitBookings()
+  cancellations: [], // отмены клиентов, которые мастер ещё не видела
   clients: [],
   comments: [], // client_comments, новые сверху
 };
@@ -205,9 +206,27 @@ export async function loadAdminData(parts = PARTS) {
   // Ссылка на bookings меняется, только если менялись записи или клиенты,
   // — иначе useMemo по bookings в секциях пересчитывался бы зря.
   if (fresh.some(([p]) => p === "bookings" || p === "clients")) {
-    next.bookings = withClientNames(rawBookings, next.clients);
+    Object.assign(next, splitBookings(withClientNames(rawBookings, next.clients)));
   }
   publish(next);
+}
+
+/**
+ * Отменённые записи (status "cancelled") остаются в базе — по ним клиент
+ * узнаёт об отмене (booking_status), — но кабинету они не записи: ни в
+ * календаре, ни в статистике, ни в «Клиентах», и время они не занимают.
+ * Отсекаем их здесь, одним местом, а не в каждой секции. Наружу выходят
+ * только отмены клиентов, которых мастер ещё не видела, — для блока
+ * «Отмены» в «Заявках».
+ */
+function splitBookings(all) {
+  const bookings = [];
+  const cancellations = [];
+  for (const b of all) {
+    if (b.status !== "cancelled") bookings.push(b);
+    else if (b.cancelled_by === "client" && !b.cancel_seen) cancellations.push(b);
+  }
+  return { bookings, cancellations };
 }
 
 /**

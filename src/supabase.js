@@ -165,13 +165,24 @@ function withTimeout(promise, ms) {
   });
 }
 
-/** row — снэйк-кейс колонок bookings, без status/source (их ставит anon-политика). */
+/**
+ * row — снэйк-кейс колонок bookings, без status/source (их ставит anon-политика).
+ * @returns {Promise<boolean|null>} true — строка точно в базе (в том числе
+ *   уже была: дубль client_token — это повтор того же insert); false —
+ *   сервер отказал; null — неизвестно (таймаут, нет сети). Вызывающий
+ *   кладёт это в запись как sv, и syncBookings() (src/sync.js) досылает
+ *   заявку, чья судьба неизвестна.
+ */
 export async function submitBooking(row) {
-  if (!supabase) return;
-  await withTimeout(
+  if (!supabase) return null;
+  const res = await withTimeout(
     supabase.from("bookings").insert({ ...row, status: "new", source: "client" }),
     3000
   );
+  if (!res) return null;
+  if (!res.error) return true;
+  // 23505 — уникальный индекс bookings_client_token_uq: строка уже лежит.
+  return res.error.code === "23505";
 }
 
 /* ─── Статус своей заявки ────────────────────────────────────────
@@ -186,7 +197,8 @@ export async function submitBooking(row) {
 
 /**
  * @param {string[]} tokens — client_token'ы своих записей.
- * @returns {Promise<Map<string,string>|null>} токен → статус.
+ * @returns {Promise<Map<string,{status:string,cancelledBy:string}>|null>}
+ *   токен → статус и кто отменил ("client" | "master" | "").
  *   null — «спросить не удалось» (нет сети, таймаут, Supabase не настроен);
  *   пустая Map — «спросили, таких строк нет». Вызывающий в обоих случаях
  *   обязан оставить прежний статус: пропавшая строка неотличима от
@@ -199,5 +211,23 @@ export async function fetchBookingStatuses(tokens) {
     3000
   );
   if (!res || res.error || !Array.isArray(res.data)) return null;
-  return new Map(res.data.map((r) => [r.client_token, r.status]));
+  return new Map(
+    res.data.map((r) => [r.client_token, { status: r.status, cancelledBy: r.cancelled_by ?? "" }])
+  );
+}
+
+/* ─── Отмена своей записи ────────────────────────────────────────
+   RPC cancel_own_booking (schema.sql): строка остаётся со статусом
+   "cancelled", мастер видит её в «Заявках» → «Отмены», окно
+   освобождается для других клиентов. Best-effort, как submitBooking:
+   вызывается ДО sendToMaster, провал не мешает отмене на устройстве. */
+
+/** @returns {Promise<boolean>} true — сервер отметил отмену. */
+export async function cancelOwnBooking(token) {
+  if (!supabase || !token) return false;
+  const res = await withTimeout(
+    supabase.rpc("cancel_own_booking", { p_token: token }),
+    3000
+  );
+  return !!res && !res.error && res.data === true;
 }

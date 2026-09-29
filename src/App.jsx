@@ -6,6 +6,7 @@ import {
   refreshContent,
   useContent,
 } from "./content.js";
+import { changesToast, syncBookings } from "./sync.js";
 import { init } from "./telegram.js";
 import { initTheme } from "./theme.js";
 import { BootError, BootLoading } from "./ui.jsx";
@@ -26,6 +27,16 @@ const EMPTY_DRAFT = { service: null, dateKey: null, time: null, comment: "" };
 // без отдельных обработчиков.
 const BOOKING_STEPS = ["book:service", "book:date", "book:time", "book:confirm"];
 
+// Решение мастера (подтвердила, отменила) клиент видит тостом — другого
+// канала к нему нет: бот ему не пишет, а сообщение в чате мастер может
+// и не отправить. setState — только после ответа сервера.
+async function syncAndNotify(setRev, setToast) {
+  const { changes } = await syncBookings();
+  if (changes.length === 0) return;
+  setRev((n) => n + 1);
+  setToast(changesToast(changes));
+}
+
 function App() {
   const [stack, setStack] = useState([HOME]);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
@@ -34,25 +45,34 @@ function App() {
   const screen = stack[stack.length - 1];
   const content = useContent();
 
+  // Растёт после каждой синхронизации, поменявшей записи: главная
+  // перечитывает по нему хранилище.
+  const [bookingsRev, setBookingsRev] = useState(0);
+
+  const sync = useCallback(() => syncAndNotify(setBookingsRev, setToast), []);
+
   useEffect(() => {
     init();
     initTheme();
     initContent();
-  }, []);
+    sync();
+  }, [sync]);
 
   // Мини-апп живёт долго и не перезагружается: клиент свернул Telegram,
-  // вернулся через час — а мастер за это время подняла цену или закрыла
-  // окошко. Перечитываем на возврате во вкладку. Внутри флоу записи
-  // занятость обновляется ещё и на каждом шаге (BookingScreen).
+  // вернулся через час — а мастер за это время подняла цену, закрыла
+  // окошко или подтвердила заявку. Перечитываем на возврате во вкладку.
+  // Внутри флоу записи занятость обновляется ещё и на каждом шаге
+  // (BookingScreen).
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       refreshContent();
       refreshBusy();
+      sync();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, []);
+  }, [sync]);
 
   const push = useCallback((next) => {
     setStack((s) => [...s, next]);
@@ -129,6 +149,7 @@ function App() {
     case "my":
       return (
         <MyBookingsScreen
+          rev={bookingsRev}
           onBack={back}
           onBook={() => {
             home();
@@ -147,7 +168,7 @@ function App() {
     case "info":
       return <InfoScreen onBack={back} onContact={() => push("contact")} />;
     default:
-      return <MenuScreen onOpen={push} toast={toast} />;
+      return <MenuScreen onOpen={push} toast={toast} rev={bookingsRev} />;
   }
 }
 

@@ -1,5 +1,12 @@
 import { labelForKey, toHHMM } from "../../schedule.js";
-import { blockSlot, closeDay, openDay, saveWorkingHours, unblockSlot } from "../api.js";
+import {
+  blockSlot,
+  clientSeesStatus,
+  closeDay,
+  openDay,
+  saveWorkingHours,
+  unblockSlot,
+} from "../api.js";
 import { buildDayRows, hoursFor, parseKey } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
 
@@ -7,8 +14,10 @@ import { Icon } from "./Icons.jsx";
  * Панель одного дня. Запись — карточка с кнопкой «Изменить»:
  * подтвердить, перенести и отменить — всё в листе записи
  * (BookingSheet), там же, где мастер видит сообщение для клиента.
- * Рядом корзина — удалить запись молча, без сообщения клиенту
- * (ошибочная или тестовая запись), через подтверждение под карточкой.
+ * Рядом корзина — убрать запись без сообщения в чате, через
+ * подтверждение под карточкой. Запись из мини-аппа при этом отменяется,
+ * и клиент видит «Отменена мастером» (cancelBooking в api.js);
+ * остальные удаляются насовсем.
  */
 export default function DayPanel({
   settings,
@@ -134,7 +143,11 @@ export default function DayPanel({
                     </span>
                     {isConfirming(r.booking.id) && (
                       <span className="del-confirm" role="group" aria-label="Удаление записи">
-                        <span className="del-confirm-text">Удалить запись без восстановления?</span>
+                        <span className="del-confirm-text">
+                          {clientSeesStatus(r.booking)
+                            ? "Отменить запись? Клиент увидит это в мини-аппе."
+                            : "Удалить запись без восстановления?"}
+                        </span>
                         <span className="del-confirm-actions">
                           <button
                             className="btn-danger-fill"

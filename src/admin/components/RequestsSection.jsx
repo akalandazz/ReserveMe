@@ -1,18 +1,81 @@
 import { useMemo, useState } from "react";
 import { labelForKey, toHHMM } from "../../schedule.js";
-import { approveBooking, deleteBooking } from "../api.js";
+import { ackCancellation, approveBooking, cancelBooking, clientSeesStatus } from "../api.js";
 import { isBookingPast } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
 
 const PER_PAGE = 3;
 
+function metaLine(b) {
+  return (
+    `${labelForKey(b.day)} · ${toHHMM(b.start_min)}` +
+    (b.client_name ? ` · ${b.client_name}` : "") +
+    (b.client_username ? ` · @${b.client_username}` : "")
+  );
+}
+
 /**
- * Новые заявки — те, что клиент ещё не подтвердил (status "new") и
- * которые ещё не прошли. «Отклонить» = удалить строку: мастер пишет
- * клиенту сам, sendToMaster() здесь не вызывается никогда — он закрыл
- * бы мини-апп (см. CLAUDE.md).
+ * Отмены клиентов из мини-аппа (cancel_own_booking в schema.sql), которые
+ * мастер ещё не видела. Окно уже свободно — «Понятно» только убирает
+ * карточку (cancel_seen).
  */
-export default function RequestsSection({ bookings, busy, busyThen, onToast, onError, onEdit }) {
+function Cancellations({ cancellations, busy, busyThen, onError }) {
+  const ack = (id) => {
+    busyThen(`ack-${id}`, 250, async () => {
+      const res = await ackCancellation(id);
+      if (!res.ok) onError(res.error);
+    });
+  };
+
+  return (
+    <div>
+      <div className="section-head">
+        <p className="eyebrow">Отмены</p>
+        <span className="section-head-note">{cancellations.length}</span>
+      </div>
+      <div className="requests-list">
+        {cancellations.map((b) => (
+          <div className="request-card" key={b.id}>
+            <div className="request-head">
+              <p className="request-name">{b.service_name}</p>
+              <span className="request-price">{b.price} ₾</span>
+            </div>
+            <p className="request-meta">{metaLine(b)}</p>
+            <p className="request-comment">Клиент отменил запись — время снова свободно.</p>
+            <div className="request-actions">
+              <button
+                className="btn-approve"
+                type="button"
+                disabled={!!busy}
+                onClick={() => ack(b.id)}
+              >
+                {busy === `ack-${b.id}` && <span className="btn-spinner" aria-hidden="true" />}
+                Понятно
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Новые заявки — те, что мастер ещё не подтвердила (status "new") и
+ * которые ещё не прошли. «Отклонить» у заявки из мини-аппа — status
+ * "cancelled" (cancelBooking в api.js): клиент увидит «Отменена
+ * мастером» в «Мои записи». sendToMaster() здесь не вызывается никогда —
+ * он закрыл бы мини-апп (см. CLAUDE.md).
+ */
+export default function RequestsSection({
+  bookings,
+  cancellations,
+  busy,
+  busyThen,
+  onToast,
+  onError,
+  onEdit,
+}) {
   const [page, setPage] = useState(0);
 
   const pending = useMemo(
@@ -23,8 +86,23 @@ export default function RequestsSection({ bookings, busy, busyThen, onToast, onE
     [bookings]
   );
 
+  const cancelList =
+    cancellations.length > 0 ? (
+      <Cancellations
+        cancellations={cancellations}
+        busy={busy}
+        busyThen={busyThen}
+        onError={onError}
+      />
+    ) : null;
+
   if (pending.length === 0) {
-    return <div className="blank tall">Новых заявок нет</div>;
+    return (
+      <>
+        {cancelList}
+        <div className="blank tall">Новых заявок нет</div>
+      </>
+    );
   }
 
   const pages = Math.max(1, Math.ceil(pending.length / PER_PAGE));
@@ -32,24 +110,33 @@ export default function RequestsSection({ bookings, busy, busyThen, onToast, onE
   const from = cur * PER_PAGE;
   const shown = pending.slice(from, from + PER_PAGE);
 
-  const approve = (id) => {
-    busyThen(`appr-${id}`, 500, async () => {
-      const res = await approveBooking(id);
-      if (res.ok) onToast("Запись подтверждена. Напишите клиенту в чате.");
+  // Клиент из мини-аппа узнаёт о решении сам (src/sync.js); остальным
+  // мастер пишет в чат.
+  const told = (b, done) =>
+    clientSeesStatus(b)
+      ? `${done} — клиент увидит это в «Мои записи».`
+      : `${done}. Напишите клиенту в чате.`;
+
+  const approve = (b) => {
+    busyThen(`appr-${b.id}`, 500, async () => {
+      const res = await approveBooking(b.id);
+      if (res.ok) onToast(told(b, "Запись подтверждена"));
       else onError(res.error);
     });
   };
 
-  const decline = (id) => {
-    busyThen(`drop-${id}`, 450, async () => {
-      const res = await deleteBooking(id);
-      if (res.ok) onToast("Заявка отклонена. Напишите клиенту в чате.");
+  const decline = (b) => {
+    busyThen(`drop-${b.id}`, 450, async () => {
+      const res = await cancelBooking(b);
+      if (res.ok) onToast(told(b, "Заявка отклонена"));
       else onError(res.error);
     });
   };
 
   return (
     <div>
+      {cancelList}
+
       <div className="section-head">
         <p className="eyebrow">Новые заявки</p>
         <span className="section-head-note">
@@ -67,18 +154,14 @@ export default function RequestsSection({ bookings, busy, busyThen, onToast, onE
                 <p className="request-name">{b.service_name}</p>
                 <span className="request-price">{b.price} ₾</span>
               </div>
-              <p className="request-meta">
-                {labelForKey(b.day)} · {toHHMM(b.start_min)}
-                {b.client_name ? ` · ${b.client_name}` : ""}
-                {b.client_username ? ` · @${b.client_username}` : ""}
-              </p>
+              <p className="request-meta">{metaLine(b)}</p>
               {b.comment ? <p className="request-comment">«{b.comment}»</p> : null}
               <div className="request-actions">
                 <button
                   className="btn-approve"
                   type="button"
                   disabled={!!busy}
-                  onClick={() => approve(b.id)}
+                  onClick={() => approve(b)}
                 >
                   {approving && <span className="btn-spinner" aria-hidden="true" />}
                   {approving ? "Подтверждаем" : "Подтвердить"}
@@ -95,7 +178,7 @@ export default function RequestsSection({ bookings, busy, busyThen, onToast, onE
                   className="btn-decline"
                   type="button"
                   disabled={!!busy}
-                  onClick={() => decline(b.id)}
+                  onClick={() => decline(b)}
                 >
                   Отклонить
                 </button>

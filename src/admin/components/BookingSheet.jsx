@@ -4,8 +4,9 @@ import { copyText } from "../../telegram.js";
 import {
   CHANNELS,
   createClient,
+  cancelBooking,
+  clientSeesStatus,
   createMasterBooking,
-  deleteBooking,
   fetchFreeSlotCounts,
   fetchFreeSlots,
   updateClient,
@@ -348,11 +349,16 @@ export default function BookingSheet({
     finish(res, () => onDone({ toast, day: st.d }));
   };
 
-  const cancelBooking = async () => {
+  // Запись из мини-аппа отменяется статусом — клиент увидит «Отменена
+  // мастером» сам; остальные удаляются (см. cancelBooking в api.js).
+  const cancelThis = async () => {
     if (saving) return;
     setSaving(true);
-    const res = await deleteBooking(editId);
-    finish(res, () => onDone({ toast: "Запись отменена. Сообщите клиенту." }));
+    const res = await cancelBooking(bk);
+    const toast = clientSeesStatus(bk)
+      ? "Запись отменена — клиент увидит это в «Мои записи»."
+      : "Запись отменена. Сообщите клиенту.";
+    finish(res, () => onDone({ toast }));
   };
 
   /* ─── Тексты шапки ──────────────────────────────────────────── */
@@ -847,7 +853,7 @@ export default function BookingSheet({
               {toHHMM(st.orig.t)}?
             </p>
             <div className="bk-cancel-actions">
-              <button className="bk-btn-danger" type="button" disabled={saving} onClick={cancelBooking}>
+              <button className="bk-btn-danger" type="button" disabled={saving} onClick={cancelThis}>
                 Да, отменить
               </button>
               <button className="bk-btn-quiet" type="button" onClick={() => patch({ askCancel: false })}>
