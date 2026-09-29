@@ -3,8 +3,9 @@ import { dateKey } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
 import { initAuth, signOut, useSession } from "../supabase.js";
-import { cancelBooking, clientSeesStatus } from "./api.js";
+import { canMessageClient, cancelBooking, clientSeesStatus } from "./api.js";
 import { isBookingPast, weekStart } from "./calendar.js";
+import { dropKind, notifyClient } from "./messages.js";
 import { loadAdminData, resetAdminData, useAdminData } from "./store.js";
 import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
@@ -149,7 +150,9 @@ export default function AdminApp() {
 
   // Корзина в панели дня и в «Прошлых записях». Запись из мини-аппа не
   // удаляется, а отменяется (cancelBooking в api.js) — клиент увидит
-  // «Отменена мастером» в «Мои записи». Остальные удаляются насовсем.
+  // «Отменена мастером» в «Мои записи», а если у него есть логин, ему
+  // ещё и откроется чат с сообщением (notifyClient — после записи в
+  // базу). Остальные удаляются насовсем.
   const removeBooking = (id) =>
     busyThen(`del-booking-${id}`, 250, async () => {
       const booking = data.bookings.find((b) => b.id === id) ?? { id };
@@ -160,10 +163,17 @@ export default function AdminApp() {
       }
       setConfirmDel(null);
       closeSheetIf((s) => s.kind === "edit" && s.bookingId === id);
+      // О прошедшей записи сообщать незачем.
+      const told =
+        canMessageClient(booking) &&
+        !isBookingPast(booking) &&
+        notifyClient(booking, dropKind(booking), data.settings?.masterName);
       flash(
-        clientSeesStatus(booking)
-          ? "Запись отменена — клиент увидит это в «Мои записи»."
-          : "Запись удалена."
+        told
+          ? "Запись отменена — открываем чат с клиентом."
+          : clientSeesStatus(booking)
+            ? "Запись отменена — клиент увидит это в «Мои записи»."
+            : "Запись удалена."
       );
     });
 
@@ -289,6 +299,7 @@ export default function AdminApp() {
               <RequestsSection
                 bookings={data.bookings}
                 cancellations={data.cancellations}
+                masterName={data.settings?.masterName}
                 busy={busy}
                 busyThen={busyThen}
                 onToast={flash}

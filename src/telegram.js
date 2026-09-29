@@ -93,11 +93,28 @@ export function openLink(url) {
 }
 
 /**
- * Открывает чат с мастером с уже набранным текстом.
- * Возвращает true, если ссылку взял Telegram, false — если обычный браузер.
+ * Открывает чат с username (без @ или с ним) с уже набранным текстом.
+ * Возвращает true, если ссылку взял Telegram, false — если обычный
+ * браузер (новая вкладка; с noopener не узнать, открылась ли она).
  *
  * ⚠️ openTelegramLink обычно ЗАКРЫВАЕТ мини-апп. Всё, что нужно сохранить,
  * сохраняйте ДО вызова, а не после и не в .then().
+ */
+export function openChatWith(username, text) {
+  const login = String(username ?? "").trim().replace(/^@/, "");
+  const url = "https://t.me/" + login + "?text=" + encodeURIComponent(text);
+  const w = tg();
+  if (w?.openTelegramLink) {
+    w.openTelegramLink(url);
+    return true;
+  }
+  window.open(url, "_blank", "noopener");
+  return false;
+}
+
+/**
+ * Открывает чат с мастером с уже набранным текстом.
+ * Возвращает true, если ссылку взял Telegram, false — если обычный браузер.
  */
 export function sendToMaster(text) {
   const username = masterUsername();
@@ -107,14 +124,7 @@ export function sendToMaster(text) {
     );
     return true;
   }
-  const url = "https://t.me/" + username + "?text=" + encodeURIComponent(text);
-  const w = tg();
-  if (w?.openTelegramLink) {
-    w.openTelegramLink(url);
-    return true;
-  }
-  window.open(url, "_blank", "noopener");
-  return false;
+  return openChatWith(username, text);
 }
 
 /** Скопировать текст в буфер. Возвращает false, если буфер недоступен. */

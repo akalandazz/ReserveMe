@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { labelForKey, toHHMM } from "../../schedule.js";
 import { ackCancellation, approveBooking, cancelBooking, clientSeesStatus } from "../api.js";
 import { isBookingPast } from "../calendar.js";
+import { notifyClient } from "../messages.js";
 import { Icon } from "./Icons.jsx";
 
 const PER_PAGE = 3;
@@ -64,12 +65,13 @@ function Cancellations({ cancellations, busy, busyThen, onError }) {
  * Новые заявки — те, что мастер ещё не подтвердила (status "new") и
  * которые ещё не прошли. «Отклонить» у заявки из мини-аппа — status
  * "cancelled" (cancelBooking в api.js): клиент увидит «Отменена
- * мастером» в «Мои записи». sendToMaster() здесь не вызывается никогда —
- * он закрыл бы мини-апп (см. CLAUDE.md).
+ * мастером» в «Мои записи». Клиенту с Telegram-логином после решения
+ * открывается чат с сообщением (notifyClient в messages.js).
  */
 export default function RequestsSection({
   bookings,
   cancellations,
+  masterName,
   busy,
   busyThen,
   onToast,
@@ -110,17 +112,21 @@ export default function RequestsSection({
   const from = cur * PER_PAGE;
   const shown = pending.slice(from, from + PER_PAGE);
 
-  // Клиент из мини-аппа узнаёт о решении сам (src/sync.js); остальным
+  // Клиенту из мини-аппа с логином — сразу чат с готовым сообщением
+  // (notifyClient, уже после записи в базу: чат обычно закрывает
+  // кабинет). Без логина он узнает о решении сам (src/sync.js); прочим
   // мастер пишет в чат.
-  const told = (b, done) =>
-    clientSeesStatus(b)
-      ? `${done} — клиент увидит это в «Мои записи».`
-      : `${done}. Напишите клиенту в чате.`;
+  const told = (b, kind, done) =>
+    notifyClient(b, kind, masterName)
+      ? `${done} — открываем чат с клиентом.`
+      : clientSeesStatus(b)
+        ? `${done} — клиент увидит это в «Мои записи».`
+        : `${done}. Напишите клиенту в чате.`;
 
   const approve = (b) => {
     busyThen(`appr-${b.id}`, 500, async () => {
       const res = await approveBooking(b.id);
-      if (res.ok) onToast(told(b, "Запись подтверждена"));
+      if (res.ok) onToast(told(b, "approved", "Запись подтверждена"));
       else onError(res.error);
     });
   };
@@ -128,7 +134,7 @@ export default function RequestsSection({
   const decline = (b) => {
     busyThen(`drop-${b.id}`, 450, async () => {
       const res = await cancelBooking(b);
-      if (res.ok) onToast(told(b, "Заявка отклонена"));
+      if (res.ok) onToast(told(b, "declined", "Заявка отклонена"));
       else onError(res.error);
     });
   };

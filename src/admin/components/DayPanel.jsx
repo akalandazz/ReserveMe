@@ -1,13 +1,14 @@
 import { labelForKey, toHHMM } from "../../schedule.js";
 import {
   blockSlot,
+  canMessageClient,
   clientSeesStatus,
   closeDay,
   openDay,
   saveWorkingHours,
   unblockSlot,
 } from "../api.js";
-import { buildDayRows, hoursFor, parseKey } from "../calendar.js";
+import { buildDayRows, hoursFor, isBookingPast, parseKey } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
 
 /**
@@ -144,9 +145,11 @@ export default function DayPanel({
                     {isConfirming(r.booking.id) && (
                       <span className="del-confirm" role="group" aria-label="Удаление записи">
                         <span className="del-confirm-text">
-                          {clientSeesStatus(r.booking)
-                            ? "Отменить запись? Клиент увидит это в мини-аппе."
-                            : "Удалить запись без восстановления?"}
+                          {canMessageClient(r.booking) && !isBookingPast(r.booking)
+                            ? "Отменить запись? Откроется чат с клиентом."
+                            : clientSeesStatus(r.booking)
+                              ? "Отменить запись? Клиент увидит это в мини-аппе."
+                              : "Удалить запись без восстановления?"}
                         </span>
                         <span className="del-confirm-actions">
                           <button
