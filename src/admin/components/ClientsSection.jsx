@@ -46,13 +46,11 @@ function contactLink(c) {
   return { href: `tel:${phone}`, label: "Позвонить", icon: "phone" };
 }
 
-/** Ближайшая ещё не прошедшая запись клиента. */
-function nextBookingFor(bookings, clientId) {
-  return (
-    bookings
-      .filter((b) => b.client_id === clientId && !isBookingPast(b))
-      .sort((a, b) => a.day.localeCompare(b.day) || a.start_min - b.start_min)[0] ?? null
-  );
+/** Все ещё не прошедшие записи и заявки клиента, ближайшие сверху. */
+function upcomingBookingsFor(bookings, clientId) {
+  return bookings
+    .filter((b) => b.client_id === clientId && !isBookingPast(b))
+    .sort((a, b) => a.day.localeCompare(b.day) || a.start_min - b.start_min);
 }
 
 /** Прошедшие записи клиента, новые сверху — те же, что считает visit_count. */
@@ -107,15 +105,23 @@ export default function ClientsSection({
     }
   }
 
+  // Одна строка на клиента, но в подписи — все его записи за день.
   const dayRows = useMemo(() => {
-    const seen = new Set();
-    const rows = [];
+    const byClient = new Map();
     for (const b of bookings) {
-      if (b.day !== selectedKey || !b.client_id || seen.has(b.client_id)) continue;
-      const c = clients.find((x) => x.id === b.client_id);
+      if (b.day !== selectedKey || !b.client_id) continue;
+      if (!byClient.has(b.client_id)) byClient.set(b.client_id, []);
+      byClient.get(b.client_id).push(b);
+    }
+    const rows = [];
+    for (const [clientId, list] of byClient) {
+      const c = clients.find((x) => x.id === clientId);
       if (!c) continue;
-      seen.add(b.client_id);
-      rows.push({ ...c, dayTime: toHHMM(b.start_min), dayService: b.service_name });
+      const dayBookings = list
+        .sort((a, b) => a.start_min - b.start_min)
+        .map((b) => [toHHMM(b.start_min), b.service_name].filter(Boolean).join(" "))
+        .join(", ");
+      rows.push({ ...c, dayBookings });
     }
     return rows;
   }, [bookings, clients, selectedKey]);
@@ -191,6 +197,53 @@ export default function ClientsSection({
     });
   };
 
+  // Строка записи в карточке клиента. Предстоящая открывается в листе
+  // записи по тапу; корзина — та же, что в панели дня (removeBooking).
+  const visitRow = (b, upcoming) => (
+    <Fragment key={b.id}>
+      <div className="visit-row">
+        <span className="visit-date">{shortDate(b.day)}</span>
+        {upcoming ? (
+          <button type="button" className="visit-service visit-open" onClick={() => onEditBooking(b.id)}>
+            {toHHMM(b.start_min)} · {b.service_name}
+            {b.status === "new" && <span className="visit-tag">заявка</span>}
+          </button>
+        ) : (
+          <span className="visit-service">{b.service_name}</span>
+        )}
+        <span className="visit-price">{b.price} ₾</span>
+        <button
+          className="visit-del"
+          type="button"
+          aria-label="Удалить запись"
+          aria-expanded={isConfirming("booking", b.id) ? "true" : "false"}
+          onClick={() => askDelete("booking", b.id)}
+        >
+          <Icon name="trash" size={15} />
+        </button>
+      </div>
+      {isConfirming("booking", b.id) && (
+        <div className="del-confirm is-dense" role="group" aria-label="Удаление записи">
+          <span className="del-confirm-text">Удалить запись?</span>
+          <span className="del-confirm-actions">
+            <button
+              className="btn-danger-fill"
+              type="button"
+              disabled={!!busy}
+              onClick={() => onDeleteBooking(b.id)}
+            >
+              {busy === `del-booking-${b.id}` && <span className="btn-spinner" aria-hidden="true" />}
+              Удалить
+            </button>
+            <button className="btn-outline" type="button" onClick={() => setConfirmDel(null)}>
+              Нет
+            </button>
+          </span>
+        </div>
+      )}
+    </Fragment>
+  );
+
   const emptyText =
     mode === "day"
       ? "На этот день записей нет"
@@ -248,7 +301,8 @@ export default function ClientsSection({
         <div className="clients-panel">
           {rows.map((c) => {
             const expanded = openId === c.id;
-            const next = expanded ? nextBookingFor(bookings, c.id) : null;
+            const upcoming = expanded ? upcomingBookingsFor(bookings, c.id) : [];
+            const next = upcoming[0] ?? null;
             const past = expanded ? pastBookingsFor(bookings, c.id) : [];
             const shownPast = allVisits ? past : past.slice(0, VISITS_PREVIEW);
             const notes = commentsByClient.get(c.id) ?? [];
@@ -270,7 +324,7 @@ export default function ClientsSection({
               handle,
               `${c.visit_count} ${pluralVisits(c.visit_count)}`,
               mode === "day"
-                ? [c.dayTime, c.dayService].filter(Boolean).join(" · ")
+                ? c.dayBookings
                 : c.last_visit_at
                   ? `была ${relativeVisit(c.last_visit_at)}`
                   : "ещё не была",
@@ -331,54 +385,23 @@ export default function ClientsSection({
                       </button>
                     </div>
 
+                    <p className="client-label client-section">
+                      Предстоящие записи · {upcoming.length}
+                    </p>
+                    <div className="visits-box">
+                      {upcoming.length === 0 ? (
+                        <p className="visits-empty">Нет предстоящих записей</p>
+                      ) : (
+                        upcoming.map((b) => visitRow(b, true))
+                      )}
+                    </div>
+
                     <p className="client-label client-section">Прошлые записи · {past.length}</p>
                     <div className="visits-box">
                       {past.length === 0 ? (
                         <p className="visits-empty">Ещё не было визитов</p>
                       ) : (
-                        shownPast.map((b) => (
-                          <Fragment key={b.id}>
-                            <div className="visit-row">
-                              <span className="visit-date">{shortDate(b.day)}</span>
-                              <span className="visit-service">{b.service_name}</span>
-                              <span className="visit-price">{b.price} ₾</span>
-                              <button
-                                className="visit-del"
-                                type="button"
-                                aria-label="Удалить запись"
-                                aria-expanded={isConfirming("booking", b.id) ? "true" : "false"}
-                                onClick={() => askDelete("booking", b.id)}
-                              >
-                                <Icon name="trash" size={15} />
-                              </button>
-                            </div>
-                            {isConfirming("booking", b.id) && (
-                              <div className="del-confirm is-dense" role="group" aria-label="Удаление записи">
-                                <span className="del-confirm-text">Удалить запись?</span>
-                                <span className="del-confirm-actions">
-                                  <button
-                                    className="btn-danger-fill"
-                                    type="button"
-                                    disabled={!!busy}
-                                    onClick={() => onDeleteBooking(b.id)}
-                                  >
-                                    {busy === `del-booking-${b.id}` && (
-                                      <span className="btn-spinner" aria-hidden="true" />
-                                    )}
-                                    Удалить
-                                  </button>
-                                  <button
-                                    className="btn-outline"
-                                    type="button"
-                                    onClick={() => setConfirmDel(null)}
-                                  >
-                                    Нет
-                                  </button>
-                                </span>
-                              </div>
-                            )}
-                          </Fragment>
-                        ))
+                        shownPast.map((b) => visitRow(b, false))
                       )}
                     </div>
                     {past.length > VISITS_PREVIEW && (
