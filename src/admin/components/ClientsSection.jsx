@@ -361,15 +361,6 @@ export default function ClientsSection({
                       <span>
                         Телефон: <span className="client-fact">{c.phone || "—"}</span>
                       </span>
-                      <span>
-                        Чаще всего:{" "}
-                        <span className="client-fact">{c.favorite_service_name || "—"}</span>
-                      </span>
-                      <span>
-                        {next
-                          ? `Ближайшая запись: ${labelForKey(next.day)}, ${toHHMM(next.start_min)}`
-                          : "Записей пока нет"}
-                      </span>
                     </div>
 
                     <div className="client-actions">
