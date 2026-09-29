@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { dateKey, labelForKey, toHHMM } from "../../schedule.js";
-import { copyText } from "../../telegram.js";
+import { copyText, openChatWith } from "../../telegram.js";
 import {
   CHANNELS,
+  canMessageClient,
   createClient,
   cancelBooking,
   clientSeesStatus,
@@ -12,8 +13,8 @@ import {
   updateClient,
   updateMasterBooking,
 } from "../api.js";
-import { isDayClosed } from "../calendar.js";
-import { clientMessage } from "../messages.js";
+import { isBookingPast, isDayClosed } from "../calendar.js";
+import { clientMessage, dropKind, notifyClient } from "../messages.js";
 import { Icon } from "./Icons.jsx";
 
 // Клиент, которого заводят прямо в этом листе (в базе его ещё нет).
@@ -223,6 +224,15 @@ export default function BookingSheet({
       st.cm.trim() !== st.orig.cm.trim() ||
       cfChanged);
   const wasNew = isEdit && bk.status === "new";
+  // Клиенту из мини-аппа с логином кабинет сам откроет чат с сообщением
+  // (как клиент — мастеру), но только когда для клиента что-то поменялось:
+  // подтверждение, перенос, другая услуга. Логин — из формы: мастер могла
+  // его поправить или сменить клиента.
+  const clientTg = isEdit ? st.cf.telegram_username : "";
+  const notifies =
+    isEdit &&
+    canMessageClient({ client_token: bk.client_token, client_username: clientTg }) &&
+    (wasNew || slotChanged || st.s !== st.orig.s);
   const dirty = clientOnly ? cfChanged || st.c === NEW : !isEdit || changed || wasNew;
   const ready =
     dirty && name !== "" && (clientOnly || (st.s !== "" && st.d !== "" && st.t != null));
@@ -339,26 +349,43 @@ export default function BookingSheet({
       startMin: st.t,
       comment: st.cm,
     });
-    const toast = slotChanged
-      ? `Запись перенесена на ${lower(labelForKey(st.d))}, ${toHHMM(st.t)}. Отправьте клиенту сообщение.`
-      : wasNew && !changed
-        ? "Запись подтверждена."
-        : cfChanged
-          ? "Данные клиента и запись сохранены."
-          : "Запись обновлена.";
-    finish(res, () => onDone({ toast, day: st.d }));
+    const moved = `Запись перенесена на ${lower(labelForKey(st.d))}, ${toHHMM(st.t)}`;
+    const toast = notifies
+      ? `${slotChanged ? moved : wasNew ? "Запись подтверждена" : "Запись обновлена"} — открываем чат с клиентом.`
+      : slotChanged
+        ? `${moved}. Отправьте клиенту сообщение.`
+        : wasNew && !changed
+          ? "Запись подтверждена."
+          : cfChanged
+            ? "Данные клиента и запись сохранены."
+            : "Запись обновлена.";
+    // Уже сохранено — теперь можно открыть чат (он обычно закрывает кабинет).
+    finish(res, () => {
+      if (notifies && message) openChatWith(clientTg, message);
+      onDone({ toast, day: st.d });
+    });
   };
 
   // Запись из мини-аппа отменяется статусом — клиент увидит «Отменена
-  // мастером» сам; остальные удаляются (см. cancelBooking в api.js).
+  // мастером» сам, а с логином ему ещё и откроется чат с сообщением;
+  // остальные удаляются (см. cancelBooking в api.js).
   const cancelThis = async () => {
     if (saving) return;
     setSaving(true);
     const res = await cancelBooking(bk);
-    const toast = clientSeesStatus(bk)
-      ? "Запись отменена — клиент увидит это в «Мои записи»."
-      : "Запись отменена. Сообщите клиенту.";
-    finish(res, () => onDone({ toast }));
+    finish(res, () => {
+      const told =
+        canMessageClient(bk) &&
+        !isBookingPast(bk) &&
+        notifyClient(bk, dropKind(bk), settings?.masterName);
+      onDone({
+        toast: told
+          ? "Запись отменена — открываем чат с клиентом."
+          : clientSeesStatus(bk)
+            ? "Запись отменена — клиент увидит это в «Мои записи»."
+            : "Запись отменена. Сообщите клиенту.",
+      });
+    });
   };
 
   /* ─── Тексты шапки ──────────────────────────────────────────── */
@@ -392,7 +419,15 @@ export default function BookingSheet({
   const message =
     st.step === "confirm" && !clientOnly && sv && st.d && st.t != null
       ? clientMessage({
-          kind: !isEdit ? "new" : slotChanged ? "moved" : changed ? "updated" : "reminder",
+          kind: !isEdit
+            ? "new"
+            : slotChanged
+              ? "moved"
+              : wasNew
+                ? "approved"
+                : changed
+                  ? "updated"
+                  : "reminder",
           clientName: name,
           masterName: settings?.masterName,
           was: isEdit ? { day: st.orig.d, startMin: st.orig.t } : null,
@@ -813,9 +848,11 @@ export default function BookingSheet({
                     ? "Сообщение клиенту"
                     : slotChanged
                       ? "Сообщение о переносе"
-                      : changed
-                        ? "Сообщение об изменении"
-                        : "Напоминание клиенту"}
+                      : wasNew
+                        ? "Сообщение о подтверждении"
+                        : changed
+                          ? "Сообщение об изменении"
+                          : "Напоминание клиенту"}
                 </p>
                 <button className="link-btn" type="button" onClick={copy}>
                   {st.copied ? "Скопировано" : "Скопировать"}
@@ -823,9 +860,11 @@ export default function BookingSheet({
               </div>
               <pre className="bk-msg">{message}</pre>
               <p className="bk-note">
-                {isEdit
-                  ? `Отправьте в ${where} после сохранения.`
-                  : `Отправьте в ${where}. Запись создаётся сразу подтверждённой.`}
+                {notifies
+                  ? `После сохранения откроется чат с @${clientTg.trim().replace(/^@/, "")} с этим текстом.`
+                  : isEdit
+                    ? `Отправьте в ${where} после сохранения.`
+                    : `Отправьте в ${where}. Запись создаётся сразу подтверждённой.`}
               </p>
             </>
           )}

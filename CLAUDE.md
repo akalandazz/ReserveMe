@@ -88,10 +88,18 @@ Consequences that constrain every change here:
   Two clients racing on the same slot is still possible — there is no reservation, only
   a read — but the window is now the seconds between two refreshes, not days. The
   master still resolves any collision by hand in the cabinet.
-- **The cabinet never calls `sendToMaster` / `openTelegramLink`.** That would close the
-  cabinet on the master. When the cabinet needs to notify a client (approve, decline,
-  move a booking), it shows a toast telling the master to message the client herself —
-  it never opens a chat automatically.
+- **The cabinet opens a chat only with a Mini App client who has a Telegram username**
+  (`canMessageClient()` in [src/admin/api.js](src/admin/api.js): `client_token` **and**
+  `client_username`). After «Подтвердить»/«Отклонить» in «Заявки», a save in the sheet
+  that confirms, moves or changes the service, the sheet's «Отменить запись» and the
+  trash icon (upcoming bookings only), it calls `openChatWith(username, text)`
+  ([src/telegram.js](src/telegram.js)) with the `clientMessage()` text
+  ([src/admin/messages.js](src/admin/messages.js)) — the mirror image of `sendToMaster`.
+  `openTelegramLink` usually **closes the cabinet**, so the same rule as the client's
+  `submit()` applies: the write goes first, the chat opens only on `res.ok`, never in a
+  `.then()` of it. Everyone else — the master's own bookings, clients without a username
+  — gets the old toast and the sheet's preview + «Скопировать»; the cabinet never calls
+  `sendToMaster` itself.
 
 ### Two apps: what's shared, what's isolated
 
@@ -209,7 +217,8 @@ seed, kept in the repo because the content is no longer in git otherwise.
   in the sheet, next to the message the master copies for the client
   ([src/admin/messages.js](src/admin/messages.js)). The one exception is the trash
   icon (day view card, and each «Прошлые записи» row in «Клиенты»): it reminds nobody
-  to message the client — unlike the sheet's «Отменить запись», which does — and,
+  to message the client — unlike the sheet's «Отменить запись», which does — except
+  that an upcoming Mini App booking with a username opens the chat (see above), and,
   like every cabinet cancel, it only hard-deletes rows without a `client_token`
   (see «Bookings from the Mini App are never hard-deleted» above). Its inline confirm, like the
   client-delete one, is gated by `confirmDel` in `AdminApp.jsx`: one open confirm

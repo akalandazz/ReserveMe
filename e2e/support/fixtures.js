@@ -10,7 +10,8 @@ import { MASTER, installFakeSupabase } from "./fake-supabase.js";
  * backend — поддельный Supabase (fake-supabase.js), поставленный до
  *   первого запроса страницы. После теста проверяет, что приложение не
  *   сходило ни в один адрес, которого подделка не знает.
- * cabinet — кабинет мастера (admin.html) после входа по паролю.
+ * cabinet — кабинет мастера (admin.html) после входа по паролю;
+ *   openedChats() — чаты с клиентами, которые он открыл (window.open).
  * miniapp — мини-апп клиента (index.html) на главной.
  */
 export const test = base.extend({
@@ -27,6 +28,15 @@ export const test = base.extend({
   },
 
   cabinet: async ({ page, backend }, use) => {
+    // Без Telegram openChatWith (src/telegram.js) открывает t.me во
+    // вкладке — запоминаем адреса вместо настоящего окна.
+    await page.addInitScript(() => {
+      window.__openedChats = [];
+      window.open = (url) => {
+        window.__openedChats.push(String(url));
+        return null;
+      };
+    });
     await page.goto("/admin.html");
     await page.getByLabel("E-mail").fill(MASTER.email);
     await page.getByLabel("Пароль").fill(MASTER.password);
@@ -36,6 +46,14 @@ export const test = base.extend({
       page,
       backend,
       openTab: (label) => page.getByRole("navigation").getByRole("button", { name: label }).click(),
+      // Чаты, которые кабинет открыл клиентам: [{ username, text }].
+      openedChats: () =>
+        page.evaluate(() =>
+          window.__openedChats.map((u) => {
+            const url = new URL(u);
+            return { username: url.pathname.slice(1), text: url.searchParams.get("text") };
+          })
+        ),
     });
   },
 

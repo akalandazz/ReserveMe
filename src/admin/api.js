@@ -129,6 +129,11 @@ export function deleteBooking(id) {
  *  (booking_status по client_token, см. src/sync.js). */
 export const clientSeesStatus = (booking) => !!booking?.client_token;
 
+/** Записался из мини-аппа и есть Telegram-логин — кабинет сам откроет
+ *  ему чат с сообщением об изменении (notifyClient в messages.js). */
+export const canMessageClient = (booking) =>
+  clientSeesStatus(booking) && !!String(booking?.client_username ?? "").trim();
+
 /**
  * «Отклонить», «Отменить запись», корзина. Запись из мини-аппа не
  * удаляется, а получает status "cancelled": удалённую строку клиент не

@@ -260,6 +260,29 @@ async function handle(route, state) {
     return json(200, !!b);
   }
 
+  // ─── RPC кабинета (schema.sql) — без перепроверок времени ───────
+  if (rpc === "approve_booking" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    const b = bookings.find((x) => x.id === body.p_id);
+    if (b) b.status = "ok";
+    return json(200, null);
+  }
+  if (rpc === "update_master_booking" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    const b = bookings.find((x) => x.id === body.p_id);
+    if (b) {
+      Object.assign(b, {
+        status: "ok",
+        day: body.p_day,
+        start_min: body.p_start_min,
+        comment: body.p_comment,
+      });
+    }
+    return json(200, null);
+  }
+
   state.unhandled.push(`${method} ${url.pathname}${url.search}`);
   return json(501, { message: `e2e: fake Supabase does not handle ${method} ${url.pathname}` });
 }
