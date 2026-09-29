@@ -6,7 +6,7 @@ import { initAuth, signOut, useSession } from "../supabase.js";
 import { canMessageClient, cancelBooking, clientSeesStatus } from "./api.js";
 import { isBookingPast, weekStart } from "./calendar.js";
 import { dropKind, notifyClient } from "./messages.js";
-import { loadAdminData, resetAdminData, useAdminData } from "./store.js";
+import { loadAdminData, pollAdminData, resetAdminData, useAdminData } from "./store.js";
 import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
 import ClientsSection from "./components/ClientsSection.jsx";
@@ -83,15 +83,20 @@ export default function AdminApp() {
   }, [session.status]);
 
   // Кабинет открыт часами, а заявки и отмены клиентов приходят сами по
-  // себе. Перечитываем записи на возврате во вкладку — иначе новая
-  // заявка или отмена видна только после перезапуска кабинета.
+  // себе. Пока кабинет на экране, записи опрашиваются (pollAdminData), а
+  // на возврате во вкладку перечитываются сразу, не дожидаясь тика, —
+  // иначе новая заявка или отмена видна только после перезапуска.
   useEffect(() => {
     if (session.status !== "signed") return;
+    const stopPoll = pollAdminData();
     const onVisible = () => {
       if (document.visibilityState === "visible") loadAdminData(["bookings", "clients"]);
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      stopPoll();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [session.status]);
 
   useEffect(

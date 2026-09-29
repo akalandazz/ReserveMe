@@ -13,8 +13,9 @@ import { MASTER, installFakeSupabase } from "./fake-supabase.js";
  * cabinet — кабинет мастера (admin.html) после входа по паролю;
  *   openedChats() — чаты с клиентами, которые он открыл (window.open).
  * miniapp — мини-апп клиента (index.html) на главной.
- * fakeClock — поставить page.clock до загрузки мини-аппа, чтобы тест мог
- *   промотать таймеры (опрос занятости в BookingScreen).
+ * fakeClock — поставить page.clock до загрузки мини-аппа или кабинета,
+ *   чтобы тест мог промотать таймеры (опрос занятости в BookingScreen,
+ *   опрос записей в кабинете — pollAdminData).
  */
 export const test = base.extend({
   clients: [[], { option: true }],
@@ -30,7 +31,8 @@ export const test = base.extend({
     expect(state.unhandled, "запросы мимо поддельного Supabase").toEqual([]);
   },
 
-  cabinet: async ({ page, backend }, use) => {
+  cabinet: async ({ page, backend, fakeClock }, use) => {
+    if (fakeClock) await page.clock.install();
     // Без Telegram openChatWith (src/telegram.js) открывает t.me во
     // вкладке — запоминаем адреса вместо настоящего окна.
     await page.addInitScript(() => {
