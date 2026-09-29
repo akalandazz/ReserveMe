@@ -9,9 +9,14 @@ npm run dev      # Vite dev server with HMR — serves both index.html and admin
 npm run build    # production build to dist/ — two separate bundles, see "Two apps" below
 npm run preview  # serve the built dist/
 npm run lint     # oxlint (NOT eslint — config is .oxlintrc.json)
+npm run e2e      # Playwright, e2e/ — PW_CHANNEL=msedge to use an installed browser
 ```
 
-There is no test setup in this project (no test runner, no test files).
+The only tests are Playwright e2e in `e2e/`. They run against their **own** Vite server
+(port 5179) built with a fake `VITE_SUPABASE_URL`, and `e2e/support/fake-supabase.js`
+answers Auth/PostgREST in the browser — never point them at the real project from
+`.env`, it would write test clients into the master's base. The fake fails the test on
+any request it doesn't handle; extend it when a new flow reads or writes a new table.
 
 ## Architecture
 
