@@ -46,13 +46,11 @@ function contactLink(c) {
   return { href: `tel:${phone}`, label: "Позвонить", icon: "phone" };
 }
 
-/** Ближайшая ещё не прошедшая запись клиента. */
-function nextBookingFor(bookings, clientId) {
-  return (
-    bookings
-      .filter((b) => b.client_id === clientId && !isBookingPast(b))
-      .sort((a, b) => a.day.localeCompare(b.day) || a.start_min - b.start_min)[0] ?? null
-  );
+/** Ещё не прошедшие записи клиента (и заявки), ближайшая первой. */
+function upcomingBookingsFor(bookings, clientId) {
+  return bookings
+    .filter((b) => b.client_id === clientId && !isBookingPast(b))
+    .sort((a, b) => a.day.localeCompare(b.day) || a.start_min - b.start_min);
 }
 
 /** Прошедшие записи клиента, новые сверху — те же, что считает visit_count. */
@@ -248,7 +246,8 @@ export default function ClientsSection({
         <div className="clients-panel">
           {rows.map((c) => {
             const expanded = openId === c.id;
-            const next = expanded ? nextBookingFor(bookings, c.id) : null;
+            const upcoming = expanded ? upcomingBookingsFor(bookings, c.id) : [];
+            const next = upcoming[0] ?? null;
             const past = expanded ? pastBookingsFor(bookings, c.id) : [];
             const shownPast = allVisits ? past : past.slice(0, VISITS_PREVIEW);
             const notes = commentsByClient.get(c.id) ?? [];
@@ -330,6 +329,35 @@ export default function ClientsSection({
                         Изменить
                       </button>
                     </div>
+
+                    {upcoming.length > 0 && (
+                      <>
+                        <p className="client-label client-section">
+                          Предстоящие записи · {upcoming.length}
+                        </p>
+                        <div className="visits-box">
+                          {upcoming.map((b) => (
+                            <div className="visit-row" key={b.id}>
+                              <span className="visit-date is-wide">
+                                {shortDate(b.day)}, {toHHMM(b.start_min)}
+                              </span>
+                              <span className="visit-service">
+                                {b.service_name}
+                                {b.status === "new" && " · заявка"}
+                              </span>
+                              <span className="visit-price">{b.price} ₾</span>
+                              <button
+                                className="link-btn"
+                                type="button"
+                                onClick={() => onEditBooking(b.id)}
+                              >
+                                Изменить
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
 
                     <p className="client-label client-section">Прошлые записи · {past.length}</p>
                     <div className="visits-box">

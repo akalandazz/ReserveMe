@@ -1019,13 +1019,16 @@ begin
       returning * into cl;
   end if;
 
+  -- user_id — аккаунт клиента, если он есть: по нему клиент видит запись
+  -- в «Мои записи» (bookings_select_own). Без него запись, которую мастер
+  -- добавила клиенту из мини-аппа, ему не видна.
   insert into public.bookings (
     day, start_min, duration, price, service_id, service_name,
-    client_name, client_username, comment, status, source, client_id
+    client_name, client_username, comment, status, source, client_id, user_id
   ) values (
     p_day, p_start_min, svc.duration, svc.price, svc.id, svc.name,
     cl.name, cl.telegram_username, left(coalesce(btrim(p_comment), ''), 1000),
-    'ok', 'master', cl.id
+    'ok', 'master', cl.id, cl.user_id
   )
   returning id into new_id;
 
@@ -1146,6 +1149,9 @@ begin
     duration        = case when bk.service_id is distinct from svc.id then svc.duration else b.duration     end,
     price           = case when bk.service_id is distinct from svc.id then svc.price    else b.price        end,
     client_id       = cl.id,
+    -- Запись переходит к другому клиенту — и к его аккаунту (или ни к
+    -- чьему); тот же клиент — аккаунт не трогаем.
+    user_id         = case when bk.client_id is distinct from cl.id then cl.user_id else b.user_id end,
     client_name     = cl.name,
     client_username = cl.telegram_username,
     comment         = left(coalesce(btrim(p_comment), ''), 1000),
@@ -1158,6 +1164,16 @@ revoke all on function public.update_master_booking(bigint, bigint, text, text, 
   from public, anon;
 grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text)
   to authenticated;
+
+-- Разово: записи, которые мастер завела клиентам с аккаунтом до того,
+-- как create/update_master_booking начали ставить user_id, — клиент их
+-- не видел. Повторный запуск ничего не меняет.
+update public.bookings b
+   set user_id = c.user_id
+  from public.clients c
+ where b.client_id = c.id
+   and b.user_id is null
+   and c.user_id is not null;
 
 -- ─── approve_booking(): «Подтвердить» в «Заявках» ─────────────────
 --  Раньше это был голый update status = 'ok' из кабинета — две

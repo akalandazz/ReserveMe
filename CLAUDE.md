@@ -224,7 +224,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
   `security_invoker = on`.
 - **The master's own bookings** go through `create_master_booking()` (a new client
   plus a booking in one transaction, `status = 'ok'`, `source = 'master'` — never in
-  «Заявки»). Start times come from `free_slots(day, service_id, exclude_id)` on the
+  «Заявки»). It copies the client's `user_id` onto the booking (and
+  `update_master_booking` does when it switches the client) — that is what makes a
+  booking the master adds for a Mini App client show up in their «Мои записи», and
+  what makes cancelling it a soft `cancelled`, not a delete. Start times come from `free_slots(day, service_id, exclude_id)` on the
   server (working hours, `days_off`, overlaps with bookings and blocked slots, not in
   the past, on the `slot_step_minutes` grid), and the per-day counts in the sheet's
   «Выберите день» step come from `free_slot_counts()`, which wraps the same function.

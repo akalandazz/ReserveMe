@@ -1901,6 +1901,12 @@ input:focus {
   color: var(--muted);
 }
 
+/* Предстоящие записи: «5 окт., 15:00» — дата и время. */
+.visit-date.is-wide {
+  width: auto;
+  white-space: nowrap;
+}
+
 .visit-service {
   flex: 1;
   min-width: 0;
