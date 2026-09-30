@@ -457,10 +457,11 @@ create trigger bookings_guard_client
 --  на INSERT bookings, тем же приёмом, что и busy_slots ниже:
 --  RLS обходится в одном контролируемом месте, а не открывается клиенту
 --  напрямую. Заявка из мини-аппа несёт user_id (аккаунт клиента, его
---  ставит guard_client_booking()) — клиент ищется по нему; нет такого —
---  по telegram_username, чтобы подхватить клиента, которого мастер
---  завела раньше, и тогда ему дописывается user_id; нет и его — заводим
---  нового. Имя — из Telegram, а если его нет — начало e-mail до «@».
+--  ставит guard_client_booking()) — клиент ищется только по нему; нет
+--  такого — заводим нового (юзернейм занят другим клиентом — без него).
+--  Клиента, которого мастер завела раньше, по юзернейму НЕ подхватываем:
+--  юзернейм не проверен, см. комментарий в теле. Имя — из Telegram, а
+--  если его нет — начало e-mail до «@».
 --  Строки без user_id (мастер завела сама) — как раньше: по юзернейму,
 --  потом по точному имени среди клиентов без юзернейма.
 --
@@ -493,13 +494,13 @@ begin
       new.client_name := left(split_part(mail, '@', 1), 128);
     end if;
 
+    -- Только по аккаунту. НЕ по telegram_username: юзернейм приходит из
+    -- initDataUnsafe (а через PostgREST — вообще из тела запроса), его
+    -- подставит кто угодно. Привязка «чужого» клиента к своему аккаунту
+    -- отдала бы злоумышленнику через bookings_select_own все записи,
+    -- которые мастер потом заведёт этому клиенту (create_master_booking
+    -- копирует clients.user_id), и право отменять их (cancel_own_booking).
     select id into found_id from public.clients where user_id = new.user_id;
-    if found_id is null and new.client_username <> '' then
-      update public.clients
-         set user_id = new.user_id
-       where telegram_username = new.client_username and user_id is null
-      returning id into found_id;
-    end if;
     if found_id is null then
       insert into public.clients (name, telegram_username, user_id, email)
       values (new.client_name, new.client_username, new.user_id, mail)

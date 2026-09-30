@@ -209,8 +209,12 @@ seed, kept in the repo because the content is no longer in git otherwise.
   `user_id = auth.uid()` — a `select` policy on `bookings`: anyone can sign up, so it
   would hand every client's name, username and comment to anyone.
 - **Clients.** `clients` rows come from the `link_booking_client()` trigger (client
-  requests, matched by the account — `clients.user_id`, unique — then by Telegram
-  username, which claims a client the master created earlier; the client's `email`
+  requests, matched **only** by the account — `clients.user_id`, unique. Never by
+  Telegram username: it's unverified (`initDataUnsafe`, or any value in a raw
+  PostgREST insert), and claiming a client by it would hand the claimer every
+  booking the master later adds for that client via `bookings_select_own`, plus
+  `cancel_own_booking` on them. A new account whose username is taken gets a client
+  without it; the client's `email`
   is copied from the JWT and the e-mail's local part stands in for a missing Telegram
   name) and from the cabinet («Новый клиент», «Новая
   запись»). Bookings link to clients by `client_id`, **never by name**: `store.js`
