@@ -1,4 +1,4 @@
-import { bookingRow } from "../support/fake-supabase.js";
+import { CLIENT, bookingRow } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
 // Кабинет сам подтягивает заявки и отмены клиентов (pollAdminData в
@@ -12,7 +12,8 @@ function dayKey(daysAhead) {
 }
 
 const DAY = dayKey(3);
-const TOKEN = "11111111-2222-4333-8444-555555555555";
+// Аккаунт клиента мини-аппа, оставившего заявку (bookings.user_id).
+const USER_ID = CLIENT.id;
 const POLL_MS = 20_000;
 
 test.use({ fakeClock: true });
@@ -24,7 +25,7 @@ test.describe("Кабинет: живая синхронизация", () => {
     await expect(page.getByText("Новых заявок нет")).toBeVisible();
 
     backend.tables.bookings.push(
-      bookingRow(1, { day: DAY, client_name: "Анна", client_token: TOKEN })
+      bookingRow(1, { day: DAY, client_name: "Анна", user_id: USER_ID })
     );
     await page.clock.runFor(POLL_MS);
 
@@ -35,7 +36,7 @@ test.describe("Кабинет: живая синхронизация", () => {
   test.describe("клиент отменил запись", () => {
     test.use({
       bookings: [
-        bookingRow(1, { day: DAY, client_name: "Анна", client_token: TOKEN, status: "ok" }),
+        bookingRow(1, { day: DAY, client_name: "Анна", user_id: USER_ID, status: "ok" }),
       ],
     });
 

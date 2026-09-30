@@ -24,8 +24,10 @@ any request it doesn't handle; extend it when a new flow reads or writes a new t
 Two Telegram Mini Apps in one repo, one React 19 + Vite 8 codebase:
 
 - **The client** (`index.html` → `src/main.jsx` → `src/App.jsx`) — where a customer
-  browses services and submits a booking request. No login, no Supabase writes except
-  a client's own new booking (see below).
+  browses services and submits a booking request. **The whole app sits behind an
+  email + password sign-in / sign-up** ([AuthScreen.jsx](src/screens/AuthScreen.jsx));
+  every account it creates has the role `user` (see "Accounts and roles" below). No
+  Supabase writes except the client's own `profiles` row and new bookings (see below).
 - **The cabinet** (`admin.html` → `src/admin/main.jsx` → `src/admin/AdminApp.jsx`) —
   where the master signs in to manage her schedule, requests and prices. Completely
   separate bundle, separate CSS (`src/admin/admin.css`, not `src/index.css`), separate
@@ -34,19 +36,21 @@ Two Telegram Mini Apps in one repo, one React 19 + Vite 8 codebase:
 
 Supabase holds salon content (services, prices, working hours, address, the «Важная
 информация» blocks) so the master can edit it from the cabinet instead of editing code,
-**and now also client bookings** — a deliberate change from the app's original design
-(see "The delivery model" below for what that changed and what it didn't).
+**and client bookings** — the server is the client's only record of their bookings,
+tied to their account (see "The delivery model" below).
 
 ### The delivery model (the thing to understand first)
 
 A booking is a *request*, never a confirmed appointment. When a client submits one:
 
-1. It is persisted **client-side** via [src/storage.js](src/storage.js) — this remains
-   the client's own source of truth for «Мои записи» and cancellation.
-2. It is also inserted into Supabase's `bookings` table via
-   [`submitBooking`](src/supabase.js) — **best-effort, with a short timeout**, so the
-   cabinet has something to show. Its failure must never block or undo step 1 or 3.
-3. [`sendToMaster`](src/telegram.js) opens `https://t.me/<логин мастера>?text=…`
+1. It is inserted into Supabase's `bookings` table via
+   [`createBooking`](src/bookings.js) and **awaited** — the server stamps the row with
+   the caller's account (`user_id = auth.uid()`, set by `guard_client_booking()`).
+   There is no client-side copy: that row *is* the booking, for the cabinet and for
+   the client's «Мои записи». If the insert fails or times out, nothing is sent — the
+   confirm step shows the error (the trigger's Russian message when it rejects) and
+   the button turns into «Повторить».
+2. [`sendToMaster`](src/telegram.js) opens `https://t.me/<логин мастера>?text=…`
    through `WebApp.openTelegramLink`, and the client sends the message themselves.
 
 Consequences that constrain every change here:
@@ -58,27 +62,24 @@ Consequences that constrain every change here:
   silently fail. Every send screen therefore also renders the exact message in a
   `.msg-preview` block with a «Скопировать текст» fallback. Don't remove that.
 - **A decision travels back, but only as a status — there is no push.** The master
-  approves (`status` → `'ok'`) or declines/cancels (`'cancelled'`, `cancelled_by =
-  'master'`) in the cabinet, and the client's copy lives in CloudStorage where the
-  cabinet cannot reach it. The bridge is `client_token`: an unguessable uuid the
-  client mints in `newClientToken()` ([src/storage.js](src/storage.js)), stores on its
-  own record as `k`, and writes onto the server row.
-  [`syncBookings()`](src/sync.js) calls the `booking_status(uuid[])` RPC on launch,
-  on return to the tab (`App.jsx`), when «Мои записи» mounts and on each poll while home
-  or «Мои записи» is open, caches the answer as
-  `st` — plus the row's current `d`/`t`/`m`/`p`/`s`, because the master can move a
-  booking or change its service without changing its status — and the change is shown
-  as a toast — that toast is the client's only
-  "notification". The same sync **re-sends** a request whose best-effort insert
-  never provably landed (`sv !== true`; a duplicate `client_token` counts as landed).
-  A missing row is read as a cancellation **only** when `sv === true`; otherwise it
-  is re-sent, never read as a rejection.
+  approves (`status` → `'ok'`), moves, or declines/cancels (`'cancelled'`,
+  `cancelled_by = 'master'`) in the cabinet. The client reads its own rows directly
+  (`bookings_select_own`: `user_id = auth.uid()`) through
+  [`refreshMyBookings()`](src/bookings.js) — on launch, on return to the tab
+  (`App.jsx`), when «Мои записи» mounts and on each poll while home or «Мои записи» is
+  open, concurrent calls joined. Changes since the client last looked are shown as a
+  toast — the client's only "notification". "Last looked" is a per-account
+  `localStorage` map (`vs_seen_v1:<user id>`, id → status/day/time/duration/price/
+  service): **not** a copy of the bookings — losing it only costs one toast, and a
+  device that has never seen a booking shows no toast for it. A row that disappears
+  (the master deleted the client) is reported as a cancellation.
 - **Bookings from the Mini App are never hard-deleted by the cabinet.** «Отклонить»,
   the sheet's «Отменить запись» and the trash icon all go through `cancelBooking()`
-  ([src/admin/api.js](src/admin/api.js)): a row with a `client_token` becomes
+  ([src/admin/api.js](src/admin/api.js)): a row with a `user_id` becomes
   `status = 'cancelled'`, one without (the master's own) is deleted as before. A client
-  cancelling in «Мои записи» calls `cancel_own_booking(token)` **before**
-  `sendToMaster`; the row becomes `cancelled`/`client` with `cancel_seen = false` and
+  cancelling in «Мои записи» calls `cancel_own_booking(id)` (which also checks
+  `user_id = auth.uid()`) **before** `sendToMaster`, and only offers the message when
+  it succeeded; the row becomes `cancelled`/`client` with `cancel_seen = false` and
   shows in «Заявки» → «Отмены» until the master taps «Понятно». There's no push toward
   the cabinet either: it polls `bookings` + `clients` every `VITE_ADMIN_POLL_SECONDS`
   (default 20) while visible
@@ -88,17 +89,16 @@ Consequences that constrain every change here:
   the slot (`busy_slots`, `free_slots` skip them), can't be approved or edited, and
   `store.js` strips them from `bookings` in one place (`splitBookings`) — no section
   filters them itself.
-- The client's slot list hides two things: *that client's own* stored bookings, from
-  `src/storage.js`, **and** server-side busyness read from the `busy_slots` view —
-  other clients' requests, bookings the master entered herself, and slots she closed
-  by hand in the cabinet. The client still never reads the `bookings` table (RLS
-  wouldn't let it — see below); `busy_slots` exposes day/start/duration only, no names.
+- The client's slot list hides server-side busyness read from the `busy_slots` view —
+  every request (the client's own included), bookings the master entered herself, and
+  slots she closed by hand in the cabinet. The client reads only its *own* `bookings`
+  rows (see below); `busy_slots` exposes day/start/duration only, no names.
   Two clients racing on the same slot is still possible — there is no reservation, only
   a read — but the window is now the seconds between two refreshes, not days. The
   master still resolves any collision by hand in the cabinet.
 - **The cabinet opens a chat only with a Mini App client who has a Telegram username**
-  (`canMessageClient()` in [src/admin/api.js](src/admin/api.js): `client_token` **and**
-  `client_username`). After «Подтвердить»/«Отклонить» in «Заявки», a save in the sheet
+  (`canMessageClient()` in [src/admin/api.js](src/admin/api.js): `user_id` **and**
+  `client_username`, the latter still read from Telegram `initDataUnsafe`). After «Подтвердить»/«Отклонить» in «Заявки», a save in the sheet
   that confirms, moves or changes the service, the sheet's «Отменить запись» and the
   trash icon (upcoming bookings only), it calls `openChatWith(username, text)`
   ([src/telegram.js](src/telegram.js)) with the `clientMessage()` text
@@ -113,9 +113,9 @@ Consequences that constrain every change here:
 
 | | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
 |---|---|---|
-| Auth | none (anonymous) | Supabase Auth sign-in |
-| Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (auth only) |
-| Writes | inserts its own row into `bookings` | everything, incl. its own confirmed bookings via `create_master_booking()` |
+| Auth | Supabase Auth sign-in **or sign-up**, role `user`; session under `vs_sb_client_v1` | Supabase Auth sign-in, role `master` only; session under `vs_sb_auth_v1` |
+| Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only) |
+| Writes | its own `profiles` row (`role = 'user'`), its own rows into `bookings`, `cancel_own_booking(id)` | everything, incl. its own confirmed bookings via `create_master_booking()` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
 
@@ -123,8 +123,8 @@ Shared as plain imports (both apps use these as-is, no duplication):
 [src/supabase.js](src/supabase.js), [src/theme.js](src/theme.js),
 [src/telegram.js](src/telegram.js), and from [src/schedule.js](src/schedule.js) the
 date/time helpers (`dateKey`, `toMinutes`, `toHHMM`, `labelForKey`) — but **not**
-`buildSlots`/`buildDays`/`busyFor`, which are shaped around the client's per-service
-CloudStorage bookings, not the cabinet's day/week/month calendar
+`buildSlots`/`buildDays`/`serverBusyFor`/`isPast`, which are shaped around the client's
+booking flow, not the cabinet's day/week/month calendar
 ([src/admin/calendar.js](src/admin/calendar.js) has the cabinet's own equivalents).
 
 ### Telegram integration
@@ -159,38 +159,64 @@ without personal data — the client reads that view, never `bookings` itself.
 seed, kept in the repo because the content is no longer in git otherwise.
 
 - The anon key ships **inside the bundle** — that is expected. The security boundary is
-  RLS. **Email signups must stay disabled in the Supabase dashboard**, otherwise anyone
-  can register, become `authenticated`, and both rewrite the price list and read every
-  client's name, phone and comment out of `bookings`.
-- **`bookings` RLS is asymmetric, unlike every other table**: `anon` may only `insert`
-  a row for itself (`status = 'new'`, `source = 'client'`, `day` no earlier than
-  yesterday **in Tbilisi** — the database clock is UTC, and a client west of Tbilisi
-  builds its day list from a device clock that's still on the Tbilisi "yesterday" —
-  enforced by the insert policy's `with check`), never `select`. Only `authenticated`
-  (the signed-in master) can read or change bookings. The client reads availability
-  from the `busy_slots` view instead (day/start/duration only, no names), and its own
-  request's status from the `booking_status(uuid[])` function — a `security definer`
-  function that returns `status`, `cancelled_by` and the booking's own day/start/
-  duration/price/service_id — never names, username or comment — and only for rows whose secret
-  `client_token` the caller already knows. Both are the same trick: RLS is bypassed in
-  one small place with a fixed column list. The anon row's contents are not trusted
-  either: the `guard_client_booking()` trigger overwrites `duration`/`price`/
+  RLS.
+- **Accounts and roles.** Clients register themselves (email + password), so
+  "signed in" no longer means "the master". The role lives in `public.profiles`
+  (`'user'` | `'master'`), and `is_master()` requires a `'master'` row — a missing row
+  counts as `user`. There is **no trigger on `auth.users`** (deliberately): the app
+  creates the row itself — `loadRole()` in [src/supabase.js](src/supabase.js) upserts
+  `{ id, role: 'user' }` with `ignoreDuplicates` every time a session appears (sign-up,
+  sign-in, restored session), so email-confirmed sign-ups get their row on first
+  sign-in, and the master's row is never overwritten. RLS lets a user insert only
+  their own row and only as `'user'`; there are no update/delete policies, so nobody
+  can promote themselves. The master's row is granted **by hand** in the SQL editor
+  (the snippet is above `is_master()` in `schema.sql`). **Deployment order matters:**
+  `profiles` + the master's row → the new `is_master()` → only then enable Email
+  signups in the dashboard. With the old `is_master()` ("any non-anonymous
+  `authenticated`") an open sign-up would hand every client the whole cabinet. The
+  cabinet shows «Нет доступа» to a signed-in non-master and never loads its data.
+  Bookings belong to the account (`bookings.user_id`), not the device: signing out
+  clears the client's in-memory store (`resetMyBookings()`), and signing in on
+  another phone shows the same «Мои записи».
+- **`bookings` RLS is asymmetric, unlike every other table**: a signed-in client may
+  `insert` a row (`bookings_insert_client`: `status = 'new'`, `source = 'client'`,
+  `user_id = auth.uid()`, `day` no earlier than yesterday **in Tbilisi** — the database
+  clock is UTC, and a client west of Tbilisi builds its day list from a device clock
+  that's still on the Tbilisi "yesterday" — enforced by the insert policy's
+  `with check`), `select` **only its own rows** (`bookings_select_own`:
+  `user_id = auth.uid()`), and cancel one of them through `cancel_own_booking(id)` — a
+  `security definer` function that changes exactly `status`/`cancelled_by`/
+  `cancel_seen` and checks `user_id = auth.uid()` itself (no update policy: it would
+  open every column). `user_id` is written by `guard_client_booking()` from
+  `auth.uid()`, never taken from the client. `anon` can do none of this. Only the
+  master (`is_master()`) reads or changes every booking. Availability comes from the
+  `busy_slots` view (day/start/duration only, no names), which bypasses RLS in one
+  small place with a fixed column list. The client row's contents are not trusted: the `guard_client_booking()` trigger overwrites `duration`/`price`/
   `service_name` from `services`, bounds `day` to the booking window, rejects a start
   that isn't a real slot (day off, outside working hours, off the grid — the grid
   must stay in step with `buildSlots` in `schedule.js`), caps client requests at
-  `max_per_hour` salon-wide (the anon key is public, and the client's identity is
-  unverified, so there's no per-person key to limit by) and truncates the text
+  `max_per_hour` salon-wide (anyone can sign up, so an account is no per-person
+  limit) and truncates the text
   fields — don't move those values back to "whatever the client sent". A rejection
-  is invisible to the client (the insert is best-effort); the message still goes out.
+  reaches the client: `createBooking` shows the trigger's message and nothing is sent.
   Every write policy (and every read on `bookings`/`clients`/`client_comments`) checks
-  `public.is_master()`, not just the `authenticated` role, because Supabase's
-  Anonymous Sign-ins also hand out `authenticated`; `security definer` master
-  functions (`delete_client`) call it themselves. If you ever need more booking data on the
-  client, widen that view or that function; **never** grant `anon` a `select` policy on
-  `bookings` itself — it would hand every client's name, username and comment to
-  anyone holding the (public) anon key.
+  `public.is_master()`, not just the `authenticated` role, because every client is
+  `authenticated` now (and Supabase's Anonymous Sign-ins hand it out too);
+  `security definer` master functions (`delete_client`) call it themselves. If you
+  ever need more booking data on the client, add columns to the `select` in
+  `bookings.js` (own rows only) or widen `busy_slots` (everyone's, no personal data);
+  **never** grant `anon` — or `authenticated` without `is_master()` or
+  `user_id = auth.uid()` — a `select` policy on `bookings`: anyone can sign up, so it
+  would hand every client's name, username and comment to anyone.
 - **Clients.** `clients` rows come from the `link_booking_client()` trigger (client
-  requests, matched by username) and from the cabinet («Новый клиент», «Новая
+  requests, matched **only** by the account — `clients.user_id`, unique. Never by
+  Telegram username: it's unverified (`initDataUnsafe`, or any value in a raw
+  PostgREST insert), and claiming a client by it would hand the claimer every
+  booking the master later adds for that client via `bookings_select_own`, plus
+  `cancel_own_booking` on them. A new account whose username is taken gets a client
+  without it; the client's `email`
+  is copied from the JWT and the e-mail's local part stands in for a missing Telegram
+  name) and from the cabinet («Новый клиент», «Новая
   запись»). Bookings link to clients by `client_id`, **never by name**: `store.js`
   (`withClientNames`) overwrites each booking's `client_name`/`client_username` from
   its client, so a rename in «Клиенты» shows everywhere. The trigger never overwrites
@@ -202,7 +228,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
   `security_invoker = on`.
 - **The master's own bookings** go through `create_master_booking()` (a new client
   plus a booking in one transaction, `status = 'ok'`, `source = 'master'` — never in
-  «Заявки»). Start times come from `free_slots(day, service_id, exclude_id)` on the
+  «Заявки»). It copies the client's `user_id` onto the booking (and
+  `update_master_booking` does when it switches the client) — that is what makes a
+  booking the master adds for a Mini App client show up in their «Мои записи», and
+  what makes cancelling it a soft `cancelled`, not a delete. Start times come from `free_slots(day, service_id, exclude_id)` on the
   server (working hours, `days_off`, overlaps with bookings and blocked slots, not in
   the past, on the `slot_step_minutes` grid), and the per-day counts in the sheet's
   «Выберите день» step come from `free_slot_counts()`, which wraps the same function.
@@ -229,7 +258,7 @@ seed, kept in the repo because the content is no longer in git otherwise.
   «Клиенты»): it reminds nobody
   to message the client — unlike the sheet's «Отменить запись», which does — except
   that an upcoming Mini App booking with a username opens the chat (see above), and,
-  like every cabinet cancel, it only hard-deletes rows without a `client_token`
+  like every cabinet cancel, it only hard-deletes rows without a `user_id`
   (see «Bookings from the Mini App are never hard-deleted» above). Its inline confirm, like the
   client-delete one, is gated by `confirmDel` in `AdminApp.jsx`: one open confirm
   across the whole cabinet.
@@ -258,13 +287,14 @@ seed, kept in the repo because the content is no longer in git otherwise.
   whenever the tab becomes visible again (`App.jsx`) — a Mini App can sit open for hours
   while the master edits the schedule. `App.jsx` also polls every `VITE_CLIENT_POLL_SECONDS` (default 20; see
   `.env.example`) while visible:
-  `refreshAll()` on every screen, `syncBookings()` only on home and «Мои записи» —
-  the status toast lives on home, and a sync mid-booking would record the new status
-  silently. `submit()` in `BookingScreen` re-reads both
+  `refreshAll()` on every screen, `refreshMyBookings()` only on home and «Мои записи» —
+  the status toast lives on home, and a refresh mid-booking would mark the new status
+  as seen silently. `submit()` in `BookingScreen` re-reads both
   (2 s cap) **before** saving and before `sendToMaster`; if price, duration, the service
   itself, the day or the slot differs from what's on screen, it doesn't send and shows
-  the fresh data instead — a warning the client already saw doesn't block. A timeout
-  sends as before: the network never blocks a booking. When a refresh fails, `stale` is
+  the fresh data instead — a warning the client already saw doesn't block. A timeout of
+  that check proceeds to the insert; the insert itself must succeed (see "The delivery
+  model"). When a refresh fails, `stale` is
   set and `<Screen>` shows the «данные могли устареть» note on every screen. Supabase
   requests from both apps bypass the HTTP cache (`cache: "no-store"` in `supabase.js`).
 - `App.jsx` gates the whole client tree on `content.settings` — without it there is
@@ -295,10 +325,9 @@ month/week/day is showing) and each section's own edit-in-place state.
 | File | Role |
 |---|---|
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
-| [src/supabase.js](src/supabase.js) | Shared by both apps. Client + the master's session store (`useSession`, `signIn`, `signOut` — used only by the cabinet) + `submitBooking`, `fetchBookingStatuses` and `cancelOwnBooking` (used only by the client: a best-effort insert into `bookings`, the status read-back through the `booking_status` RPC, and `cancel_own_booking`). Every export must survive `supabase === null` (env vars unset). |
-| [src/sync.js](src/sync.js) | Client-only. `syncBookings()` — the one place that reconciles stored bookings with their server rows (status read-back, re-sending unlanded requests), deduped by an in-flight promise because App and «Мои записи» both call it; `changesToast()` turns its result into the client's toast; `bookingRow()` builds the insert row for both `BookingScreen` and the re-send. |
-| [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `busyFor(bookings, key, settings)`, `serverBusyFor(busy, key, settings)`) and every function must survive `settings == null`. `busyFor` reads the client's own CloudStorage records, `serverBusyFor` the `busy_slots` rows; `BookingScreen` concatenates both before calling `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
-| [src/storage.js](src/storage.js) | `CloudStorage` (gated on `isVersionAtLeast("6.9")`) mirrored onto `localStorage`. Every callback is promisified **with a 3s timeout** — some clients never fire it, which would hang «Мои записи» forever. Writes go to `localStorage` unconditionally. Client-only; the cabinet has no CloudStorage access to a client's device, which is why bookings also live in Supabase now. |
+| [src/supabase.js](src/supabase.js) | Shared by both apps. Client (its `storageKey` differs per app — `AUTH_STORAGE_KEY`, picked by the page path) + the session store (`useSession` → `{ status, email, role }`, `signIn`, `signUp`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. Every export must survive `supabase === null` (env vars unset). |
+| [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
+| [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
 | [src/theme.js](src/theme.js) | Light/dark resolution and the manual override, shared by both apps. No React. |
 | [src/ui.jsx](src/ui.jsx) | Client-only presentational primitives. `<Screen>` owns the whole chrome — sticky crumb bar, toast slot, sticky footer. The footer is `position: sticky` inside a `100dvh` flex column, which is what keeps the last list row from hiding under the button without a padding hack. |
@@ -307,17 +336,16 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
 | [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `BookingSheet.jsx` is the one bottom sheet for bookings and clients, in three modes: `new` (the 4-step «Записать» wizard — client → service → day → time → check, from the Расписание header or a client card), `edit` (an existing booking or request, opened on the check step) and `client` («Новый клиент», or «Изменить» on a client with no upcoming booking). It shows errors inline, because the cabinet's toast sits in page flow under the backdrop, and reports back through `onDone({ toast, day?, view?, clientId? })`. |
 
-Stored bookings use short keys (`{id, s, d, t, m, p, c, k, st, sv}`) because CloudStorage
-caps a value at 4096 characters — `k` is the `client_token` tying the record to its
-server row, `st` the last known status (`"new"` / `"ok"` / `"cancelled"`), `sv`
-whether the server row is known to exist (`true`; otherwise `syncBookings` re-sends
-it). All three are absent on records
-written before that channel existed, and every reader must tolerate that. `m` (duration) and `p` (price) are denormalized on purpose:
-the master edits prices in the cabinet, and an old booking must keep showing what was
-agreed. The `bookings` table denormalizes the same way (`duration`, `price`,
-`service_name` columns) for the same reason, plus `service_id` can go `null` (`on
-delete set null`) if the service is deleted outright — the cabinet's service editor
-deletes for real, unlike the old admin's `active = false` hide.
+A client booking in the store is `{ id, serviceId, serviceName, day, time, duration,
+price, comment, status, cancelledBy }` — camelCase, normalized from the row in
+`bookings.js` (`toBooking`). `duration` and `price` are denormalized on the row on
+purpose: the master edits prices in the cabinet, and an old booking must keep showing
+what was agreed (`duration`, `price`, `service_name` columns), plus `service_id` can go
+`null` (`on delete set null`) if the service is deleted outright — the cabinet's service
+editor deletes for real, unlike the old admin's `active = false` hide. `bookings`
+still has a `client_token` column and its unique index for old cached bundles; nothing
+in the current code reads or writes it, and `schema.sql` carries the `drop` to run
+once those bundles are gone.
 
 ## Conventions
 

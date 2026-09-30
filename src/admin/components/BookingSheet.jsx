@@ -231,7 +231,7 @@ export default function BookingSheet({
   const clientTg = isEdit ? st.cf.telegram_username : "";
   const notifies =
     isEdit &&
-    canMessageClient({ client_token: bk.client_token, client_username: clientTg }) &&
+    canMessageClient({ user_id: bk.user_id, client_username: clientTg }) &&
     (wasNew || slotChanged || st.s !== st.orig.s);
   const dirty = clientOnly ? cfChanged || st.c === NEW : !isEdit || changed || wasNew;
   const ready =

@@ -75,15 +75,14 @@ test.describe("Мини-апп: свежие данные", () => {
     await expect(page.locator(".summary")).toContainText("75 ₾");
     await expect(page.locator(".msg-preview")).toContainText("75");
     expect(bookingInserts(backend)).toHaveLength(0);
-    expect(await miniapp.stored()).toEqual([]);
     expect(await page.evaluate(() => window.__chats)).toBe(0);
 
     // Клиент увидел новую цену — второе нажатие отправляет.
     await page.getByRole("button", { name: "Отправить заявку" }).click();
     await expect.poll(() => bookingInserts(backend).length).toBe(1);
     await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
-    const [stored] = await miniapp.stored();
-    expect(stored).toMatchObject({ p: 75 });
+    expect(backend.tables.bookings).toHaveLength(1);
+    expect(backend.tables.bookings[0]).toMatchObject({ price: 75, status: "new" });
   });
 
   test("время заняли перед отправкой — заявка не уходит, клиент видит предупреждение", async ({

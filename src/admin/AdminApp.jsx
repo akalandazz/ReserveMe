@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dateKey } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
-import { initAuth, signOut, useSession } from "../supabase.js";
+import { initAuth, retryRole, signOut, useSession } from "../supabase.js";
 import { canMessageClient, cancelBooking, clientSeesStatus } from "./api.js";
 import { isBookingPast, weekStart } from "./calendar.js";
 import { dropKind, notifyClient } from "./messages.js";
@@ -69,6 +69,10 @@ export default function AdminApp() {
   const toastTimer = useRef(null);
   const busyTimer = useRef(null);
   const session = useSession();
+  // Войти теперь может и клиент мини-аппа (роль 'user'). Данные кабинета
+  // ему RLS всё равно не отдаст, но и грузить их незачем — а экран
+  // должен сказать «это не аккаунт мастера», а не показать пустоту.
+  const isMaster = session.status === "signed" && session.role === "master";
   const data = useAdminData();
 
   useEffect(() => {
@@ -78,16 +82,16 @@ export default function AdminApp() {
   }, []);
 
   useEffect(() => {
-    if (session.status === "signed") loadAdminData();
+    if (isMaster) loadAdminData();
     else if (session.status === "guest") resetAdminData();
-  }, [session.status]);
+  }, [isMaster, session.status]);
 
   // Кабинет открыт часами, а заявки и отмены клиентов приходят сами по
   // себе. Пока кабинет на экране, записи опрашиваются (pollAdminData), а
   // на возврате во вкладку перечитываются сразу, не дожидаясь тика, —
   // иначе новая заявка или отмена видна только после перезапуска.
   useEffect(() => {
-    if (session.status !== "signed") return;
+    if (!isMaster) return;
     const stopPoll = pollAdminData();
     const onVisible = () => {
       if (document.visibilityState === "visible") loadAdminData(["bookings", "clients"]);
@@ -97,7 +101,7 @@ export default function AdminApp() {
       stopPoll();
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [session.status]);
+  }, [isMaster]);
 
   useEffect(
     () => () => {
@@ -211,7 +215,7 @@ export default function AdminApp() {
     return { pendingCount, todayCount, weekCount };
   }, [data.bookings]);
 
-  if (session.status === "unknown") {
+  if (session.status === "unknown" || (session.status === "signed" && session.role === null)) {
     return (
       <div className="shell">
         <div className="topbar">
@@ -234,6 +238,40 @@ export default function AdminApp() {
         </div>
         <div className="page-body">
           <SignIn />
+        </div>
+      </div>
+    );
+  }
+
+  if (!isMaster) {
+    const failed = session.role === "error";
+    return (
+      <div className="shell">
+        <div className="topbar">
+          <span className="crumb">Кабинет мастера</span>
+          <ThemeToggle />
+        </div>
+        <div className="page-body">
+          <div className="signin-wrap">
+            <h1 className="title">{failed ? "Нет связи" : "Нет доступа"}</h1>
+            <p className="sub">
+              {failed
+                ? "Не удалось проверить доступ к кабинету. Проверьте соединение."
+                : `${session.email ?? "Этот аккаунт"} — не аккаунт мастера. Кабинет открыт только мастеру.`}
+            </p>
+            {failed && (
+              <button className="btn-primary inline" type="button" onClick={retryRole}>
+                Повторить
+              </button>
+            )}
+            <button
+              className={failed ? "btn-text" : "btn-primary inline"}
+              type="button"
+              onClick={signOut}
+            >
+              Выйти
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -345,6 +383,15 @@ export default function AdminApp() {
                 />
 
                 <ScheduleSection settings={data.settings} onError={showError} />
+
+                {/* Кто вошёл — рядом с «Выйти»: аккаунт, а не имя мастера из
+                    settings (то — контент салона, его видят клиенты). */}
+                {session.email && (
+                  <div className="account">
+                    <span className="eyebrow">Аккаунт</span>
+                    <span className="account-email">{session.email}</span>
+                  </div>
+                )}
 
                 <button
                   className="btn-text danger signout"

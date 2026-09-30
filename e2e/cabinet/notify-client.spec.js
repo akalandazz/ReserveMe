@@ -1,26 +1,35 @@
-import { bookingRow } from "../support/fake-supabase.js";
+import { CLIENT, bookingRow } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
 // Клиенту из мини-аппа с Telegram-логином кабинет после решения мастера
 // сам открывает чат с готовым текстом (notifyClient в src/admin/messages.js),
-// как клиент — мастеру. Без логина или без client_token — как раньше, тост.
+// как клиент — мастеру. Без логина или без user_id — как раньше, тост.
 
-const AHEAD = 3;
+// Через 3 дня, но не в воскресенье: в fake-supabase оно выходное
+// (working_hours[0] = null), и панель дня вместо записей показывает
+// «Выходной по графику».
+const AHEAD = offsetDate(3).getDay() === 0 ? 4 : 3;
 
-function dayKey(daysAhead) {
+function offsetDate(daysAhead) {
   const d = new Date();
   d.setDate(d.getDate() + daysAhead);
+  return d;
+}
+
+function dayKey(daysAhead) {
+  const d = offsetDate(daysAhead);
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-const TOKEN = "11111111-2222-4333-8444-555555555555";
+// Аккаунт клиента мини-аппа, оставившего заявку (bookings.user_id).
+const USER_ID = CLIENT.id;
 const fromMiniApp = (fields = {}) =>
   bookingRow(1, {
     day: dayKey(AHEAD),
     client_name: "Анна",
     client_username: "anna_nails",
-    client_token: TOKEN,
+    user_id: USER_ID,
     ...fields,
   });
 
@@ -134,8 +143,8 @@ test.describe("Кабинет: чат с клиентом после решен�
     });
   });
 
-  test.describe("запись без client_token", () => {
-    test.use({ bookings: [fromMiniApp({ client_token: null })] });
+  test.describe("запись без user_id", () => {
+    test.use({ bookings: [fromMiniApp({ user_id: null })] });
 
     test("чат не открывается, даже если логин есть", async ({ cabinet }) => {
       const { page, openTab, openedChats } = cabinet;

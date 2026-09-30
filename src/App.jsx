@@ -6,10 +6,12 @@ import {
   refreshContent,
   useContent,
 } from "./content.js";
-import { changesToast, syncBookings } from "./sync.js";
+import { changesToast, refreshMyBookings, resetMyBookings } from "./bookings.js";
+import { initAuth, signOut, useSession } from "./supabase.js";
 import { init } from "./telegram.js";
 import { initTheme } from "./theme.js";
 import { BootError, BootLoading } from "./ui.jsx";
+import AuthScreen from "./screens/AuthScreen.jsx";
 import BookingScreen from "./screens/BookingScreen.jsx";
 import ContactScreen from "./screens/ContactScreen.jsx";
 import InfoScreen from "./screens/InfoScreen.jsx";
@@ -29,14 +31,12 @@ const POLL_MS = (Number(import.meta.env.VITE_CLIENT_POLL_SECONDS) || 20) * 1000;
 // без отдельных обработчиков.
 const BOOKING_STEPS = ["book:service", "book:date", "book:time", "book:confirm"];
 
-// Решение мастера (подтвердила, отменила) клиент видит тостом — другого
-// канала к нему нет: бот ему не пишет, а сообщение в чате мастер может
-// и не отправить. setState — только после ответа сервера.
-async function syncAndNotify(setRev, setToast) {
-  const { changes } = await syncBookings();
-  if (changes.length === 0) return;
-  setRev((n) => n + 1);
-  setToast(changesToast(changes));
+// Решение мастера (подтвердила, перенесла, отменила) клиент видит
+// тостом — другого канала к нему нет: бот ему не пишет, а сообщение в
+// чате мастер может и не отправить. setState — только после ответа сервера.
+async function syncAndNotify(setToast) {
+  const { changes } = await refreshMyBookings();
+  if (changes.length > 0) setToast(changesToast(changes));
 }
 
 function App() {
@@ -46,18 +46,19 @@ function App() {
   const [toast, setToast] = useState("");
   const screen = stack[stack.length - 1];
   const content = useContent();
+  // Мини-апп целиком — только для вошедших (AuthScreen). Записи клиента
+  // живут на сервере и привязаны к аккаунту (src/bookings.js).
+  const session = useSession();
+  const signed = session.status === "signed";
 
-  // Растёт после каждой синхронизации, поменявшей записи: главная
-  // перечитывает по нему хранилище.
-  const [bookingsRev, setBookingsRev] = useState(0);
-
-  const sync = useCallback(() => syncAndNotify(setBookingsRev, setToast), []);
+  const sync = useCallback(() => syncAndNotify(setToast), []);
 
   // Первую синхронизацию записей делает эффект смены экрана ниже —
   // стартовый экран и есть главная.
   useEffect(() => {
     init();
     initTheme();
+    initAuth();
     initContent();
   }, []);
 
@@ -66,31 +67,35 @@ function App() {
   // — только первый кадр. Одновременные вызовы refreshAll() сливаются в
   // один запрос, так что быстрые «назад» базу не заваливают. Статусы
   // своих записей — там, где клиент их видит: главная и «Мои записи»
-  // (последняя синхронизируется и сама, syncBookings() дублей не шлёт).
+  // (последняя перечитывает и сама; refreshMyBookings() сливает вызовы).
+  // До входа — ничего: записи и заявки открыты только вошедшим.
   useEffect(() => {
+    if (!signed) return;
     refreshAll();
     if (screen === HOME || screen === "my") sync();
-  }, [screen, sync]);
+  }, [screen, sync, signed]);
 
   // Пока мини-апп открыт и на экране — опрос: мастер правит цены, график и
   // решает по заявкам, пока клиент смотрит на экран. refreshAll() и
-  // syncBookings() сами сливают одновременные вызовы, так что медленная
+  // refreshMyBookings() сами сливают одновременные вызовы, так что медленная
   // сеть запросы не копит. Статусы — только на главной и в «Мои записи»,
   // как выше: тост живёт на главной, а синхронизация посреди записи
-  // сохранила бы новый статус молча, и тоста клиент бы уже не увидел.
+  // запомнила бы новый статус как «уже виденный», и тоста клиент бы не увидел.
   useEffect(() => {
+    if (!signed) return;
     const id = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       refreshAll();
       if (screen === HOME || screen === "my") sync();
     }, POLL_MS);
     return () => clearInterval(id);
-  }, [screen, sync]);
+  }, [screen, sync, signed]);
 
   // Мини-апп живёт долго и не перезагружается: клиент свернул Telegram,
   // вернулся через час — а мастер за это время подняла цену, закрыла
   // окошко или подтвердила заявку. Перечитываем на возврате во вкладку.
   useEffect(() => {
+    if (!signed) return;
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       refreshAll();
@@ -98,7 +103,7 @@ function App() {
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [sync]);
+  }, [sync, signed]);
 
   const push = useCallback((next) => {
     setStack((s) => [...s, next]);
@@ -126,13 +131,14 @@ function App() {
     return () => bb.offClick(back);
   }, [back]);
 
-  // 2) Видимость — отдельным эффектом, зависит только от глубины стека.
+  // 2) Видимость — отдельным эффектом, зависит только от глубины стека
+  //    (и от входа: на AuthScreen возвращаться некуда).
   useEffect(() => {
     const bb = window.Telegram?.WebApp?.BackButton;
     if (!bb) return;
-    if (stack.length > 1) bb.show();
+    if (signed && stack.length > 1) bb.show();
     else bb.hide();
-  }, [stack.length]);
+  }, [stack.length, signed]);
 
   // 3) Прячем кнопку при размонтировании — мини-апп может переоткрыться.
   useEffect(() => () => window.Telegram?.WebApp?.BackButton?.hide(), []);
@@ -149,6 +155,17 @@ function App() {
     },
     [push]
   );
+
+  // Выход — с главной. Записи — на сервере, за аккаунтом; из стора их
+  // убираем, чтобы следующий вошедший не увидел чужие.
+  const logout = useCallback(async () => {
+    await signOut();
+    resetMyBookings();
+    home();
+  }, [home]);
+
+  if (session.status === "unknown") return <BootLoading />;
+  if (!signed) return <AuthScreen />;
 
   // Без контента рисовать нечего — даже имя мастера в крошке приходит из базы.
   if (!content.settings) {
@@ -175,7 +192,6 @@ function App() {
     case "my":
       return (
         <MyBookingsScreen
-          rev={bookingsRev}
           onBack={back}
           onBook={() => {
             home();
@@ -194,7 +210,14 @@ function App() {
     case "info":
       return <InfoScreen onBack={back} onContact={() => push("contact")} />;
     default:
-      return <MenuScreen onOpen={push} toast={toast} rev={bookingsRev} />;
+      return (
+        <MenuScreen
+          onOpen={push}
+          toast={toast}
+          email={session.email}
+          onSignOut={logout}
+        />
+      );
   }
 }
 

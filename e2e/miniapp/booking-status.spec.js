@@ -1,9 +1,10 @@
-import { bookingRow } from "../support/fake-supabase.js";
+import { CLIENT, bookingRow } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
-// Решение мастера → клиенту: syncBookings() (src/sync.js) спрашивает
-// booking_status() при запуске мини-аппа и показывает изменения тостом;
-// отмена клиентом — cancel_own_booking() до сообщения мастеру.
+// Записи клиента живут только на сервере (src/bookings.js): «Мои записи»
+// и главная читают свои строки bookings по user_id, заявка сохраняется
+// в базе ДО сообщения мастеру, отмена — cancel_own_booking(id). Решение
+// мастера клиент узнаёт тостом — по сравнению с тем, что уже видел.
 
 /** Ключ "ГГГГ-ММ-ДД" через несколько дней — с запасом от смены суток. */
 function dayKey(daysAhead) {
@@ -14,51 +15,66 @@ function dayKey(daysAhead) {
 }
 
 const DAY = dayKey(3);
-const TOKEN = "11111111-2222-4333-8444-555555555555";
+const OTHER_USER = "00000000-0000-4000-8000-000000000099";
 
-const local = (fields = {}) => ({
-  id: "1700000000000",
-  s: "manicure",
-  d: DAY,
-  t: "10:00",
-  m: 90,
-  p: 60,
-  c: "",
-  k: TOKEN,
-  st: "new",
-  ...fields,
-});
+const mine = (id, fields = {}) => bookingRow(id, { day: DAY, user_id: CLIENT.id, ...fields });
 
 const openMyBookings = (page) => page.getByRole("button", { name: /Мои записи/ }).click();
 
-test.describe("Мини-апп: статус записи", () => {
-  test.describe("мастер подтвердила", () => {
+/** Вместо чата с мастером (sendToMaster → window.open без Telegram) — счётчик. */
+async function stubChat(page) {
+  await page.evaluate(() => {
+    window.__chats = 0;
+    window.open = () => {
+      window.__chats += 1;
+      return null;
+    };
+  });
+}
+
+/** Главная → услуга → первый день со свободным временем → первое окошко. */
+async function reachConfirm(page) {
+  await page.getByRole("button", { name: "Записаться" }).click();
+  await page.getByRole("button", { name: /Маникюр/ }).click();
+  await page.locator(".day-row:not([disabled])").first().click();
+  await page.locator(".slot").first().click();
+  await expect(page.getByRole("heading", { name: "Подтвердите заявку" })).toBeVisible();
+}
+
+test.describe("Мини-апп: записи с сервера", () => {
+  test.describe("свои и чужие строки", () => {
+    // Кортеж [значение, опции]: массив из нескольких строк Playwright
+    // иначе сам принял бы за такой кортеж.
     test.use({
-      localBookings: [local()],
-      bookings: [bookingRow(1, { day: DAY, client_token: TOKEN, status: "ok" })],
+      bookings: [
+        [
+          mine(1, { status: "ok" }),
+          bookingRow(2, { day: DAY, start_min: 720, user_id: OTHER_USER }),
+          mine(3, { start_min: 840, status: "cancelled", cancelled_by: "client" }),
+        ],
+        { option: true },
+      ],
     });
 
-    test("тост на главной и «подтверждена» в «Мои записи»", async ({ miniapp }) => {
+    test("видны только свои, без тоста при первом открытии", async ({ miniapp }) => {
       const { page } = miniapp;
-      await expect(page.getByText("Запись подтверждена ✓")).toBeVisible();
       await expect(page.getByText("Ближайшая запись · подтверждена")).toBeVisible();
-
-      const [stored] = await miniapp.stored();
-      expect(stored).toMatchObject({ st: "ok", sv: true });
+      // Устройство видит записи впервые — менять тостом нечего.
+      await expect(page.getByText("Запись подтверждена ✓")).toBeHidden();
 
       await openMyBookings(page);
-      await expect(page.locator(".book-card")).toContainText("Запись подтверждена");
+      // Чужая строка не пришла, отменённая самим клиентом — скрыта.
+      const cards = page.locator(".book-card");
+      await expect(cards).toHaveCount(1);
+      await expect(cards).toContainText("Запись подтверждена");
+      await expect(cards).toContainText("10:00");
     });
   });
 
-  test.describe("мастер подтвердила, пока клиент на главной", () => {
-    test.use({
-      fakeClock: true,
-      localBookings: [local()],
-      bookings: [bookingRow(1, { day: DAY, client_token: TOKEN, status: "new" })],
-    });
+  test.describe("мастер решает, пока клиент на главной", () => {
+    test.use({ fakeClock: true, bookings: [mine(1)] });
 
-    test("тост появляется сам, без перезапуска", async ({ miniapp }) => {
+    test("подтвердила — тост появляется сам", async ({ miniapp }) => {
       const { page, backend } = miniapp;
       await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
 
@@ -67,38 +83,25 @@ test.describe("Мини-апп: статус записи", () => {
       await expect(page.getByText("Запись подтверждена ✓")).toBeVisible();
       await expect(page.getByText("Ближайшая запись · подтверждена")).toBeVisible();
     });
-  });
 
-  test.describe("мастер перенесла подтверждённую запись", () => {
-    const NEW_DAY = dayKey(5);
-    test.use({
-      localBookings: [local({ st: "ok", sv: true })],
-      bookings: [bookingRow(1, { day: NEW_DAY, start_min: 840, client_token: TOKEN, status: "ok" })],
-    });
+    test("перенесла — новые день и время в тосте и в «Мои записи»", async ({ miniapp }) => {
+      const { page, backend } = miniapp;
+      await expect(page.getByText("Ближайшая запись")).toBeVisible();
 
-    test("новые день и время — на устройстве и в тосте", async ({ miniapp }) => {
-      const { page } = miniapp;
+      Object.assign(backend.tables.bookings[0], { day: dayKey(5), start_min: 840, status: "ok" });
+      await page.clock.fastForward(20_000);
       await expect(page.getByText(/Мастер перенесла запись: .*14:00/)).toBeVisible();
-
-      const [stored] = await miniapp.stored();
-      expect(stored).toMatchObject({ d: NEW_DAY, t: "14:00", st: "ok", sv: true });
-      expect(stored).not.toHaveProperty("moved");
 
       await openMyBookings(page);
       await expect(page.locator(".book-card")).toContainText("14:00");
     });
-  });
 
-  test.describe("мастер отклонила", () => {
-    test.use({
-      localBookings: [local()],
-      bookings: [
-        bookingRow(1, { day: DAY, client_token: TOKEN, status: "cancelled", cancelled_by: "master" }),
-      ],
-    });
+    test("отклонила — «Отменена мастером», без кнопки отмены", async ({ miniapp }) => {
+      const { page, backend } = miniapp;
+      await expect(page.getByText("Ближайшая запись")).toBeVisible();
 
-    test("карточка «Отменена мастером», «Убрать» её убирает", async ({ miniapp }) => {
-      const { page } = miniapp;
+      Object.assign(backend.tables.bookings[0], { status: "cancelled", cancelled_by: "master" });
+      await page.clock.fastForward(20_000);
       await expect(page.getByText("Мастер отменила запись")).toBeVisible();
       // На главной отменённая запись не «ближайшая».
       await expect(page.getByText("Ближайшая запись")).toBeHidden();
@@ -106,40 +109,63 @@ test.describe("Мини-апп: статус записи", () => {
       await openMyBookings(page);
       const card = page.locator(".book-card");
       await expect(card).toContainText("Отменена мастером");
-      await card.getByRole("button", { name: "Убрать" }).click();
-      await expect(card).toHaveCount(0);
-      expect(await miniapp.stored()).toEqual([]);
+      await expect(card.getByRole("button", { name: "Отменить" })).toHaveCount(0);
     });
   });
 
-  test.describe("заявка не доехала до базы", () => {
-    test.use({ localBookings: [local()] });
+  test.describe("решение мастера между запусками", () => {
+    test.use({ bookings: [mine(1)] });
 
-    test("досылается при следующем открытии", async ({ miniapp }) => {
+    test("тост при следующем открытии", async ({ miniapp }) => {
       const { page, backend } = miniapp;
-      await expect.poll(() => backend.inserts.length).toBe(1);
-      expect(backend.inserts[0].body).toMatchObject({
-        day: DAY,
-        start_min: 600,
-        service_id: "manicure",
-        client_token: TOKEN,
-        status: "new",
-        source: "client",
-      });
-      await expect.poll(async () => (await miniapp.stored())[0].sv).toBe(true);
-      // Статус не выдуман: заявка по-прежнему ждёт мастера.
-      await openMyBookings(page);
-      await expect(page.locator(".book-card")).toContainText("Ожидает подтверждения");
+      await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
+
+      backend.tables.bookings[0].status = "ok";
+      await page.reload();
+      await expect(page.getByText("Запись подтверждена ✓")).toBeVisible();
     });
+  });
+
+  test("заявка сохраняется в базе до сообщения мастеру", async ({ miniapp }) => {
+    const { page, backend } = miniapp;
+    await stubChat(page);
+    await reachConfirm(page);
+    await page.getByRole("button", { name: "Отправить заявку" }).click();
+
+    await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
+    expect(backend.tables.bookings).toHaveLength(1);
+    expect(backend.tables.bookings[0]).toMatchObject({
+      user_id: CLIENT.id,
+      service_id: "manicure",
+      status: "new",
+      source: "client",
+    });
+    // Главная берёт запись из ответа вставки — без лишнего запроса.
+    await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
+    await expect(page.getByText("Заявка сохранена")).toBeVisible();
+  });
+
+  test("сервер отказал — сообщение не уходит, «Повторить» отправляет", async ({ miniapp }) => {
+    const { page, backend } = miniapp;
+    await stubChat(page);
+    await reachConfirm(page);
+
+    backend.failBookingInsert = "Слишком много заявок — попробуйте позже";
+    await page.getByRole("button", { name: "Отправить заявку" }).click();
+    await expect(page.getByRole("alert")).toContainText("Слишком много заявок");
+    expect(backend.tables.bookings).toHaveLength(0);
+    expect(await page.evaluate(() => window.__chats)).toBe(0);
+
+    backend.failBookingInsert = null;
+    await page.getByRole("button", { name: "Повторить" }).click();
+    await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
+    expect(backend.tables.bookings).toHaveLength(1);
   });
 
   test.describe("клиент отменяет сам", () => {
-    test.use({
-      localBookings: [local({ sv: true })],
-      bookings: [bookingRow(1, { day: DAY, client_token: TOKEN, status: "new" })],
-    });
+    test.use({ bookings: [mine(7)] });
 
-    test("отмена отмечается на сервере", async ({ miniapp }) => {
+    test("отмена по id отмечается на сервере", async ({ miniapp }) => {
       const { page, backend } = miniapp;
       // Первый confirm — «Отменить запись?», второй — «Сообщить об отмене…»:
       // от второго отказываемся, чтобы не открывать t.me.
@@ -150,14 +176,14 @@ test.describe("Мини-апп: статус записи", () => {
 
       await expect(page.getByText("Владислава увидит это в кабинете")).toBeVisible();
       expect(backend.rpcs.filter((r) => r.name === "cancel_own_booking")).toEqual([
-        { name: "cancel_own_booking", body: { p_token: TOKEN } },
+        { name: "cancel_own_booking", body: { p_id: 7 } },
       ]);
       expect(backend.tables.bookings[0]).toMatchObject({
         status: "cancelled",
         cancelled_by: "client",
         cancel_seen: false,
       });
-      expect(await miniapp.stored()).toEqual([]);
+      await expect(page.locator(".book-card")).toHaveCount(0);
     });
   });
 });

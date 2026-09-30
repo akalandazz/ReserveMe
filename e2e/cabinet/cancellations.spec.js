@@ -1,4 +1,4 @@
-import { bookingRow } from "../support/fake-supabase.js";
+import { CLIENT, bookingRow } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
 // «Заявки»: отмены клиентов (cancel_own_booking) — блок «Отмены» с
@@ -13,7 +13,8 @@ function dayKey(daysAhead) {
 }
 
 const DAY = dayKey(3);
-const TOKEN = "11111111-2222-4333-8444-555555555555";
+// Аккаунт клиента мини-аппа, оставившего заявку (bookings.user_id).
+const USER_ID = CLIENT.id;
 
 test.describe("Кабинет: отмены и отклонённые заявки", () => {
   test.describe("клиент отменил запись", () => {
@@ -22,7 +23,7 @@ test.describe("Кабинет: отмены и отклонённые заявк
         bookingRow(1, {
           day: DAY,
           client_name: "Анна",
-          client_token: TOKEN,
+          user_id: USER_ID,
           status: "cancelled",
           cancelled_by: "client",
         }),
@@ -50,7 +51,7 @@ test.describe("Кабинет: отмены и отклонённые заявк
 
   test.describe("заявка из мини-аппа", () => {
     test.use({
-      bookings: [bookingRow(1, { day: DAY, client_name: "Анна", client_token: TOKEN })],
+      bookings: [bookingRow(1, { day: DAY, client_name: "Анна", user_id: USER_ID })],
     });
 
     test("«Отклонить» отменяет статусом, не удаляет", async ({ cabinet }) => {
@@ -73,7 +74,7 @@ test.describe("Кабинет: отмены и отклонённые заявк
     });
   });
 
-  test.describe("заявка без client_token", () => {
+  test.describe("заявка без user_id", () => {
     test.use({ bookings: [bookingRow(1, { day: DAY, client_name: "Анна" })] });
 
     test("«Отклонить» удаляет, как раньше", async ({ cabinet }) => {

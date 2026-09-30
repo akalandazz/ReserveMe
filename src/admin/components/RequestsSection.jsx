@@ -114,7 +114,7 @@ export default function RequestsSection({
 
   // Клиенту из мини-аппа с логином — сразу чат с готовым сообщением
   // (notifyClient, уже после записи в базу: чат обычно закрывает
-  // кабинет). Без логина он узнает о решении сам (src/sync.js); прочим
+  // кабинет). Без логина он узнает о решении сам (src/bookings.js); прочим
   // мастер пишет в чат.
   const told = (b, kind, done) =>
     notifyClient(b, kind, masterName)
