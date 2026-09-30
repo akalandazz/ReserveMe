@@ -1,4 +1,4 @@
-// Поддельный Supabase для e2e: Auth (вход по паролю) и PostgREST —
+// Поддельный Supabase для e2e: Auth (вход, регистрация, refresh) и PostgREST —
 // ровно столько, сколько читают и пишут кабинет и мини-апп клиента
 // (контент, заявка, booking_status, cancel_own_booking).
 //
@@ -12,18 +12,52 @@
 export const SUPABASE_URL = "https://e2e-project.supabase.invalid";
 export const ANON_KEY = "e2e-anon-key";
 
-export const MASTER = { email: "master@e2e.test", password: "e2e-password" };
-const MASTER_ID = "00000000-0000-4000-8000-000000000001";
+export const MASTER = {
+  id: "00000000-0000-4000-8000-000000000001",
+  email: "master@e2e.test",
+  password: "e2e-password",
+};
+// Уже зарегистрированный клиент мини-аппа (роль 'user').
+export const CLIENT = {
+  id: "00000000-0000-4000-8000-000000000002",
+  email: "client@e2e.test",
+  password: "client-password",
+};
 
 const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
 
 // Похожий на настоящий JWT: auth-js может его разобрать, подпись никто не проверяет.
-function fakeJwt(exp) {
+function fakeJwt(user, exp) {
   return [
     b64url({ alg: "HS256", typ: "JWT" }),
-    b64url({ sub: MASTER_ID, email: MASTER.email, role: "authenticated", aud: "authenticated", exp }),
+    b64url({ sub: user.id, email: user.email, role: "authenticated", aud: "authenticated", exp }),
     "e2e-signature",
   ].join(".");
+}
+
+/**
+ * Ответ /auth/v1/token и /auth/v1/signup — он же сессия, которую auth-js
+ * кладёт в localStorage (фикстура miniapp сеет её так, до загрузки).
+ */
+export function sessionFor(user) {
+  const expiresAt = Math.floor(Date.now() / 1000) + 24 * 3600;
+  return {
+    access_token: fakeJwt(user, expiresAt),
+    token_type: "bearer",
+    expires_in: 24 * 3600,
+    expires_at: expiresAt,
+    refresh_token: `e2e-refresh-${user.id}`,
+    user: {
+      id: user.id,
+      aud: "authenticated",
+      role: "authenticated",
+      email: user.email,
+      app_metadata: { provider: "email" },
+      user_metadata: {},
+      identities: [{ provider: "email" }],
+      created_at: "2026-01-01T00:00:00Z",
+    },
+  };
 }
 
 const HOURS = { from: "10:00", to: "19:00" };
@@ -51,6 +85,9 @@ function seed() {
     // Только для мини-аппа клиента (content.js).
     info_blocks: [],
     busy_slots: [],
+    // Роль мастера выдана руками (schema.sql); клиенту строку заводит
+    // само приложение — ensureProfile в src/supabase.js.
+    profiles: [{ id: MASTER.id, role: "master" }],
   };
 }
 
@@ -100,11 +137,15 @@ export function clientRow(id, fields) {
  *  - inserts   — каждая вставка в /rest/v1 ({ table, body, headers });
  *  - changes   — каждый PATCH/DELETE ({ method, table, id, body });
  *  - rpcs      — каждый вызов /rest/v1/rpc ({ name, body });
+ *  - users     — аккаунты Auth ({ id, email, password }), сюда же пишет signup;
+ *  - profileWrites — каждая строка upsert в profiles ({ id, role });
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
  */
 export async function installFakeSupabase(page) {
   const state = {
     tables: seed(),
+    users: [{ ...MASTER }, { ...CLIENT }],
+    profileWrites: [],
     inserts: [],
     changes: [],
     rpcs: [],
@@ -148,27 +189,26 @@ async function handle(route, state) {
 
   // ─── Auth ───────────────────────────────────────────────────────
   if (url.pathname === "/auth/v1/token" && method === "POST") {
-    const { email, password } = req.postDataJSON() ?? {};
-    if (email !== MASTER.email || password !== MASTER.password) {
+    const body = req.postDataJSON() ?? {};
+    const user =
+      url.searchParams.get("grant_type") === "refresh_token"
+        ? state.users.find((u) => body.refresh_token === `e2e-refresh-${u.id}`)
+        : state.users.find((u) => u.email === body.email && u.password === body.password);
+    if (!user) {
       return json(400, { code: 400, error_code: "invalid_credentials", msg: "Invalid login credentials" });
     }
-    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
-    return json(200, {
-      access_token: fakeJwt(expiresAt),
-      token_type: "bearer",
-      expires_in: 3600,
-      expires_at: expiresAt,
-      refresh_token: "e2e-refresh-token",
-      user: {
-        id: MASTER_ID,
-        aud: "authenticated",
-        role: "authenticated",
-        email: MASTER.email,
-        app_metadata: { provider: "email" },
-        user_metadata: {},
-        created_at: "2026-01-01T00:00:00Z",
-      },
-    });
+    return json(200, sessionFor(user));
+  }
+  // Регистрация — как с включённым «Auto Confirm»: сразу с сессией.
+  if (url.pathname === "/auth/v1/signup" && method === "POST") {
+    const { email, password } = req.postDataJSON() ?? {};
+    if (state.users.some((u) => u.email === email)) {
+      return json(422, { code: 422, error_code: "user_already_exists", msg: "User already registered" });
+    }
+    const n = String(state.nextId++).padStart(12, "0");
+    const user = { id: `00000000-0000-4000-8000-${n}`, email, password };
+    state.users.push(user);
+    return json(200, sessionFor(user));
   }
   if (url.pathname === "/auth/v1/logout") return route.fulfill({ status: 204, headers: cors });
 
@@ -176,6 +216,22 @@ async function handle(route, state) {
   const table = url.pathname.match(/^\/rest\/v1\/([a-z_]+)$/)?.[1];
   const rows = table && state.tables[table];
   const wantsObject = (req.headers()["accept"] ?? "").includes("vnd.pgrst.object");
+
+  // profiles: чтение своей строки (.eq("id", …)) и upsert с
+  // ignoreDuplicates — ON CONFLICT DO NOTHING, роль мастера не трогается.
+  if (table === "profiles" && method === "GET") {
+    const id = url.searchParams.get("id")?.replace(/^eq\./, "");
+    return json(200, rows.filter((p) => p.id === id));
+  }
+  if (table === "profiles" && method === "POST") {
+    const body = req.postDataJSON();
+    // Не в inserts: их спеки считают вставки клиентов и заявок.
+    state.profileWrites.push(...[].concat(body));
+    for (const p of [].concat(body)) {
+      if (!rows.some((r) => r.id === p.id)) rows.push({ id: p.id, role: p.role });
+    }
+    return route.fulfill({ status: 201, headers: cors });
+  }
 
   if (rows && method === "GET") {
     const offset = Number(url.searchParams.get("offset") ?? 0);

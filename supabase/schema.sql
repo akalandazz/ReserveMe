@@ -117,6 +117,21 @@ create table if not exists public.client_comments (
   created_at timestamptz not null default now()
 );
 
+-- ─── Роли аккаунтов ──────────────────────────────────────────────
+--  Клиенты мини-аппа теперь регистрируются сами (e-mail + пароль), и
+--  «вошёл» больше не значит «мастер». Роль лежит здесь: 'user' — любой
+--  клиент, 'master' — только мастер (выдаётся руками, см. is_master()).
+--
+--  Триггера на auth.users нет — строку создаёт само приложение
+--  (ensureProfile() в src/supabase.js) после регистрации или входа.
+--  Отсутствующая строка равна 'user': is_master() требует явного
+--  'master', так что незаписанная роль никому ничего не открывает.
+create table if not exists public.profiles (
+  id         uuid primary key references auth.users(id) on delete cascade,
+  role       text not null default 'user' check (role in ('user', 'master')),
+  created_at timestamptz not null default now()
+);
+
 create index if not exists client_comments_client_idx
   on public.client_comments (client_id, created_at desc);
 
@@ -435,7 +450,7 @@ create trigger bookings_guard_client
 --  Запись, которую заводит сам мастер (create_master_booking ниже),
 --  приходит уже с client_id — её не перепривязываем: совпадение по
 --  имени могло бы увести её к однофамильцу. Аноним source = 'master'
---  подставить не может (см. политику bookings_insert_anon).
+--  подставить не может (см. политику bookings_insert_client).
 create or replace function public.link_booking_client()
 returns trigger
 language plpgsql
@@ -492,9 +507,20 @@ create trigger bookings_link_client
 --  дашборде Anonymous Sign-ins тоже выдают authenticated, любому, без
 --  пароля. Поэтому каждое право на запись (и на чтение bookings/clients)
 --  проверяет эту функцию, а не только роль: пользователь должен быть
---  не анонимным. Выключенная регистрация по-прежнему обязательна.
+--  не анонимным. И с тех пор как клиенты регистрируются сами — ещё и
+--  иметь роль 'master' в profiles. Без этой проверки открытая
+--  регистрация сделала бы мастером любого клиента.
+--
+--  ⚠️ Порядок развёртывания: сначала profiles + строка мастера (ниже),
+--  потом эта функция, и только потом — включённые Email signups.
+--  Роль мастера выдаётся руками, в SQL-редакторе:
+--    insert into public.profiles (id, role)
+--    select id, 'master' from auth.users where email = '<e-mail мастера>'
+--    on conflict (id) do update set role = 'master';
+--
 --  В политиках вызывается как (select public.is_master()) — так Postgres
---  считает её один раз на запрос, а не на каждую строку.
+--  считает её один раз на запрос, а не на каждую строку. security
+--  invoker: свою строку profiles вызывающий читает сам (profiles_select_own).
 create or replace function public.is_master()
 returns boolean
 language sql
@@ -504,9 +530,32 @@ set search_path = ''
 as $$
   select coalesce(auth.jwt() ->> 'role', '') = 'authenticated'
      and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
+     and exists (
+       select 1 from public.profiles p
+        where p.id = auth.uid() and p.role = 'master'
+     )
 $$;
 
 grant execute on function public.is_master() to anon, authenticated;
+
+-- ─── profiles: каждый видит и заводит только свою строку ────────────
+--  insert — только себе и только 'user': поднять себе роль нельзя.
+--  update/delete-политик нет вовсе — роль меняется только из SQL-редактора.
+alter table public.profiles enable row level security;
+
+drop policy if exists profiles_select_own  on public.profiles;
+drop policy if exists profiles_insert_self on public.profiles;
+
+create policy profiles_select_own on public.profiles
+  for select to authenticated using (id = (select auth.uid()));
+
+create policy profiles_insert_self on public.profiles
+  for insert to authenticated
+  with check (
+    id = (select auth.uid())
+    and role = 'user'
+    and coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false) = false
+  );
 
 alter table public.settings    enable row level security;
 alter table public.services    enable row level security;
@@ -553,17 +602,23 @@ drop policy if exists bookings_delete_auth  on public.bookings;
 create policy bookings_select_auth on public.bookings
   for select to authenticated using ((select public.is_master()));
 
+drop policy if exists bookings_insert_client on public.bookings;
+
 -- Клиент мини-аппа создаёт только свою собственную новую заявку —
 -- не может подделать статус "ok" или дату задним числом. Дата — по
 -- Тбилиси, а не current_date (в базе это UTC), и с запасом в один день:
 -- у клиента западнее Тбилиси «сегодня» по часам устройства — ещё
 -- вчерашнее по Тбилиси (то же правило в guard_client_booking(), который
 -- чистит и проверяет остальное в строке).
-create policy bookings_insert_anon on public.bookings
-  for insert to anon
+-- Мини-апп теперь только для вошедших, так что политика — для
+-- authenticated (раньше anon). Политики складываются через OR:
+-- bookings_insert_auth мастера рядом работает как прежде.
+create policy bookings_insert_client on public.bookings
+  for insert to authenticated
   with check (
     status = 'new' and source = 'client'
     and day >= (now() at time zone 'Asia/Tbilisi')::date - 1
+    and coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false) = false
   );
 
 create policy bookings_insert_auth on public.bookings
@@ -620,8 +675,10 @@ as $$
 $$;
 
 -- Функции по умолчанию исполняемы для public — сужаем явно.
-revoke all on function public.booking_status(uuid[]) from public;
-grant execute on function public.booking_status(uuid[]) to anon, authenticated;
+-- anon — явно: на уже развёрнутой базе ему это право выдавали.
+-- Мини-апп теперь только для вошедших.
+revoke all on function public.booking_status(uuid[]) from public, anon;
+grant execute on function public.booking_status(uuid[]) to authenticated;
 
 -- ─── cancel_own_booking(): клиент отменяет свою запись ──────────────
 --  Раньше «Отменить» в «Мои записи» удаляло запись только на устройстве,
@@ -647,14 +704,14 @@ begin
          cancel_seen = false
    where b.client_token = p_token
      and b.status in ('new', 'ok')
-     -- today - 1 — то же правило, что у вставки (bookings_insert_anon).
+     -- today - 1 — то же правило, что у вставки (bookings_insert_client).
      and b.day >= (now() at time zone 'Asia/Tbilisi')::date - 1;
   return found;
 end
 $$;
 
-revoke all on function public.cancel_own_booking(uuid) from public;
-grant execute on function public.cancel_own_booking(uuid) to anon, authenticated;
+revoke all on function public.cancel_own_booking(uuid) from public, anon;
+grant execute on function public.cancel_own_booking(uuid) to authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
 --  clients — как bookings: телефон и комментарии мастера не должны

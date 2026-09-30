@@ -6,10 +6,12 @@ import {
   refreshContent,
   useContent,
 } from "./content.js";
+import { initAuth, signOut, useSession } from "./supabase.js";
 import { changesToast, syncBookings } from "./sync.js";
 import { init } from "./telegram.js";
 import { initTheme } from "./theme.js";
 import { BootError, BootLoading } from "./ui.jsx";
+import AuthScreen from "./screens/AuthScreen.jsx";
 import BookingScreen from "./screens/BookingScreen.jsx";
 import ContactScreen from "./screens/ContactScreen.jsx";
 import InfoScreen from "./screens/InfoScreen.jsx";
@@ -46,6 +48,10 @@ function App() {
   const [toast, setToast] = useState("");
   const screen = stack[stack.length - 1];
   const content = useContent();
+  // Мини-апп целиком — только для вошедших (AuthScreen). Записи на
+  // устройстве по-прежнему привязаны к client_token, не к аккаунту.
+  const session = useSession();
+  const signed = session.status === "signed";
 
   // Растёт после каждой синхронизации, поменявшей записи: главная
   // перечитывает по нему хранилище.
@@ -58,6 +64,7 @@ function App() {
   useEffect(() => {
     init();
     initTheme();
+    initAuth();
     initContent();
   }, []);
 
@@ -67,10 +74,12 @@ function App() {
   // один запрос, так что быстрые «назад» базу не заваливают. Статусы
   // своих записей — там, где клиент их видит: главная и «Мои записи»
   // (последняя синхронизируется и сама, syncBookings() дублей не шлёт).
+  // До входа — ничего: booking_status и заявки открыты только вошедшим.
   useEffect(() => {
+    if (!signed) return;
     refreshAll();
     if (screen === HOME || screen === "my") sync();
-  }, [screen, sync]);
+  }, [screen, sync, signed]);
 
   // Пока мини-апп открыт и на экране — опрос: мастер правит цены, график и
   // решает по заявкам, пока клиент смотрит на экран. refreshAll() и
@@ -79,18 +88,20 @@ function App() {
   // как выше: тост живёт на главной, а синхронизация посреди записи
   // сохранила бы новый статус молча, и тоста клиент бы уже не увидел.
   useEffect(() => {
+    if (!signed) return;
     const id = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       refreshAll();
       if (screen === HOME || screen === "my") sync();
     }, POLL_MS);
     return () => clearInterval(id);
-  }, [screen, sync]);
+  }, [screen, sync, signed]);
 
   // Мини-апп живёт долго и не перезагружается: клиент свернул Telegram,
   // вернулся через час — а мастер за это время подняла цену, закрыла
   // окошко или подтвердила заявку. Перечитываем на возврате во вкладку.
   useEffect(() => {
+    if (!signed) return;
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       refreshAll();
@@ -98,7 +109,7 @@ function App() {
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [sync]);
+  }, [sync, signed]);
 
   const push = useCallback((next) => {
     setStack((s) => [...s, next]);
@@ -126,13 +137,14 @@ function App() {
     return () => bb.offClick(back);
   }, [back]);
 
-  // 2) Видимость — отдельным эффектом, зависит только от глубины стека.
+  // 2) Видимость — отдельным эффектом, зависит только от глубины стека
+  //    (и от входа: на AuthScreen возвращаться некуда).
   useEffect(() => {
     const bb = window.Telegram?.WebApp?.BackButton;
     if (!bb) return;
-    if (stack.length > 1) bb.show();
+    if (signed && stack.length > 1) bb.show();
     else bb.hide();
-  }, [stack.length]);
+  }, [stack.length, signed]);
 
   // 3) Прячем кнопку при размонтировании — мини-апп может переоткрыться.
   useEffect(() => () => window.Telegram?.WebApp?.BackButton?.hide(), []);
@@ -149,6 +161,16 @@ function App() {
     },
     [push]
   );
+
+  // Выход — с главной. Записи на устройстве не трогаем: они привязаны к
+  // client_token, а не к аккаунту.
+  const logout = useCallback(async () => {
+    await signOut();
+    home();
+  }, [home]);
+
+  if (session.status === "unknown") return <BootLoading />;
+  if (!signed) return <AuthScreen />;
 
   // Без контента рисовать нечего — даже имя мастера в крошке приходит из базы.
   if (!content.settings) {
@@ -194,7 +216,15 @@ function App() {
     case "info":
       return <InfoScreen onBack={back} onContact={() => push("contact")} />;
     default:
-      return <MenuScreen onOpen={push} toast={toast} rev={bookingsRev} />;
+      return (
+        <MenuScreen
+          onOpen={push}
+          toast={toast}
+          rev={bookingsRev}
+          email={session.email}
+          onSignOut={logout}
+        />
+      );
   }
 }
 

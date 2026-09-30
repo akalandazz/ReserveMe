@@ -3,7 +3,7 @@ import { useContent } from "../content.js";
 import { isPast, labelForKey } from "../schedule.js";
 import { loadBookings } from "../storage.js";
 import { tgUser } from "../telegram.js";
-import { Icon, NavRow, PrimaryButton, Screen, Title } from "../ui.jsx";
+import { Icon, NavRow, PrimaryButton, Screen, TextButton, Title } from "../ui.jsx";
 
 /** Подпись «Написать …» зависит от имени мастера, поэтому список строится
     в компоненте, а не на уровне модуля. */
@@ -26,7 +26,7 @@ function sortedUpcoming(list) {
     .sort((a, b) => (a.d + a.t < b.d + b.t ? -1 : 1));
 }
 
-export default function MenuScreen({ onOpen, toast, rev }) {
+export default function MenuScreen({ onOpen, toast, rev, email, onSignOut }) {
   const [upcoming, setUpcoming] = useState([]);
   const { settings } = useContent();
 
@@ -91,6 +91,9 @@ export default function MenuScreen({ onOpen, toast, rev }) {
       {settings.workingHoursText && (
         <p className="note">{settings.workingHoursText}</p>
       )}
+
+      {email && <p className="note center">Вы вошли как {email}</p>}
+      <TextButton onClick={onSignOut}>Выйти</TextButton>
     </Screen>
   );
 }

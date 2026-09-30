@@ -24,8 +24,10 @@ any request it doesn't handle; extend it when a new flow reads or writes a new t
 Two Telegram Mini Apps in one repo, one React 19 + Vite 8 codebase:
 
 - **The client** (`index.html` → `src/main.jsx` → `src/App.jsx`) — where a customer
-  browses services and submits a booking request. No login, no Supabase writes except
-  a client's own new booking (see below).
+  browses services and submits a booking request. **The whole app sits behind an
+  email + password sign-in / sign-up** ([AuthScreen.jsx](src/screens/AuthScreen.jsx));
+  every account it creates has the role `user` (see "Accounts and roles" below). No
+  Supabase writes except the client's own `profiles` row and new bookings (see below).
 - **The cabinet** (`admin.html` → `src/admin/main.jsx` → `src/admin/AdminApp.jsx`) —
   where the master signs in to manage her schedule, requests and prices. Completely
   separate bundle, separate CSS (`src/admin/admin.css`, not `src/index.css`), separate
@@ -113,9 +115,9 @@ Consequences that constrain every change here:
 
 | | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
 |---|---|---|
-| Auth | none (anonymous) | Supabase Auth sign-in |
-| Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (auth only) |
-| Writes | inserts its own row into `bookings` | everything, incl. its own confirmed bookings via `create_master_booking()` |
+| Auth | Supabase Auth sign-in **or sign-up**, role `user`; session under `vs_sb_client_v1` | Supabase Auth sign-in, role `master` only; session under `vs_sb_auth_v1` |
+| Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public), own `profiles` row | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only) |
+| Writes | its own `profiles` row (`role = 'user'`), its own rows into `bookings` | everything, incl. its own confirmed bookings via `create_master_booking()` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
 
@@ -159,36 +161,53 @@ without personal data — the client reads that view, never `bookings` itself.
 seed, kept in the repo because the content is no longer in git otherwise.
 
 - The anon key ships **inside the bundle** — that is expected. The security boundary is
-  RLS. **Email signups must stay disabled in the Supabase dashboard**, otherwise anyone
-  can register, become `authenticated`, and both rewrite the price list and read every
-  client's name, phone and comment out of `bookings`.
-- **`bookings` RLS is asymmetric, unlike every other table**: `anon` may only `insert`
-  a row for itself (`status = 'new'`, `source = 'client'`, `day` no earlier than
+  RLS.
+- **Accounts and roles.** Clients register themselves (email + password), so
+  "signed in" no longer means "the master". The role lives in `public.profiles`
+  (`'user'` | `'master'`), and `is_master()` requires a `'master'` row — a missing row
+  counts as `user`. There is **no trigger on `auth.users`** (deliberately): the app
+  creates the row itself — `loadRole()` in [src/supabase.js](src/supabase.js) upserts
+  `{ id, role: 'user' }` with `ignoreDuplicates` every time a session appears (sign-up,
+  sign-in, restored session), so email-confirmed sign-ups get their row on first
+  sign-in, and the master's row is never overwritten. RLS lets a user insert only
+  their own row and only as `'user'`; there are no update/delete policies, so nobody
+  can promote themselves. The master's row is granted **by hand** in the SQL editor
+  (the snippet is above `is_master()` in `schema.sql`). **Deployment order matters:**
+  `profiles` + the master's row → the new `is_master()` → only then enable Email
+  signups in the dashboard. With the old `is_master()` ("any non-anonymous
+  `authenticated`") an open sign-up would hand every client the whole cabinet. The
+  cabinet shows «Нет доступа» to a signed-in non-master and never loads its data.
+  Signing out of the client app keeps the device's bookings: they are tied to
+  `client_token`, not to the account.
+- **`bookings` RLS is asymmetric, unlike every other table**: a signed-in client may
+  only `insert` a row (`bookings_insert_client`: `status = 'new'`, `source = 'client'`, `day` no earlier than
   yesterday **in Tbilisi** — the database clock is UTC, and a client west of Tbilisi
   builds its day list from a device clock that's still on the Tbilisi "yesterday" —
-  enforced by the insert policy's `with check`), never `select`. Only `authenticated`
-  (the signed-in master) can read or change bookings. The client reads availability
+  enforced by the insert policy's `with check`), never `select`. `anon` can't insert at
+  all anymore, nor call `booking_status`/`cancel_own_booking`. Only the master
+  (`is_master()`) can read or change bookings. The client reads availability
   from the `busy_slots` view instead (day/start/duration only, no names), and its own
   request's status from the `booking_status(uuid[])` function — a `security definer`
   function that returns `status`, `cancelled_by` and the booking's own day/start/
   duration/price/service_id — never names, username or comment — and only for rows whose secret
   `client_token` the caller already knows. Both are the same trick: RLS is bypassed in
-  one small place with a fixed column list. The anon row's contents are not trusted
+  one small place with a fixed column list. The client row's contents are not trusted
   either: the `guard_client_booking()` trigger overwrites `duration`/`price`/
   `service_name` from `services`, bounds `day` to the booking window, rejects a start
   that isn't a real slot (day off, outside working hours, off the grid — the grid
   must stay in step with `buildSlots` in `schedule.js`), caps client requests at
-  `max_per_hour` salon-wide (the anon key is public, and the client's identity is
-  unverified, so there's no per-person key to limit by) and truncates the text
+  `max_per_hour` salon-wide (anyone can sign up, so an account is no per-person
+  limit) and truncates the text
   fields — don't move those values back to "whatever the client sent". A rejection
   is invisible to the client (the insert is best-effort); the message still goes out.
   Every write policy (and every read on `bookings`/`clients`/`client_comments`) checks
-  `public.is_master()`, not just the `authenticated` role, because Supabase's
-  Anonymous Sign-ins also hand out `authenticated`; `security definer` master
-  functions (`delete_client`) call it themselves. If you ever need more booking data on the
-  client, widen that view or that function; **never** grant `anon` a `select` policy on
-  `bookings` itself — it would hand every client's name, username and comment to
-  anyone holding the (public) anon key.
+  `public.is_master()`, not just the `authenticated` role, because every client is
+  `authenticated` now (and Supabase's Anonymous Sign-ins hand it out too);
+  `security definer` master functions (`delete_client`) call it themselves. If you
+  ever need more booking data on the client, widen that view or that function;
+  **never** grant `anon` — or `authenticated` without `is_master()` — a `select`
+  policy on `bookings` itself: anyone can sign up, so it would hand every client's
+  name, username and comment to anyone.
 - **Clients.** `clients` rows come from the `link_booking_client()` trigger (client
   requests, matched by username) and from the cabinet («Новый клиент», «Новая
   запись»). Bookings link to clients by `client_id`, **never by name**: `store.js`
@@ -294,7 +313,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | File | Role |
 |---|---|
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
-| [src/supabase.js](src/supabase.js) | Shared by both apps. Client + the master's session store (`useSession`, `signIn`, `signOut` — used only by the cabinet) + `submitBooking`, `fetchBookingStatuses` and `cancelOwnBooking` (used only by the client: a best-effort insert into `bookings`, the status read-back through the `booking_status` RPC, and `cancel_own_booking`). Every export must survive `supabase === null` (env vars unset). |
+| [src/supabase.js](src/supabase.js) | Shared by both apps. Client (its `storageKey` differs per app — `AUTH_STORAGE_KEY`, picked by the page path) + the session store (`useSession` → `{ status, email, role }`, `signIn`, `signUp`, `signOut`, `retryRole`; used by both apps) + `submitBooking`, `fetchBookingStatuses` and `cancelOwnBooking` (used only by the client: a best-effort insert into `bookings`, the status read-back through the `booking_status` RPC, and `cancel_own_booking`). Every export must survive `supabase === null` (env vars unset). |
 | [src/sync.js](src/sync.js) | Client-only. `syncBookings()` — the one place that reconciles stored bookings with their server rows (status read-back, re-sending unlanded requests), deduped by an in-flight promise because App and «Мои записи» both call it; `changesToast()` turns its result into the client's toast; `bookingRow()` builds the insert row for both `BookingScreen` and the re-send. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `busyFor(bookings, key, settings)`, `serverBusyFor(busy, key, settings)`) and every function must survive `settings == null`. `busyFor` reads the client's own CloudStorage records, `serverBusyFor` the `busy_slots` rows; `BookingScreen` concatenates both before calling `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/storage.js](src/storage.js) | `CloudStorage` (gated on `isVersionAtLeast("6.9")`) mirrored onto `localStorage`. Every callback is promisified **with a 3s timeout** — some clients never fire it, which would hang «Мои записи» forever. Writes go to `localStorage` unconditionally. Client-only; the cabinet has no CloudStorage access to a client's device, which is why bookings also live in Supabase now. |
