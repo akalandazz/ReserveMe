@@ -154,6 +154,16 @@ create unique index if not exists clients_username_uq
 -- лично, Telegram. Пустая строка — не указано (клиенты из заявок
 -- мини-аппа: у них и так есть telegram_username).
 alter table public.clients add column if not exists channel text not null default '';
+
+-- Аккаунт мини-аппа, если клиент записывался сам: link_booking_client()
+-- находит клиента по нему раньше, чем по юзернейму и имени, — аккаунт
+-- устойчивее и того, и другого. email — из того же аккаунта, чтобы
+-- мастер знала, кто это, даже когда Telegram не отдал ни имени, ни логина.
+alter table public.clients add column if not exists user_id uuid references auth.users(id) on delete set null;
+alter table public.clients add column if not exists email text not null default '';
+create unique index if not exists clients_user_id_uq
+  on public.clients (user_id)
+  where user_id is not null;
 do $$
 begin
   alter table public.clients add constraint clients_channel_chk
@@ -186,29 +196,31 @@ create table if not exists public.bookings (
   client_username text    not null default '',
   comment         text    not null default '',
   -- 'cancelled' — отменена клиентом или мастером (кто — в cancelled_by).
-  -- Строка остаётся, а не удаляется: иначе клиент не отличил бы отмену
-  -- от заявки, которая не доехала (см. booking_status() ниже). Проверка
-  -- значений — ниже, отдельным alter table.
+  -- Строка остаётся, а не удаляется: клиент видит в «Мои записи», что
+  -- мастер отменила запись, а не что она пропала. Проверка значений —
+  -- ниже, отдельным alter table.
   status          text    not null default 'new',
   source          text    not null default 'client' check (source in ('client', 'master')),
-  -- Случайный секрет, который клиент придумывает себе сам и хранит рядом
-  -- с локальной записью (ключ "k" в src/storage.js). Единственная ниточка
-  -- между заявкой на устройстве и строкой здесь: без неё клиент не мог бы
-  -- узнать, подтвердила ли мастер запись, — id строки ему не возвращается,
-  -- а select по таблице аноним не имеет и иметь не должен.
-  -- Не является авторизацией на запись: по нему можно только прочитать
-  -- статус, через booking_status() ниже.
-  -- Nullable: заявки, заведённые мастером (source = 'master'), и строки
-  -- от старых закэшированных бандлов клиента токена не имеют.
-  client_token    uuid,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
 
 -- Файл выполняется повторно на уже развёрнутой базе, а create table
 -- if not exists новую колонку в существующую таблицу не добавит.
-alter table public.bookings add column if not exists client_token uuid;
 alter table public.bookings add column if not exists client_id bigint references public.clients(id) on delete set null;
+-- Аккаунт клиента мини-аппа, который оставил заявку. Единственный
+-- источник правды для «Мои записи»: клиент читает свои строки по нему
+-- (bookings_select_own), а ставит его только сервер — guard_client_booking()
+-- пишет сюда auth.uid(), что бы ни прислал клиент. Пусто у записей,
+-- которые завела мастер (source = 'master').
+alter table public.bookings add column if not exists user_id uuid references auth.users(id) on delete set null;
+-- Устарело: client_token связывал заявку с копией на устройстве клиента
+-- (CloudStorage) до того, как мини-апп стал требовать вход. Новый бандл его
+-- не шлёт и не читает; колонка и индекс остаются, пока старые закэшированные
+-- бандлы шлют её во вставке, — потом их можно удалить:
+--   drop index if exists public.bookings_client_token_uq;
+--   alter table public.bookings drop column if exists client_token;
+alter table public.bookings add column if not exists client_token uuid;
 -- Кто отменил: 'client' (cancel_own_booking) или 'master' (кабинет).
 -- cancel_seen — мастер видела отмену клиента в «Заявках» («Понятно»).
 alter table public.bookings add column if not exists cancelled_by text not null default '';
@@ -225,10 +237,12 @@ alter table public.bookings add constraint bookings_cancelled_by_check
 
 create index if not exists bookings_day_idx on public.bookings (day, start_min);
 create index if not exists bookings_client_id_idx on public.bookings (client_id);
+-- «Мои записи»: select по user_id = auth.uid().
+create index if not exists bookings_user_id_idx on public.bookings (user_id, day);
 -- Для on delete set null при удалении услуги — иначе полный проход по bookings.
 create index if not exists bookings_service_id_idx on public.bookings (service_id);
--- Токен — случайный uuid, двух одинаковых быть не должно; уникальный
--- индекс заменяет прежний обычный.
+-- Устарело вместе с client_token (см. выше). Пока старые бандлы досылают
+-- заявки повторно, уникальный индекс не даёт им задвоиться.
 drop index if exists public.bookings_client_token_idx;
 create unique index if not exists bookings_client_token_uq
   on public.bookings (client_token)
@@ -338,8 +352,11 @@ create trigger clients_touch_updated_at
 --  проверяет сервер, другого ключа для лимита нет. Поднимите число, если
 --  настоящих заявок в час бывает больше.
 --
---  Отказ триггера клиент не видит: вставка best-effort (submitBooking),
---  сообщение мастеру всё равно уходит.
+--  Отказ триггера клиент видит: createBooking (src/bookings.js) ждёт
+--  ответа, и без строки в базе сообщение мастеру не уходит.
+--
+--  user_id — всегда auth.uid(), а не то, что прислал клиент: по нему
+--  клиент потом читает «Мои записи» (bookings_select_own).
 --
 --  security definer — не для services/settings (их anon читает и так), а
 --  для подсчёта потолка: select по bookings анониму закрыт RLS, и под
@@ -416,6 +433,9 @@ begin
   new.price           := svc.price;
   new.service_name    := svc.name;
   new.status          := 'new';
+  new.user_id         := auth.uid();
+  new.cancelled_by    := '';
+  new.cancel_seen     := false;
   new.client_id       := null; -- выставит link_booking_client()
   new.client_name     := left(btrim(coalesce(new.client_name, '')), 128);
   new.client_username := left(btrim(coalesce(new.client_username, '')), 64);
@@ -434,13 +454,15 @@ create trigger bookings_guard_client
 -- ─── Привязка заявки к клиенту ───────────────────────────────────
 --  Аноним не имеет и не должен иметь доступа к clients (там телефон
 --  и заметка мастера) — привязка идёт через security definer триггер
---  на INSERT bookings, тем же приёмом, что и booking_status() ниже:
---  RLS обходится в одном контролируемом месте, а не открывается anon
---  напрямую. Сопоставление по telegram_username, если он есть;
---  иначе — по точному совпадению имени среди клиентов без юзернейма;
---  не нашли — заводим нового. Пустые client_name/client_username
---  (initDataUnsafe не отдал ничего) оставляют client_id пустым —
---  запись просто не попадёт ни к одному клиенту в «Клиенты».
+--  на INSERT bookings, тем же приёмом, что и busy_slots ниже:
+--  RLS обходится в одном контролируемом месте, а не открывается клиенту
+--  напрямую. Заявка из мини-аппа несёт user_id (аккаунт клиента, его
+--  ставит guard_client_booking()) — клиент ищется по нему; нет такого —
+--  по telegram_username, чтобы подхватить клиента, которого мастер
+--  завела раньше, и тогда ему дописывается user_id; нет и его — заводим
+--  нового. Имя — из Telegram, а если его нет — начало e-mail до «@».
+--  Строки без user_id (мастер завела сама) — как раньше: по юзернейму,
+--  потом по точному имени среди клиентов без юзернейма.
 --
 --  Имя уже известного клиента НЕ перезаписывается телеграмным: мастер
 --  переименовывает клиентов в кабинете, и следующая заявка не должна
@@ -459,8 +481,44 @@ set search_path = ''
 as $$
 declare
   found_id bigint;
+  mail     text;
 begin
   if new.source = 'master' and new.client_id is not null then
+    return new;
+  end if;
+
+  if new.user_id is not null then
+    mail := left(coalesce(auth.jwt() ->> 'email', ''), 254);
+    if new.client_name = '' then
+      new.client_name := left(split_part(mail, '@', 1), 128);
+    end if;
+
+    select id into found_id from public.clients where user_id = new.user_id;
+    if found_id is null and new.client_username <> '' then
+      update public.clients
+         set user_id = new.user_id
+       where telegram_username = new.client_username and user_id is null
+      returning id into found_id;
+    end if;
+    if found_id is null then
+      insert into public.clients (name, telegram_username, user_id, email)
+      values (new.client_name, new.client_username, new.user_id, mail)
+      -- юзернейм уже занят клиентом с другим аккаунтом — заводим без него
+      on conflict (telegram_username) where telegram_username <> ''
+      do nothing
+      returning id into found_id;
+      if found_id is null then
+        insert into public.clients (name, user_id, email)
+        values (new.client_name, new.user_id, mail)
+        returning id into found_id;
+      end if;
+    else
+      update public.clients
+         set name  = case when name = '' then new.client_name else name end,
+             email = case when email = '' then mail else email end
+       where id = found_id;
+    end if;
+    new.client_id = found_id;
     return new;
   end if;
 
@@ -584,11 +642,11 @@ end
 $$;
 
 -- ═══════════════════════════════════════════════════════════════
---  bookings — иначе, чем остальные таблицы: анониму нельзя давать
---  select. Anon-ключ публичный, и открытый select отдал бы имена,
---  телефоны и комментарии всех клиентов кому угодно. Читает и правит
---  записи только вошедший мастер (кабинет), анонимный клиент мини-аппа
---  умеет только вставить свою заявку.
+--  bookings — иначе, чем остальные таблицы: зарегистрироваться может
+--  кто угодно, и открытый select отдал бы имена и комментарии всех
+--  клиентов любому. Читает и правит все записи только мастер (кабинет);
+--  клиент мини-аппа вставляет свою заявку, читает свои строки
+--  (user_id = auth.uid()) и отменяет свою запись (cancel_own_booking).
 -- ═══════════════════════════════════════════════════════════════
 
 alter table public.bookings enable row level security;
@@ -602,6 +660,16 @@ drop policy if exists bookings_delete_auth  on public.bookings;
 create policy bookings_select_auth on public.bookings
   for select to authenticated using ((select public.is_master()));
 
+-- Клиент видит только свои строки — те, что оставил со своего аккаунта.
+-- Это не «select для authenticated» целиком (тот отдал бы любому
+-- зарегистрировавшемуся чужие имена и комментарии): user_id ставит сервер
+-- (guard_client_booking), подделать его нельзя. В строке нет ничего,
+-- кроме того, что клиент прислал сам, и решения мастера по ней;
+-- комментарии мастера о клиенте — в client_comments, туда доступа нет.
+drop policy if exists bookings_select_own on public.bookings;
+create policy bookings_select_own on public.bookings
+  for select to authenticated using (user_id = (select auth.uid()));
+
 drop policy if exists bookings_insert_client on public.bookings;
 
 -- Клиент мини-аппа создаёт только свою собственную новую заявку —
@@ -613,10 +681,13 @@ drop policy if exists bookings_insert_client on public.bookings;
 -- Мини-апп теперь только для вошедших, так что политика — для
 -- authenticated (раньше anon). Политики складываются через OR:
 -- bookings_insert_auth мастера рядом работает как прежде.
+-- user_id проверяется по строке ПОСЛЕ before-триггеров, то есть после
+-- того, как guard_client_booking() записал туда auth.uid().
 create policy bookings_insert_client on public.bookings
   for insert to authenticated
   with check (
     status = 'new' and source = 'client'
+    and user_id = (select auth.uid())
     and day >= (now() at time zone 'Asia/Tbilisi')::date - 1
     and coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false) = false
   );
@@ -630,67 +701,22 @@ create policy bookings_update_auth on public.bookings
 create policy bookings_delete_auth on public.bookings
   for delete to authenticated using ((select public.is_master()));
 
--- ─── booking_status(): статус своей заявки для анонимного клиента ─
---  Мастер подтверждает заявку в кабинете (status → 'ok'), но у клиента
---  запись лежит в CloudStorage его устройства, и без обратного канала
---  экран «Мои записи» вечно показывал бы «Ожидает подтверждения».
---
---  Канал сделан функцией, а НЕ select-политикой для anon: политика
---  открыла бы строку целиком (имя, юзернейм, комментарий, цену), а
---  здесь наружу выходит только статус и только тех строк, чей секретный
---  client_token спрашивающий уже знает. Тот же приём, что у вьюхи
---  busy_slots: security definer обходит RLS bookings в одном
---  контролируемом месте, с фиксированным набором колонок.
---
---  Токен перебрать нельзя (128-битный uuid), а знание токена не даёт
---  ничего, кроме чтения статуса и отмены своей записи
---  (cancel_own_booking() ниже).
---
---  cancelled_by — чтобы клиент не показывал «отменена мастером» записи,
---  которую отменил сам с другого устройства.
---  day/start_min/duration/price/service_id — мастер может перенести
---  запись или сменить услугу (update_master_booking), не меняя статус;
---  без них у клиента в «Мои записи» оставались бы старые день и время.
---  Это те же данные, что клиент сам прислал, — ничего чужого.
---  drop перед create: сменился состав возвращаемых колонок, а create or
---  replace этого не умеет.
+-- ─── Устаревшие функции по client_token ──────────────────────────
+--  booking_status(uuid[]) и cancel_own_booking(uuid) связывали заявку с
+--  копией на устройстве клиента. Теперь клиент читает свои строки сам
+--  (bookings_select_own), а отменяет по id — ниже.
 drop function if exists public.booking_status(uuid[]);
-create function public.booking_status(p_tokens uuid[])
-returns table (
-  client_token uuid, status text, cancelled_by text,
-  day date, start_min integer, duration integer, price integer, service_id text
-)
-language sql
-security definer
-stable
-set search_path = ''
-as $$
-  select b.client_token, b.status, b.cancelled_by,
-         b.day, b.start_min, b.duration, b.price, b.service_id
-  from public.bookings b
-  -- Пустой массив и null отсекаются здесь же: = any('{}') не вернёт строк.
-  where b.client_token = any (p_tokens)
-  -- Потолок на случай подставленного вручную огромного массива.
-  limit 100
-$$;
-
--- Функции по умолчанию исполняемы для public — сужаем явно.
--- anon — явно: на уже развёрнутой базе ему это право выдавали.
--- Мини-апп теперь только для вошедших.
-revoke all on function public.booking_status(uuid[]) from public, anon;
-grant execute on function public.booking_status(uuid[]) to authenticated;
+drop function if exists public.cancel_own_booking(uuid);
 
 -- ─── cancel_own_booking(): клиент отменяет свою запись ──────────────
---  Раньше «Отменить» в «Мои записи» удаляло запись только на устройстве,
---  а строка в bookings оставалась: мастер ничего не видела в кабинете,
---  и окно для других клиентов оставалось занятым. Тот же приём, что у
---  booking_status(): security definer, строка ищется только по
---  секретному client_token, наружу — только «получилось или нет».
---
---  Меняются ровно три колонки: status, cancelled_by, cancel_seen.
+--  Update-политику клиенту не даём: она открыла бы все колонки строки
+--  (статус "ok", день, цену). Здесь security definer меняет ровно три
+--  колонки — status, cancelled_by, cancel_seen — и только в строке, чей
+--  user_id совпадает с вызывающим. Мастер видит отмену в «Заявках» →
+--  «Отмены», окно освобождается для других клиентов.
 --  Уже отменённую или прошедшую запись не трогаем (повторный тап —
 --  не ошибка, а false).
-create or replace function public.cancel_own_booking(p_token uuid)
+create or replace function public.cancel_own_booking(p_id bigint)
 returns boolean
 language plpgsql
 volatile
@@ -702,7 +728,8 @@ begin
      set status = 'cancelled',
          cancelled_by = 'client',
          cancel_seen = false
-   where b.client_token = p_token
+   where b.id = p_id
+     and b.user_id = auth.uid()
      and b.status in ('new', 'ok')
      -- today - 1 — то же правило, что у вставки (bookings_insert_client).
      and b.day >= (now() at time zone 'Asia/Tbilisi')::date - 1;
@@ -710,8 +737,9 @@ begin
 end
 $$;
 
-revoke all on function public.cancel_own_booking(uuid) from public, anon;
-grant execute on function public.cancel_own_booking(uuid) to authenticated;
+-- Функции по умолчанию исполняемы для public — сужаем явно.
+revoke all on function public.cancel_own_booking(bigint) from public, anon;
+grant execute on function public.cancel_own_booking(bigint) to authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
 --  clients — как bookings: телефон и комментарии мастера не должны
@@ -1339,7 +1367,7 @@ select * from (values
 where not exists (select 1 from public.info_blocks);
 
 -- ─── Кэш схемы PostgREST ────────────────────────────────────────
---  Новая функция (booking_status) и новая колонка не видны через REST,
+--  Новая функция (cancel_own_booking) и новая колонка не видны через REST,
 --  пока PostgREST не перечитает схему. Supabase обычно делает это сам,
 --  но при повторном прогоне файла на живой базе дешевле сказать явно —
 --  иначе первый вызов rpc() вернёт «function not found».

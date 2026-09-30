@@ -5,8 +5,6 @@ import { CLIENT, MASTER, installFakeSupabase, sessionFor } from "./fake-supabase
  * clients — строки client_stats, которые уже лежат в «базе» до входа
  *   (test.use({ clients: [...] })).
  * bookings — строки bookings в «базе» (bookingRow из fake-supabase.js).
- * localBookings — записи клиента на устройстве (src/storage.js): без
- *   Telegram они живут в localStorage под vs_bookings_v1.
  * backend — поддельный Supabase (fake-supabase.js), поставленный до
  *   первого запроса страницы. После теста проверяет, что приложение не
  *   сходило ни в один адрес, которого подделка не знает.
@@ -22,7 +20,6 @@ import { CLIENT, MASTER, installFakeSupabase, sessionFor } from "./fake-supabase
 export const test = base.extend({
   clients: [[], { option: true }],
   bookings: [[], { option: true }],
-  localBookings: [[], { option: true }],
   fakeClock: [false, { option: true }],
 
   backend: async ({ page, clients, bookings }, use) => {
@@ -64,29 +61,22 @@ export const test = base.extend({
     });
   },
 
-  miniapp: async ({ page, backend, localBookings, fakeClock }, use) => {
+  miniapp: async ({ page, backend, fakeClock }, use) => {
     if (fakeClock) await page.clock.install();
     await page.addInitScript(
-      ({ list, session }) => {
+      ({ session }) => {
         // Только при первой загрузке — перезагрузка в тесте видит то, что
-        // приложение само сохранило.
-        if (localStorage.getItem("vs_bookings_v1") === null) {
-          localStorage.setItem("vs_bookings_v1", JSON.stringify(list));
-        }
-        // Ключ — AUTH_STORAGE_KEY мини-аппа в src/supabase.js.
+        // приложение само сохранило. Ключ — AUTH_STORAGE_KEY мини-аппа в
+        // src/supabase.js.
         if (localStorage.getItem("vs_sb_client_v1") === null) {
           localStorage.setItem("vs_sb_client_v1", JSON.stringify(session));
         }
       },
-      { list: localBookings, session: sessionFor(CLIENT) }
+      { session: sessionFor(CLIENT) }
     );
     await page.goto("/");
     await expect(page.getByText("Добро пожаловать!")).toBeVisible();
-    await use({
-      page,
-      backend,
-      stored: () => page.evaluate(() => JSON.parse(localStorage.getItem("vs_bookings_v1") || "[]")),
-    });
+    await use({ page, backend });
   },
 });
 

@@ -1,20 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   contentSnapshot,
   refreshAll,
   useContent,
 } from "../content.js";
+import { createBooking } from "../bookings.js";
 import {
   buildDays,
   buildSlots,
-  busyFor,
   dayLabel,
   findDay,
   serverBusyFor,
 } from "../schedule.js";
-import { addBooking, loadBookings, newClientToken } from "../storage.js";
-import { submitBooking } from "../supabase.js";
-import { bookingRow } from "../sync.js";
 import { bookingMessage, copyText, haptic, sendToMaster } from "../telegram.js";
 import {
   Icon,
@@ -32,7 +29,8 @@ const SAVED_TOAST =
   "Заявка сохранена. Откройте Telegram, чтобы отправить сообщение.";
 
 // Сколько ждать сверки с базой перед отправкой. Дольше — клиент ждёт
-// кнопку; не дождались — отправляем как есть (заявку не блокирует сеть).
+// кнопку; не дождались — сохраняем как есть (сверку сеть не блокирует,
+// а саму заявку — да: без строки в базе её нет, см. submit()).
 const FRESH_CHECK_MS = 2_000;
 
 /** Резолвится null, если promise не успел за ms. */
@@ -51,8 +49,9 @@ export default function BookingScreen({
   back,
   home,
 }) {
-  const [bookings, setBookings] = useState([]);
   const [sending, setSending] = useState(false);
+  // Заявка не сохранилась на сервере — текст ошибки, кнопка «Повторить».
+  const [saveError, setSaveError] = useState("");
   const [copied, setCopied] = useState(false);
   // Сверка перед отправкой нашла, что данные на экране устарели.
   const [outdated, setOutdated] = useState(false);
@@ -60,15 +59,6 @@ export default function BookingScreen({
 
   // Все хуки вызываются безусловно — ветвление только в return,
   // иначе сработает react/rules-of-hooks.
-  useEffect(() => {
-    let cancelled = false;
-    loadBookings().then((list) => {
-      if (!cancelled) setBookings(list);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Контент и занятость перечитывает App.jsx — на входе в каждый шаг (шаг —
   // это экран) и опросом, пока клиент на нём задержался: мастер могла
@@ -87,16 +77,11 @@ export default function BookingScreen({
   );
   const day = findDay(days, draft.dateKey);
 
-  // Занято = свои записи (CloudStorage, живут только на этом устройстве)
-  // ПЛЮС занятость с сервера: чужие заявки и окошки, закрытые мастером
-  // в кабинете. Пересечение своей же записи с её серверной копией
-  // безвредно — перекрытие ищется через some().
+  // Занято = занятость с сервера (busy_slots): заявки и записи — в том
+  // числе свои же, — и окошки, закрытые мастером в кабинете.
   const busyOn = useCallback(
-    (key) => [
-      ...busyFor(bookings, key, settings),
-      ...serverBusyFor(busy, key, settings),
-    ],
-    [bookings, busy, settings]
+    (key) => serverBusyFor(busy, key, settings),
+    [busy, settings]
   );
 
   const slots = useMemo(
@@ -148,10 +133,7 @@ export default function BookingScreen({
     const freshSlots = buildSlots(
       freshDay,
       now ?? service,
-      [
-        ...busyFor(bookings, freshDay.key, snap.settings),
-        ...serverBusyFor(snap.busy, freshDay.key, snap.settings),
-      ],
+      serverBusyFor(snap.busy, freshDay.key, snap.settings),
       snap.settings
     );
     return !taken && !freshSlots.includes(draft.time);
@@ -188,6 +170,7 @@ export default function BookingScreen({
     if (sending || !service || !day || !draft.time) return;
     setSending(true);
     setOutdated(false);
+    setSaveError("");
 
     // Последняя сверка с базой — ДО сохранения и до openTelegramLink.
     // Мастер могла поменять цену, закрыть день или окошко, пока клиент
@@ -202,36 +185,24 @@ export default function BookingScreen({
       return;
     }
 
+    // Сохраняем на сервере ДО отправки: openTelegramLink закрывает
+    // мини-апп. Строка в bookings — единственная запись о заявке: её видит
+    // мастер в кабинете и сам клиент в «Мои записи». Не сохранилась —
+    // сообщение не уходит, клиент видит ошибку и повторяет.
+    const res = await createBooking({
+      service,
+      day: day.key,
+      time: draft.time,
+      comment: draft.comment.trim(),
+    });
+    if (!res.ok) {
+      haptic("error");
+      setSaveError(res.error);
+      setSending(false);
+      return;
+    }
+
     haptic("success");
-
-    // Секрет, по которому «Мои записи» потом спросят у сервера, не
-    // подтвердила ли мастер эту заявку. Кладём его и в локальную запись,
-    // и в серверную строку — связать их иначе нечем: id серверной строки
-    // клиенту не возвращается (select по bookings анониму закрыт).
-    const token = newClientToken();
-
-    const record = {
-      id: String(Date.now()),
-      s: service.id,
-      d: day.key,
-      t: draft.time,
-      m: service.duration,
-      p: service.price,
-      c: draft.comment.trim(),
-      k: token,
-      st: "new",
-    };
-
-    // Сохраняем ДО отправки: openTelegramLink закрывает мини-апп
-    await addBooking(record);
-
-    // Серверная копия для кабинета мастера (admin.html) — у него нет
-    // доступа к CloudStorage клиента. Best-effort: провал не отменяет
-    // запись и не должен задержать отправку сообщения мастеру. Если
-    // insert не доехал (мини-апп закрылся посреди запроса), его дошлёт
-    // syncBookings() при следующем открытии — см. src/sync.js.
-    await submitBooking(bookingRow(record, service.name));
-
     const text = message;
     home(SAVED_TOAST);
     sendToMaster(text);
@@ -355,7 +326,7 @@ export default function BookingScreen({
       footer={
         <>
           <PrimaryButton onClick={submit} disabled={sending || expired}>
-            {sending ? "Отправляем…" : "Отправить заявку"}
+            {sending ? "Отправляем…" : saveError ? "Повторить" : "Отправить заявку"}
           </PrimaryButton>
           <TextButton onClick={copy}>
             {copied ? "Текст скопирован" : "Скопировать текст"}
@@ -369,6 +340,12 @@ export default function BookingScreen({
         <p className="notice" role="alert">
           Пока вы оформляли заявку, данные обновились. Проверьте услугу, дату,
           время и цену ниже и отправьте ещё раз.
+        </p>
+      )}
+
+      {saveError && (
+        <p className="notice" role="alert">
+          {saveError}
         </p>
       )}
 
@@ -441,7 +418,7 @@ export default function BookingScreen({
 
       <p className="eyebrow">Какие данные мы передаём</p>
       <p className="note">
-        Ваши имя и логин из Telegram, выбранные услугу, дату и время,
+        Ваши имя и логин из Telegram, e-mail аккаунта, выбранные услугу, дату и время,
         стоимость и комментарий (если вы его укажете) — мы отправим{" "}
         {settings.masterName} в Telegram и сохраним в базе заявок, чтобы она
         могла увидеть и подтвердить запись в своём кабинете.

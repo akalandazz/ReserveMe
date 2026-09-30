@@ -125,9 +125,9 @@ export function deleteBooking(id) {
   return run(() => supabase.from("bookings").delete().eq("id", id), BOOKINGS);
 }
 
-/** Есть ли у записи клиент в мини-аппе, который узнает об отмене сам
- *  (booking_status по client_token, см. src/sync.js). */
-export const clientSeesStatus = (booking) => !!booking?.client_token;
+/** Оставил ли запись клиент со своим аккаунтом в мини-аппе — он узнает о
+ *  решении сам, в «Мои записи» (src/bookings.js читает строки по user_id). */
+export const clientSeesStatus = (booking) => !!booking?.user_id;
 
 /** Записался из мини-аппа и есть Telegram-логин — кабинет сам откроет
  *  ему чат с сообщением об изменении (notifyClient в messages.js). */
@@ -138,7 +138,7 @@ export const canMessageClient = (booking) =>
  * «Отклонить», «Отменить запись», корзина. Запись из мини-аппа не
  * удаляется, а получает status "cancelled": удалённую строку клиент не
  * отличил бы от заявки, которая не доехала, и видел бы «Ожидает
- * подтверждения» до самого дня записи. Записи без client_token (мастер
+ * подтверждения» до самого дня записи. Записи без user_id (мастер
  * завела сама) спросить о статусе некому — их удаляем, как раньше.
  */
 export function cancelBooking(booking) {

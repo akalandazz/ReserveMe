@@ -119,21 +119,6 @@ export function buildSlots(day, service, busy = [], settings) {
 }
 
 /**
- * Занятые интервалы на дату из сохранённых записей.
- * Длительность берём из самой записи (b.m) — она денормализована
- * специально, чтобы правка услуги не переписывала историю.
- */
-export function busyFor(bookings, key, settings) {
-  const fallback = settings?.slotStepMinutes ?? 30;
-  return bookings
-    .filter((b) => b.d === key)
-    .map((b) => ({
-      start: toMinutes(b.t),
-      end: toMinutes(b.t) + (b.m || fallback),
-    }));
-}
-
-/**
  * Занятость с сервера (вьюха busy_slots) на дату.
  * Это то, что мастер видит и настраивает в кабинете: чужие заявки,
  * записи, заведённые ею вручную, и закрытые вручную окошки.
@@ -149,10 +134,10 @@ export function serverBusyFor(busy = [], key, settings) {
     .map((b) => ({ start: b.start, end: b.start + (b.duration || step) }));
 }
 
-/** Запись уже в прошлом? */
+/** Запись ({ day: "ГГГГ-ММ-ДД", time: "ЧЧ:ММ" }) уже в прошлом? */
 export function isPast(b) {
-  const [y, mo, d] = b.d.split("-").map(Number);
-  const [h, mi] = b.t.split(":").map(Number);
+  const [y, mo, d] = b.day.split("-").map(Number);
+  const [h, mi] = b.time.split(":").map(Number);
   return new Date(y, mo - 1, d, h, mi).getTime() < Date.now();
 }
 

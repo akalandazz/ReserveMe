@@ -5,12 +5,11 @@
 // (см. supabase/schema.sql), а не секретность ключа — ключ уезжает
 // в собранный бандл и виден любому.
 //
-// Заявка клиента (src/storage.js) сохраняется локально И вставляется
-// сюда, в таблицу bookings, — это нужно кабинету мастера (admin.html),
-// у которого нет доступа к CloudStorage клиента. RLS пускает вошедшего
-// клиента только на INSERT новой своей заявки; читает и правит записи
-// (в том числе видит имя и комментарий клиента) только мастер — иначе
-// любой зарегистрировавшийся увидел бы личные данные всех клиентов.
+// Заявки клиента живут только здесь, в таблице bookings (src/bookings.js):
+// RLS пускает вошедшего клиента вставить новую свою заявку и читать свои
+// строки (user_id = auth.uid()); все записи читает и правит только
+// мастер — иначе любой зарегистрировавшийся увидел бы чужие имена и
+// комментарии.
 //
 // Этим модулем пользуются оба приложения, и в обоих есть вход по e-mail
 // и паролю: клиент регистрируется сам (signUp) и получает роль 'user',
@@ -254,14 +253,13 @@ export async function signOut() {
   publish(GUEST);
 }
 
-/* ─── Заявка клиента → bookings ──────────────────────────────────
-   Вызывается из BookingScreen.submit() ДО sendToMaster (см. CLAUDE.md
-   про openTelegramLink). Best-effort и с коротким таймаутом — как
-   promisify() в src/storage.js: недоступная база не должна задержать
-   клиента, а провал не должен ни отменить запись (она уже сохранена
-   локально), ни помешать отправке сообщения мастеру.                */
+/** id вошедшего пользователя или null — для src/bookings.js. */
+export function currentUserId() {
+  return snapshot.status === "signed" ? userId : null;
+}
 
-function withTimeout(promise, ms) {
+/** Резолвится null, если promise не успел за ms или упал. */
+export function withTimeout(promise, ms) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), ms);
     promise.then(
@@ -275,85 +273,4 @@ function withTimeout(promise, ms) {
       }
     );
   });
-}
-
-/**
- * row — снэйк-кейс колонок bookings, без status/source (их проверяет
- *   политика bookings_insert_client).
- * @returns {Promise<boolean|null>} true — строка точно в базе (в том числе
- *   уже была: дубль client_token — это повтор того же insert); false —
- *   сервер отказал; null — неизвестно (таймаут, нет сети). Вызывающий
- *   кладёт это в запись как sv, и syncBookings() (src/sync.js) досылает
- *   заявку, чья судьба неизвестна.
- */
-export async function submitBooking(row) {
-  if (!supabase) return null;
-  const res = await withTimeout(
-    supabase.from("bookings").insert({ ...row, status: "new", source: "client" }),
-    3000
-  );
-  if (!res) return null;
-  if (!res.error) return true;
-  // 23505 — уникальный индекс bookings_client_token_uq: строка уже лежит.
-  return res.error.code === "23505";
-}
-
-/* ─── Статус своей заявки ────────────────────────────────────────
-   Мастер подтверждает заявку в кабинете, а у клиента запись лежит в
-   CloudStorage — без этого запроса «Мои записи» вечно показывали бы
-   «Ожидает подтверждения».
-
-   Идём через RPC booking_status (см. supabase/schema.sql), а не в
-   таблицу: анониму select по bookings не давали и не даём — функция
-   отдаёт только статус и только тех строк, чей client_token клиент
-   уже знает, потому что сам его и придумал.                        */
-
-/**
- * @param {string[]} tokens — client_token'ы своих записей.
- * @returns {Promise<Map<string,{status:string,cancelledBy:string,day?:string,
- *   start?:number,duration?:number,price?:number,serviceId?:string|null}>|null>}
- *   токен → статус, кто отменил ("client" | "master" | "") и текущие
- *   день/время/услуга строки — мастер могла перенести запись.
- *   null — «спросить не удалось» (нет сети, таймаут, Supabase не настроен);
- *   пустая Map — «спросили, таких строк нет». Вызывающий в обоих случаях
- *   обязан оставить прежний статус: пропавшая строка неотличима от
- *   заявки, чей best-effort insert не доехал.
- */
-export async function fetchBookingStatuses(tokens) {
-  if (!supabase || !tokens.length) return null;
-  const res = await withTimeout(
-    supabase.rpc("booking_status", { p_tokens: tokens }),
-    3000
-  );
-  if (!res || res.error || !Array.isArray(res.data)) return null;
-  return new Map(
-    res.data.map((r) => [
-      r.client_token,
-      {
-        status: r.status,
-        cancelledBy: r.cancelled_by ?? "",
-        day: r.day,
-        start: r.start_min,
-        duration: r.duration,
-        price: r.price,
-        serviceId: r.service_id,
-      },
-    ])
-  );
-}
-
-/* ─── Отмена своей записи ────────────────────────────────────────
-   RPC cancel_own_booking (schema.sql): строка остаётся со статусом
-   "cancelled", мастер видит её в «Заявках» → «Отмены», окно
-   освобождается для других клиентов. Best-effort, как submitBooking:
-   вызывается ДО sendToMaster, провал не мешает отмене на устройстве. */
-
-/** @returns {Promise<boolean>} true — сервер отметил отмену. */
-export async function cancelOwnBooking(token) {
-  if (!supabase || !token) return false;
-  const res = await withTimeout(
-    supabase.rpc("cancel_own_booking", { p_token: token }),
-    3000
-  );
-  return !!res && !res.error && res.data === true;
 }

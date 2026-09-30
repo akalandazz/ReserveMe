@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useMyBookings } from "../bookings.js";
 import { useContent } from "../content.js";
 import { isPast, labelForKey } from "../schedule.js";
-import { loadBookings } from "../storage.js";
 import { tgUser } from "../telegram.js";
 import { Icon, NavRow, PrimaryButton, Screen, TextButton, Title } from "../ui.jsx";
 
@@ -18,29 +17,13 @@ function menuItems(masterName) {
   ];
 }
 
-/** Предстоящие по возрастанию времени — порядок хранения произвольный.
- *  Отменённые мастером не считаются: они живут в «Мои записи» до «Убрать». */
-function sortedUpcoming(list) {
-  return list
-    .filter((b) => !isPast(b) && b.st !== "cancelled")
-    .sort((a, b) => (a.d + a.t < b.d + b.t ? -1 : 1));
-}
-
-export default function MenuScreen({ onOpen, toast, rev, email, onSignOut }) {
-  const [upcoming, setUpcoming] = useState([]);
+export default function MenuScreen({ onOpen, toast, email, onSignOut }) {
+  // Стор уже отсортирован по времени. Отменённые мастером не считаются:
+  // они видны только в «Мои записи».
+  const upcoming = useMyBookings().list.filter(
+    (b) => !isPast(b) && b.status !== "cancelled"
+  );
   const { settings } = useContent();
-
-  // rev растёт, когда синхронизация (App.jsx) поменяла статусы.
-  useEffect(() => {
-    // StrictMode в dev вызывает эффект дважды — флаг гасит гонку
-    let cancelled = false;
-    loadBookings().then((list) => {
-      if (!cancelled) setUpcoming(sortedUpcoming(list));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [rev]);
 
   const user = tgUser();
   const greeting = user?.first_name
@@ -61,10 +44,10 @@ export default function MenuScreen({ onOpen, toast, rev, email, onSignOut }) {
           </span>
           <span className="next-main">
             <span className="kicker">
-              Ближайшая запись · {next.st === "ok" ? "подтверждена" : "ожидает подтверждения"}
+              Ближайшая запись · {next.status === "ok" ? "подтверждена" : "ожидает подтверждения"}
             </span>
             <span className="next-line">
-              {labelForKey(next.d)}, {next.t}
+              {labelForKey(next.day)}, {next.time}
             </span>
           </span>
         </div>

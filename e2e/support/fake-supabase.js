@@ -1,6 +1,6 @@
 // Поддельный Supabase для e2e: Auth (вход, регистрация, refresh) и PostgREST —
 // ровно столько, сколько читают и пишут кабинет и мини-апп клиента
-// (контент, заявка, booking_status, cancel_own_booking).
+// (контент, заявка, свои записи клиента, cancel_own_booking).
 //
 // Тесты НИКОГДА не ходят в настоящий проект: в .env лежит боевая база
 // мастера, и тестовые клиенты оказались бы в её «Клиентах». Поэтому
@@ -107,7 +107,7 @@ export function bookingRow(id, fields) {
     comment: "",
     status: fields.status ?? "new",
     source: fields.source ?? "client",
-    client_token: fields.client_token ?? null,
+    user_id: fields.user_id ?? null,
     cancelled_by: fields.cancelled_by ?? "",
     cancel_seen: fields.cancel_seen ?? false,
     created_at: new Date().toISOString(),
@@ -138,6 +138,8 @@ export function clientRow(id, fields) {
  *  - changes   — каждый PATCH/DELETE ({ method, table, id, body });
  *  - rpcs      — каждый вызов /rest/v1/rpc ({ name, body });
  *  - users     — аккаунты Auth ({ id, email, password }), сюда же пишет signup;
+ *  - failBookingInsert — текст отказа guard_client_booking для вставки заявки
+ *    (null — вставка проходит);
  *  - profileWrites — каждая строка upsert в profiles ({ id, role });
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
  */
@@ -149,6 +151,7 @@ export async function installFakeSupabase(page) {
     inserts: [],
     changes: [],
     rpcs: [],
+    failBookingInsert: null,
     unhandled: [],
     nextId: 100,
   };
@@ -161,6 +164,16 @@ export async function installFakeSupabase(page) {
   });
 
   return state;
+}
+
+/** id вошедшего из Authorization: Bearer <fakeJwt>, или null (anon-ключ). */
+function requester(req) {
+  const token = (req.headers()["authorization"] ?? "").replace(/^Bearer /, "");
+  try {
+    return JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString()).sub ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function handle(route, state) {
@@ -233,6 +246,13 @@ async function handle(route, state) {
     return route.fulfill({ status: 201, headers: cors });
   }
 
+  // bookings — как RLS: мастер видит все строки, клиент — только свои
+  // (bookings_select_own, user_id = auth.uid()).
+  if (table === "bookings" && method === "GET" && requester(req) !== MASTER.id) {
+    const uid = requester(req);
+    return json(200, uid ? rows.filter((b) => b.user_id === uid) : []);
+  }
+
   if (rows && method === "GET") {
     const offset = Number(url.searchParams.get("offset") ?? 0);
     const limit = Number(url.searchParams.get("limit") ?? rows.length);
@@ -263,24 +283,21 @@ async function handle(route, state) {
     return json(201, wantsObject ? { id } : [{ id }]);
   }
 
-  // Заявка клиента из мини-аппа (submitBooking) — return=minimal, без тела.
+  // Заявка клиента из мини-аппа (createBooking) — .select().single(),
+  // в ответ строка целиком.
   if (table === "bookings" && method === "POST") {
     const body = req.postDataJSON();
     state.inserts.push({ table, body, headers: req.headers() });
-    // Уникальный индекс bookings_client_token_uq.
-    if (body.client_token && rows.some((b) => b.client_token === body.client_token)) {
-      return json(409, {
-        code: "23505",
-        message: 'duplicate key value violates unique constraint "bookings_client_token_uq"',
-        details: null,
-        hint: null,
-      });
+    if (state.failBookingInsert) {
+      return json(400, { code: "P0001", message: state.failBookingInsert, details: null, hint: null });
     }
-    // Как guard_client_booking(): длительность и цена — из services, не от клиента.
+    // Как guard_client_booking(): длительность и цена — из services, не от
+    // клиента, user_id — вошедший.
     const svc = state.tables.services?.find((s) => s.id === body.service_id);
     const guarded = svc ? { duration: svc.duration, price: svc.price, service_name: svc.name } : {};
-    rows.push(bookingRow(state.nextId++, { ...body, ...guarded }));
-    return route.fulfill({ status: 201, headers: cors });
+    const row = bookingRow(state.nextId++, { ...body, ...guarded, user_id: requester(req) });
+    rows.push(row);
+    return json(201, wantsObject ? row : [row]);
   }
 
   // update/delete из кабинета: всегда .eq("id", …).
@@ -299,30 +316,13 @@ async function handle(route, state) {
   // ─── RPC мини-аппа (schema.sql) ─────────────────────────────────
   const rpc = url.pathname.match(/^\/rest\/v1\/rpc\/([a-z_]+)$/)?.[1];
   const bookings = state.tables.bookings;
-  if (rpc === "booking_status" && method === "POST") {
-    const body = req.postDataJSON();
-    state.rpcs.push({ name: rpc, body });
-    return json(
-      200,
-      bookings
-        .filter((b) => b.client_token && body.p_tokens.includes(b.client_token))
-        .map((b) => ({
-          client_token: b.client_token,
-          status: b.status,
-          cancelled_by: b.cancelled_by,
-          day: b.day,
-          start_min: b.start_min,
-          duration: b.duration,
-          price: b.price,
-          service_id: b.service_id,
-        }))
-    );
-  }
   if (rpc === "cancel_own_booking" && method === "POST") {
     const body = req.postDataJSON();
     state.rpcs.push({ name: rpc, body });
+    const uid = requester(req);
     const b = bookings.find(
-      (x) => x.client_token === body.p_token && (x.status === "new" || x.status === "ok")
+      (x) =>
+        x.id === body.p_id && x.user_id === uid && (x.status === "new" || x.status === "ok")
     );
     if (b) Object.assign(b, { status: "cancelled", cancelled_by: "client", cancel_seen: false });
     return json(200, !!b);
