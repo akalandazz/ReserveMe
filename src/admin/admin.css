@@ -1901,18 +1901,28 @@ input:focus {
   color: var(--muted);
 }
 
-/* Предстоящие записи: «5 окт., 15:00» — дата и время. */
-.visit-date.is-wide {
-  width: auto;
-  white-space: nowrap;
-}
-
 .visit-service {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.visit-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.visit-tag {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--accent);
 }
 
 .visit-price {

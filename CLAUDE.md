@@ -254,7 +254,8 @@ seed, kept in the repo because the content is no longer in git otherwise.
   There is no separate approve/move/cancel UI in the day view anymore — that all lives
   in the sheet, next to the message the master copies for the client
   ([src/admin/messages.js](src/admin/messages.js)). The one exception is the trash
-  icon (day view card, and each «Прошлые записи» row in «Клиенты»): it reminds nobody
+  icon (day view card, and each «Предстоящие записи»/«Прошлые записи» row in
+  «Клиенты»): it reminds nobody
   to message the client — unlike the sheet's «Отменить запись», which does — except
   that an upcoming Mini App booking with a username opens the chat (see above), and,
   like every cabinet cancel, it only hard-deletes rows without a `user_id`
