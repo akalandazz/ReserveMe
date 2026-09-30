@@ -5,11 +5,19 @@ import { expect, test } from "../support/fixtures.js";
 // сам открывает чат с готовым текстом (notifyClient в src/admin/messages.js),
 // как клиент — мастеру. Без логина или без user_id — как раньше, тост.
 
-const AHEAD = 3;
+// Через 3 дня, но не в воскресенье: в fake-supabase оно выходное
+// (working_hours[0] = null), и панель дня вместо записей показывает
+// «Выходной по графику».
+const AHEAD = offsetDate(3).getDay() === 0 ? 4 : 3;
 
-function dayKey(daysAhead) {
+function offsetDate(daysAhead) {
   const d = new Date();
   d.setDate(d.getDate() + daysAhead);
+  return d;
+}
+
+function dayKey(daysAhead) {
+  const d = offsetDate(daysAhead);
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
