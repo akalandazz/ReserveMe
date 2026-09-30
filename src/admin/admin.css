@@ -458,6 +458,28 @@ input:focus {
   text-align: center;
 }
 
+/* «Аккаунт» над «Выйти» — e-mail вошедшего. Длинный адрес переносится,
+   а не раздвигает страницу вбок. */
+.account {
+  margin-top: 30px;
+}
+
+.account .eyebrow {
+  margin-top: 0;
+}
+
+.account-email {
+  display: block;
+  margin: 0 2px;
+  font-size: 14px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.account + .btn-text.signout {
+  margin-top: 12px;
+}
+
 .round-btn {
   display: grid;
   place-items: center;

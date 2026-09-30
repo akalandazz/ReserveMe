@@ -384,6 +384,15 @@ export default function AdminApp() {
 
                 <ScheduleSection settings={data.settings} onError={showError} />
 
+                {/* Кто вошёл — рядом с «Выйти»: аккаунт, а не имя мастера из
+                    settings (то — контент салона, его видят клиенты). */}
+                {session.email && (
+                  <div className="account">
+                    <span className="eyebrow">Аккаунт</span>
+                    <span className="account-email">{session.email}</span>
+                  </div>
+                )}
+
                 <button
                   className="btn-text danger signout"
                   type="button"
