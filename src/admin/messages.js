@@ -5,6 +5,7 @@
 // мастер отправляет сама, в тот канал, откуда клиент пишет.
 // Шаблоны клиента мастеру — в src/telegram.js.
 
+import { formatPrice } from "../money.js";
 import { labelForKey, toHHMM } from "../schedule.js";
 import { openChatWith } from "../telegram.js";
 import { canMessageClient } from "./api.js";
@@ -12,7 +13,7 @@ import { canMessageClient } from "./api.js";
 const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
 
 function card({ serviceName, day, startMin, price }) {
-  return `💅 ${serviceName}\n📅 ${labelForKey(day)}\n🕒 ${toHHMM(startMin)}\n💰 ${price} ₾`;
+  return `💅 ${serviceName}\n📅 ${labelForKey(day)}\n🕒 ${toHHMM(startMin)}\n💰 ${formatPrice(price)}`;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
+import { formatPrice } from "../../money.js";
 import { labelForKey, toHHMM } from "../../schedule.js";
 import { CHANNELS, addClientComment, deleteClient, deleteClientComment } from "../api.js";
 import {
@@ -211,7 +212,7 @@ export default function ClientsSection({
         ) : (
           <span className="visit-service">{b.service_name}</span>
         )}
-        <span className="visit-price">{b.price} ₾</span>
+        <span className="visit-price">{formatPrice(b.price)}</span>
         <button
           className="visit-del"
           type="button"

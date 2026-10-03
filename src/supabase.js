@@ -166,14 +166,19 @@ export function useSession() {
 
 const SIGN_IN_TIMEOUT_MS = 15_000;
 
-// Коды из тела ответа telegram-auth (401).
+// Коды из тела ответа telegram-auth (401, 500 not_configured) и "not_deployed" —
+// 404 шлюза, когда функции нет в проекте. Последние два «Повторить» не лечит.
+const NOT_SET_UP = "Вход не настроен на сервере. Сообщите мастеру.";
 const SIGN_IN_ERRORS = {
   expired: "Данные входа устарели. Закройте приложение и откройте его заново из Telegram.",
   invalid_init_data: "Telegram не подтвердил вход. Откройте приложение заново из Telegram.",
+  not_configured: NOT_SET_UP,
+  not_deployed: NOT_SET_UP,
 };
 
 /** Код ошибки из тела ответа функции (FunctionsHttpError), если есть. */
 async function functionError(error) {
+  if (error?.context?.status === 404) return "not_deployed";
   try {
     const body = await error?.context?.json?.();
     return body?.error ?? null;

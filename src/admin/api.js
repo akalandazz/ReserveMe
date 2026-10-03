@@ -68,8 +68,8 @@ export function validateServiceFields(s) {
   const name = String(s.name ?? "").trim();
   if (!name || name.length > 80) return "Введите название услуги";
   const price = Number(s.price);
-  if (!Number.isInteger(price) || price < 0 || price > 9999)
-    return "Цена — целое число от 0 до 9999";
+  if (!Number.isInteger(price) || price < 0 || price > 99999)
+    return "Цена — целое число от 0 до 99 999 ₽";
   const duration = Number(s.duration);
   if (!Number.isInteger(duration) || duration < 15 || duration > 600 || duration % 15 !== 0)
     return "Длительность — от 15 до 600 минут, кратно 15";

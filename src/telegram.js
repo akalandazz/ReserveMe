@@ -5,6 +5,7 @@
 // Контент читаем во время вызова, а не при загрузке модуля: имя и логин
 // мастера лежат в базе и меняются из админки прямо во время работы.
 import { contentSnapshot } from "./content.js";
+import { formatPrice } from "./money.js";
 
 export const tg = () => window.Telegram?.WebApp;
 
@@ -166,7 +167,7 @@ export function bookingMessage(b) {
     `📅 Дата: ${b.dateLabel}\n` +
     `🕒 Время: ${b.time}\n` +
     `⏳ Длительность: ${b.duration} мин\n` +
-    `💰 Стоимость: ${b.price} ₾` +
+    `💰 Стоимость: ${formatPrice(b.price)}` +
     (b.comment ? `\n\n💬 Комментарий: ${b.comment}` : "") +
     signature()
   );

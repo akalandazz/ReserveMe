@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { formatPrice } from "../../money.js";
 import { labelForKey, toHHMM } from "../../schedule.js";
 import { ackCancellation, approveBooking, cancelBooking, clientSeesStatus } from "../api.js";
 import { isBookingPast } from "../calendar.js";
@@ -39,7 +40,7 @@ function Cancellations({ cancellations, busy, busyThen, onError }) {
           <div className="request-card" key={b.id}>
             <div className="request-head">
               <p className="request-name">{b.service_name}</p>
-              <span className="request-price">{b.price} ₾</span>
+              <span className="request-price">{formatPrice(b.price)}</span>
             </div>
             <p className="request-meta">{metaLine(b)}</p>
             <p className="request-comment">Клиент отменил запись — время снова свободно.</p>
@@ -158,7 +159,7 @@ export default function RequestsSection({
             <div className={`request-card${declining ? " is-declining" : ""}`} key={b.id}>
               <div className="request-head">
                 <p className="request-name">{b.service_name}</p>
-                <span className="request-price">{b.price} ₾</span>
+                <span className="request-price">{formatPrice(b.price)}</span>
               </div>
               <p className="request-meta">{metaLine(b)}</p>
               {b.comment ? <p className="request-comment">«{b.comment}»</p> : null}

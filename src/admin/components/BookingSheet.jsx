@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatPrice } from "../../money.js";
 import { dateKey, labelForKey, toHHMM } from "../../schedule.js";
 import { copyText, openChatWith } from "../../telegram.js";
 import {
@@ -615,7 +616,7 @@ export default function BookingSheet({
             <span className="bk-service-name">{s.name}</span>
             <span className="bk-service-meta">{s.duration} мин</span>
           </span>
-          <span className="bk-service-price">{s.price} ₾</span>
+          <span className="bk-service-price">{formatPrice(s.price)}</span>
         </button>
       ))}
     </div>
@@ -741,8 +742,8 @@ export default function BookingSheet({
         },
         {
           k: "Стоимость",
-          v: `${sv.price} ₾`,
-          old: `${origView.price} ₾`,
+          v: formatPrice(sv.price),
+          old: formatPrice(origView.price),
           changed: sv.price !== origView.price,
         },
       ];
@@ -752,7 +753,7 @@ export default function BookingSheet({
       { k: "Услуга", v: sv.name, to: () => go("service") },
       { k: "Дата", v: labelForKey(st.d), to: () => go("day") },
       { k: "Время", v: `${toHHMM(st.t)}–${toHHMM(st.t + sv.duration)}`, to: () => go("time") },
-      { k: "Стоимость", v: `${sv.price} ₾`, to: () => go("service") },
+      { k: "Стоимость", v: formatPrice(sv.price), to: () => go("service") },
     ].map((r) => ({ ...r, act: "изм." }));
   };
 

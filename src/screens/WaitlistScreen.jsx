@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useContent } from "../content.js";
+import { formatPrice } from "../money.js";
 import { buildDays } from "../schedule.js";
 import {
   copyText,
@@ -42,7 +43,7 @@ export default function WaitlistScreen({ onBack, home }) {
     if (!service) return "";
     const chosen = openDays.filter((d) => days.includes(d.key));
     return waitlistMessage({
-      serviceName: `${service.name} (${service.price} ₾, ${service.duration} мин)`,
+      serviceName: `${service.name} (${formatPrice(service.price)}, ${service.duration} мин)`,
       daysLabel:
         chosen.length > 0
           ? chosen.map((d) => `${d.weekdayShort} ${d.dayMonth}`).join(", ")
@@ -104,7 +105,7 @@ export default function WaitlistScreen({ onBack, home }) {
             key={s.id}
             title={s.name}
             meta={`${s.duration} мин`}
-            price={`${s.price} ₾`}
+            price={formatPrice(s.price)}
             selected={serviceId === s.id}
             onClick={() => {
               haptic("select");
