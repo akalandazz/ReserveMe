@@ -17,7 +17,6 @@
 import { useSyncExternalStore } from "react";
 import { isPast, labelForKey, toHHMM, toMinutes } from "./schedule.js";
 import { NOT_CONFIGURED, currentUserId, supabase, withTimeout } from "./supabase.js";
-import { tgUser } from "./telegram.js";
 
 const SEEN_KEY = "vs_seen_v1";
 const COLS =
@@ -214,24 +213,37 @@ export function resetMyBookings() {
 
 /** Текст ошибки для клиента. Отказы guard_client_booking() (schema.sql)
  *  уже по-русски — их и показываем. */
-function writeError(res) {
+function writeError(res, fallback = "Не удалось сохранить заявку. Попробуйте ещё раз.") {
   if (!res) return "Нет связи с сервером. Попробуйте ещё раз.";
   if (res.error?.code === "P0001" && res.error.message) return res.error.message;
-  return "Не удалось сохранить заявку. Попробуйте ещё раз.";
+  // 42501 — сервер не признал запись своей или вход (403): не наш текст
+  // базы, а понятный клиенту.
+  if (res.error?.code === "42501") return "Нет доступа. Закройте приложение и откройте его заново.";
+  return fallback;
+}
+
+/** Свежая строка с сервера — сразу в стор и в «уже видел»: экран покажет
+ *  её без запроса, а следующая загрузка не примет её за изменение. */
+function storeRow(uid, row) {
+  const b = toBooking(row);
+  if (owner === uid && seen) {
+    seen = { ...seen, [b.id]: fingerprint(b) };
+    writeSeen(uid, seen);
+    publish(withList([...snapshot.list.filter((x) => x.id !== b.id), b], {}));
+  }
 }
 
 /**
  * Новая заявка. Вызывается из BookingScreen.submit() ДО sendToMaster
  * (openTelegramLink закрывает мини-апп) и ждёт ответа: без строки в
  * базе заявки нет — ни у мастера в кабинете, ни у клиента в «Мои записи».
- * Длительность, цену, название и user_id сервер всё равно перезапишет
- * (guard_client_booking).
+ * Длительность, цену, название, имя, юзернейм и user_id ставит сервер
+ * (guard_client_booking) — поэтому они и не отправляются.
  * @returns {Promise<{ ok: boolean, error: string|null }>}
  */
 export async function createBooking({ service, day, time, comment }) {
   const uid = currentUserId();
   if (!supabase || !uid) return { ok: false, error: NOT_CONFIGURED };
-  const u = tgUser();
   const res = await withTimeout(
     supabase
       .from("bookings")
@@ -242,8 +254,6 @@ export async function createBooking({ service, day, time, comment }) {
         price: service.price,
         service_id: service.id,
         service_name: service.name,
-        client_name: u ? [u.first_name, u.last_name].filter(Boolean).join(" ") : "",
-        client_username: u?.username ?? "",
         comment,
         status: "new",
         source: "client",
@@ -253,15 +263,31 @@ export async function createBooking({ service, day, time, comment }) {
     TIMEOUT_MS
   );
   if (!res || res.error || !res.data) return { ok: false, error: writeError(res) };
+  storeRow(uid, res.data);
+  return { ok: true, error: null };
+}
 
-  // Сразу в стор и в «уже видел»: главная покажет запись без запроса,
-  // а следующая загрузка не примет её за изменение.
-  const b = toBooking(res.data);
-  if (owner === uid && seen) {
-    seen = { ...seen, [b.id]: fingerprint(b) };
-    writeSeen(uid, seen);
-    publish(withList([...snapshot.list.filter((x) => x.id !== b.id), b], {}));
+/**
+ * Перенос своей записи — reschedule_own_booking (schema.sql): сервер
+ * проверяет, что запись своя и новое время есть в расписании, и
+ * возвращает её в «Заявки» (status "new"). Как и createBooking — ДО
+ * sendToMaster.
+ * @returns {Promise<{ ok: boolean, error: string|null }>}
+ */
+export async function rescheduleMyBooking({ id, day, time }) {
+  const uid = currentUserId();
+  if (!supabase || !uid) return { ok: false, error: NOT_CONFIGURED };
+  const res = await withTimeout(
+    supabase
+      .rpc("reschedule_own_booking", { p_id: id, p_day: day, p_start_min: toMinutes(time) })
+      .select(COLS)
+      .single(),
+    TIMEOUT_MS
+  );
+  if (!res || res.error || !res.data) {
+    return { ok: false, error: writeError(res, "Не удалось перенести запись. Попробуйте ещё раз.") };
   }
+  storeRow(uid, res.data);
   return { ok: true, error: null };
 }
 

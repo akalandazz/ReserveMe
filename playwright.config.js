@@ -23,9 +23,24 @@ export default defineConfig({
   projects: [
     {
       name: "mobile-chromium",
+      // UI против поддельного Supabase; unit и integration — свои проекты ниже.
+      testIgnore: ["unit/**", "integration/**"],
       // PW_CHANNEL=msedge / chrome — установленный браузер вместо скачанного Chromium.
       // trim(): в cmd `set PW_CHANNEL=msedge && …` пробел перед && попадает в значение.
       use: { ...devices["Pixel 7"], channel: process.env.PW_CHANNEL?.trim() || undefined },
+    },
+    {
+      // Проверка подписи initData — чистый Node, без браузера.
+      name: "unit",
+      testDir: "./e2e/unit",
+    },
+    {
+      // Edge Function telegram-auth + PostgREST + RLS на ЛОКАЛЬНОМ Supabase
+      // (Docker). Без SUPABASE_IT_URL тесты пропускаются — как поднять стек,
+      // см. шапку e2e/integration/support.js.
+      name: "integration",
+      testDir: "./e2e/integration",
+      fullyParallel: false,
     },
   ],
   webServer: {

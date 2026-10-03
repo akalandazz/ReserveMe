@@ -17,7 +17,7 @@ function menuItems(masterName) {
   ];
 }
 
-export default function MenuScreen({ onOpen, toast, email, onSignOut }) {
+export default function MenuScreen({ onOpen, toast, name, onSignOut }) {
   // Стор уже отсортирован по времени. Отменённые мастером не считаются:
   // они видны только в «Мои записи».
   const upcoming = useMyBookings().list.filter(
@@ -75,7 +75,7 @@ export default function MenuScreen({ onOpen, toast, email, onSignOut }) {
         <p className="note">{settings.workingHoursText}</p>
       )}
 
-      {email && <p className="note center">Вы вошли как {email}</p>}
+      {name && <p className="note center">Вы вошли как {name}</p>}
       <TextButton onClick={onSignOut}>Выйти</TextButton>
     </Screen>
   );

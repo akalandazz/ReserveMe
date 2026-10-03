@@ -1,80 +1,123 @@
-import { CLIENT } from "../support/fake-supabase.js";
-import { expect, test } from "../support/fixtures.js";
+import { CLIENT, initDataFor, installFakeSupabase } from "../support/fake-supabase.js";
+import { expect, test, withTelegram } from "../support/fixtures.js";
 
-// Мини-апп целиком — только для вошедших (App.jsx → AuthScreen). Роль
-// 'user' новому аккаунту ставит само приложение (ensureProfile в
-// src/supabase.js) — триггера на auth.users нет.
-// Здесь не фикстура miniapp: она входит заранее, а нам нужен гость.
+// Мини-апп целиком — только для вошедших (App.jsx → AuthScreen). Вход —
+// через Telegram: src/supabase.js шлёт initData в Edge Function
+// telegram-auth (здесь — поддельную, fake-supabase.js), формы нет.
+// Здесь не фикстура miniapp: она входит заранее, а нам нужен сам вход.
+// Подпись initData проверяют e2e/unit и e2e/integration — не здесь.
 
-test("гость видит только форму входа — без контента и без заявок", async ({ page, backend }) => {
+test("в обычном браузере — «Откройте в Telegram», без запросов входа", async ({ page, backend }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Откройте в Telegram" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Записаться" })).toHaveCount(0);
+  expect(backend.authCalls).toEqual([]);
   expect(backend.rpcs).toEqual([]);
 });
 
-test("регистрация даёт роль user и открывает главную", async ({ page, backend }) => {
+test("вход по initData: в функцию уходит только initData", async ({ page, backend }) => {
+  await withTelegram(page, CLIENT);
   await page.goto("/");
-  await page.getByRole("button", { name: "Нет аккаунта? Зарегистрироваться" }).click();
-  await page.getByLabel("E-mail").fill("new@e2e.test");
-  await page.getByLabel("Пароль", { exact: true }).fill("secret-1");
-  await page.getByLabel("Повторите пароль").fill("secret-1");
-  await page.getByRole("button", { name: "Зарегистрироваться" }).click();
 
-  await expect(page.getByText("Добро пожаловать!")).toBeVisible();
-  await expect(page.getByText("Вы вошли как new@e2e.test")).toBeVisible();
-  const created = backend.users.find((u) => u.email === "new@e2e.test");
-  await expect.poll(() => backend.profileWrites).toContainEqual({ id: created.id, role: "user" });
+  await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+  await expect(page.getByText(`Вы вошли как ${CLIENT.firstName}`)).toBeVisible();
+  // Ни роли, ни id, ни имени из initDataUnsafe — только подписанная строка.
+  expect(backend.authCalls).toEqual([{ initData: initDataFor(CLIENT.telegramId) }]);
 });
 
-test("несовпадающие пароли не уходят на сервер", async ({ page, backend }) => {
+test("первый вход нового пользователя — роль user, не мастер", async ({ page, backend }) => {
+  const newcomer = { telegramId: 3003, firstName: "Новый", username: "" };
+  await withTelegram(page, newcomer);
   await page.goto("/");
-  await page.getByRole("button", { name: "Нет аккаунта? Зарегистрироваться" }).click();
-  await page.getByLabel("E-mail").fill("new@e2e.test");
-  await page.getByLabel("Пароль", { exact: true }).fill("secret-1");
-  await page.getByLabel("Повторите пароль").fill("secret-2");
-  await page.getByRole("button", { name: "Зарегистрироваться" }).click();
 
-  await expect(page.getByRole("alert")).toHaveText("Пароли не совпадают");
-  expect(backend.users.some((u) => u.email === "new@e2e.test")).toBe(false);
+  await expect(page.getByText("Привет, Новый!")).toBeVisible();
+  const created = backend.users.find((u) => u.telegramId === 3003);
+  expect(backend.tables.profiles.find((p) => p.id === created.id)).toMatchObject({
+    telegram_id: 3003,
+    role: "user",
+  });
 });
 
-test("занятый e-mail — понятная ошибка", async ({ page, backend }) => {
+test("сессия не лежит в localStorage", async ({ page, backend }) => {
+  await withTelegram(page, CLIENT);
   await page.goto("/");
-  await page.getByRole("button", { name: "Нет аккаунта? Зарегистрироваться" }).click();
-  await page.getByLabel("E-mail").fill(CLIENT.email);
-  await page.getByLabel("Пароль", { exact: true }).fill("secret-1");
-  await page.getByLabel("Повторите пароль").fill("secret-1");
-  await page.getByRole("button", { name: "Зарегистрироваться" }).click();
+  await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
 
-  await expect(page.getByRole("alert")).toHaveText("Этот e-mail уже зарегистрирован — войдите");
-  expect(backend.users.filter((u) => u.email === CLIENT.email)).toHaveLength(1);
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }));
+  expect(stored).not.toContain("access_token");
+  expect(stored).not.toContain("e2e-refresh-");
+  expect(backend.authCalls).toHaveLength(1);
 });
 
-// backend — во всех тестах: без него подделка не стоит, и запросы уходят в сеть.
-test("неверный пароль — ошибка по-русски, остаёмся на входе", async ({ page, backend }) => {
+test("устаревший initData — понятная ошибка и «Повторить»", async ({ page, backend }) => {
+  await withTelegram(page, CLIENT, { initData: "e2e:expired" });
   await page.goto("/");
-  await page.getByLabel("E-mail").fill(CLIENT.email);
-  await page.getByLabel("Пароль", { exact: true }).fill("wrong");
-  await page.getByRole("button", { name: "Войти" }).click();
 
-  await expect(page.getByRole("alert")).toHaveText("Неверный e-mail или пароль");
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
-  // Без сессии строку роли не заводим.
-  expect(backend.profileWrites).toEqual([]);
+  await expect(page.getByRole("heading", { name: "Не удалось войти" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("Данные входа устарели");
+  await page.getByRole("button", { name: "Повторить" }).click();
+  await expect.poll(() => backend.authCalls.length).toBe(2);
+  await expect(page.getByRole("heading", { name: "Не удалось войти" })).toBeVisible();
 });
 
-test("вход и выход", async ({ page, backend }) => {
+test("неверный initData — без входа", async ({ page, backend }) => {
+  await withTelegram(page, CLIENT, { initData: "forged" });
   await page.goto("/");
-  await page.getByLabel("E-mail").fill(CLIENT.email);
-  await page.getByLabel("Пароль", { exact: true }).fill(CLIENT.password);
-  await page.getByRole("button", { name: "Войти" }).click();
-  await expect(page.getByText("Добро пожаловать!")).toBeVisible();
-  // Строка роли заводится и при входе — upsert с ignoreDuplicates.
-  await expect.poll(() => backend.profileWrites).toContainEqual({ id: CLIENT.id, role: "user" });
+  await expect(page.getByRole("alert")).toContainText("Telegram не подтвердил вход");
+  await expect(page.getByRole("button", { name: "Записаться" })).toHaveCount(0);
+  expect(backend.sessions.size).toBe(0);
+});
+
+test("выход отзывает сессию этого устройства; «Войти снова» — новый вход", async ({ page, backend }) => {
+  await withTelegram(page, CLIENT);
+  await page.goto("/");
+  await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
 
   await page.getByRole("button", { name: "Выйти" }).click();
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Вы вышли" })).toBeVisible();
+  // scope=local — только эта сессия; на других устройствах вход остаётся.
+  expect(backend.logouts).toHaveLength(1);
+  expect(backend.logouts[0].scope).toBe("local");
+  expect(backend.sessions.size).toBe(0);
+
+  await page.getByRole("button", { name: "Войти снова" }).click();
+  await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+  expect(backend.authCalls).toHaveLength(2);
+});
+
+test("два устройства одного Telegram-аккаунта — один пользователь, две сессии", async ({
+  browser,
+}) => {
+  const phone = await browser.newPage();
+  const desktop = await browser.newPage();
+  // Общая «база» на оба устройства: обработчик подделки читает поля
+  // своего state, поэтому второму подставляем таблицы первого.
+  const state = await installFakeSupabase(phone);
+  const second = await installFakeSupabase(desktop);
+  Object.assign(second, {
+    tables: state.tables,
+    users: state.users,
+    sessions: state.sessions,
+    nextId: 5000, // свои id сессий, без пересечений с первым
+  });
+
+  for (const p of [phone, desktop]) {
+    await withTelegram(p, CLIENT);
+    await p.goto("/");
+    await expect(p.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+  }
+  expect(state.tables.profiles.filter((p) => p.telegram_id === CLIENT.telegramId)).toHaveLength(1);
+  expect(state.users.filter((u) => u.telegramId === CLIENT.telegramId)).toHaveLength(1);
+  expect(state.sessions.size).toBe(2);
+  expect(new Set(state.sessions.values())).toEqual(new Set([CLIENT.id]));
+
+  // Выход с телефона не трогает десктоп.
+  await phone.getByRole("button", { name: "Выйти" }).click();
+  await expect(phone.getByRole("heading", { name: "Вы вышли" })).toBeVisible();
+  expect(state.sessions.size).toBe(1);
+  await expect(desktop.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+
+  expect([...state.unhandled, ...second.unhandled]).toEqual([]);
+  await phone.close();
+  await desktop.close();
 });

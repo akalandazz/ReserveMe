@@ -4,15 +4,23 @@ import {
   refreshAll,
   useContent,
 } from "../content.js";
-import { createBooking } from "../bookings.js";
+import { createBooking, rescheduleMyBooking } from "../bookings.js";
 import {
   buildDays,
   buildSlots,
   dayLabel,
   findDay,
+  labelForKey,
   serverBusyFor,
+  toMinutes,
 } from "../schedule.js";
-import { bookingMessage, copyText, haptic, sendToMaster } from "../telegram.js";
+import {
+  bookingMessage,
+  copyText,
+  haptic,
+  rescheduleMessage,
+  sendToMaster,
+} from "../telegram.js";
 import {
   Icon,
   OptionRow,
@@ -27,6 +35,22 @@ const CRUMB = "Запись";
 
 const SAVED_TOAST =
   "Заявка сохранена. Откройте Telegram, чтобы отправить сообщение.";
+const MOVED_TOAST =
+  "Запрос на перенос сохранён — мастер подтвердит новое время.";
+
+/**
+ * Занятость без самой переносимой записи: её окно в busy_slots есть
+ * (вьюха не знает, чья строка), и без этого сдвинуть запись на полчаса
+ * в пределах её же окна было бы нельзя. Убираем ровно одно совпадение.
+ */
+function withoutOwn(busy, was) {
+  if (!was) return busy;
+  const start = toMinutes(was.time);
+  const i = busy.findIndex(
+    (b) => b.day === was.day && b.start === start && b.duration === was.duration
+  );
+  return i < 0 ? busy : [...busy.slice(0, i), ...busy.slice(i + 1)];
+}
 
 // Сколько ждать сверки с базой перед отправкой. Дольше — клиент ждёт
 // кнопку; не дождались — сохраняем как есть (сверку сеть не блокирует,
@@ -55,7 +79,11 @@ export default function BookingScreen({
   const [copied, setCopied] = useState(false);
   // Сверка перед отправкой нашла, что данные на экране устарели.
   const [outdated, setOutdated] = useState(false);
-  const { settings, services, activeServices, daysOff, busy } = useContent();
+  const { settings, services, activeServices, daysOff, busy: allBusy } = useContent();
+  // Перенос своей записи («Перенести» в «Мои записи»): { id, day, time,
+  // duration } — какая запись и где она сейчас. null — новая заявка.
+  const moving = draft.reschedule ?? null;
+  const busy = useMemo(() => withoutOwn(allBusy, moving), [allBusy, moving]);
 
   // Все хуки вызываются безусловно — ветвление только в return,
   // иначе сработает react/rules-of-hooks.
@@ -91,6 +119,15 @@ export default function BookingScreen({
 
   const message = useMemo(() => {
     if (!service || !day || !draft.time) return "";
+    if (moving) {
+      return rescheduleMessage({
+        serviceName: service.name,
+        wasLabel: labelForKey(moving.day),
+        wasTime: moving.time,
+        dateLabel: dayLabel(day),
+        time: draft.time,
+      });
+    }
     return bookingMessage({
       serviceName: service.name,
       dateLabel: dayLabel(day),
@@ -99,7 +136,7 @@ export default function BookingScreen({
       price: service.price,
       comment: draft.comment.trim(),
     });
-  }, [service, day, draft.time, draft.comment]);
+  }, [service, day, draft.time, draft.comment, moving]);
 
   // Предупреждения шага подтверждения. Считаются здесь, а не в его
   // ветке рендера: submit() сравнивает с ними свежий ответ базы.
@@ -133,7 +170,7 @@ export default function BookingScreen({
     const freshSlots = buildSlots(
       freshDay,
       now ?? service,
-      serverBusyFor(snap.busy, freshDay.key, snap.settings),
+      serverBusyFor(withoutOwn(snap.busy, moving), freshDay.key, snap.settings),
       snap.settings
     );
     return !taken && !freshSlots.includes(draft.time);
@@ -188,13 +225,16 @@ export default function BookingScreen({
     // Сохраняем на сервере ДО отправки: openTelegramLink закрывает
     // мини-апп. Строка в bookings — единственная запись о заявке: её видит
     // мастер в кабинете и сам клиент в «Мои записи». Не сохранилась —
-    // сообщение не уходит, клиент видит ошибку и повторяет.
-    const res = await createBooking({
-      service,
-      day: day.key,
-      time: draft.time,
-      comment: draft.comment.trim(),
-    });
+    // сообщение не уходит, клиент видит ошибку и повторяет. Перенос — то
+    // же самое: сначала сервер, потом сообщение.
+    const res = moving
+      ? await rescheduleMyBooking({ id: moving.id, day: day.key, time: draft.time })
+      : await createBooking({
+          service,
+          day: day.key,
+          time: draft.time,
+          comment: draft.comment.trim(),
+        });
     if (!res.ok) {
       haptic("error");
       setSaveError(res.error);
@@ -204,7 +244,7 @@ export default function BookingScreen({
 
     haptic("success");
     const text = message;
-    home(SAVED_TOAST);
+    home(moving ? MOVED_TOAST : SAVED_TOAST);
     sendToMaster(text);
   };
 
@@ -233,13 +273,21 @@ export default function BookingScreen({
     );
   }
 
+  // Перенос начинается сразу с дня: услуга остаётся та же.
+  const total = moving ? 2 : 3;
+  const shift = moving ? 1 : 0;
+  const crumb = moving ? "Перенос записи" : CRUMB;
+
   if (step === "book:date") {
     return (
-      <Screen crumb={CRUMB} onBack={back}>
-        <Steps total={3} current={2} />
-        <p className="eyebrow step">Шаг 2 из 3</p>
-        <Title>Выберите день</Title>
-        <p className="sub">{service?.name ?? ""}</p>
+      <Screen crumb={crumb} onBack={back}>
+        <Steps total={total} current={2 - shift} />
+        <p className="eyebrow step">Шаг {2 - shift} из {total}</p>
+        <Title>{moving ? "Новый день" : "Выберите день"}</Title>
+        <p className="sub">
+          {service?.name ?? ""}
+          {moving && ` · сейчас: ${labelForKey(moving.day)}, ${moving.time}`}
+        </p>
         <div className="divided">
           {days.map((d) => {
             const free = d.isOpen
@@ -279,10 +327,10 @@ export default function BookingScreen({
 
   if (step === "book:time") {
     return (
-      <Screen crumb={CRUMB} onBack={back}>
-        <Steps total={3} current={3} />
-        <p className="eyebrow step">Шаг 3 из 3</p>
-        <Title>Выберите время</Title>
+      <Screen crumb={crumb} onBack={back}>
+        <Steps total={total} current={3 - shift} />
+        <p className="eyebrow step">Шаг {3 - shift} из {total}</p>
+        <Title>{moving ? "Новое время" : "Выберите время"}</Title>
         <p className="sub">
           {dayLabel(day)} · {service?.name ?? ""}
         </p>
@@ -321,12 +369,18 @@ export default function BookingScreen({
   // book:confirm
   return (
     <Screen
-      crumb={CRUMB}
+      crumb={crumb}
       onBack={back}
       footer={
         <>
           <PrimaryButton onClick={submit} disabled={sending || expired}>
-            {sending ? "Отправляем…" : saveError ? "Повторить" : "Отправить заявку"}
+            {sending
+              ? "Отправляем…"
+              : saveError
+                ? "Повторить"
+                : moving
+                  ? "Перенести запись"
+                  : "Отправить заявку"}
           </PrimaryButton>
           <TextButton onClick={copy}>
             {copied ? "Текст скопирован" : "Скопировать текст"}
@@ -334,7 +388,7 @@ export default function BookingScreen({
         </>
       }
     >
-      <Title>Подтвердите заявку</Title>
+      <Title>{moving ? "Подтвердите перенос" : "Подтвердите заявку"}</Title>
 
       {outdated && (
         <p className="notice" role="alert">
@@ -381,8 +435,16 @@ export default function BookingScreen({
           <dt>Услуга</dt>
           <dd>{service?.name}</dd>
         </div>
+        {moving && (
+          <div className="summary-row">
+            <dt>Было</dt>
+            <dd>
+              {labelForKey(moving.day)}, {moving.time}
+            </dd>
+          </div>
+        )}
         <div className="summary-row">
-          <dt>Дата</dt>
+          <dt>{moving ? "Станет" : "Дата"}</dt>
           <dd>{dayLabel(day)}</dd>
         </div>
         <div className="summary-row">
@@ -399,26 +461,32 @@ export default function BookingScreen({
         </div>
       </dl>
 
-      <label className="eyebrow" htmlFor="booking-comment">
-        Комментарий (необязательно)
-      </label>
-      <textarea
-        id="booking-comment"
-        className="field"
-        rows={3}
-        placeholder="Например: аллергия на… / приду с подругой"
-        value={draft.comment}
-        onChange={(e) => setDraft((d) => ({ ...d, comment: e.target.value }))}
-      />
+      {/* Перенос меняет только день и время — комментарий остаётся прежним. */}
+      {!moving && (
+        <>
+          <label className="eyebrow" htmlFor="booking-comment">
+            Комментарий (необязательно)
+          </label>
+          <textarea
+            id="booking-comment"
+            className="field"
+            rows={3}
+            placeholder="Например: аллергия на… / приду с подругой"
+            value={draft.comment}
+            onChange={(e) => setDraft((d) => ({ ...d, comment: e.target.value }))}
+          />
+        </>
+      )}
 
       <p className="notice">
-        Запись подтверждается только после ответа {settings.masterName} в
-        Telegram.
+        {moving
+          ? `Перенесённая запись снова ждёт подтверждения ${settings.masterName}.`
+          : `Запись подтверждается только после ответа ${settings.masterName} в Telegram.`}
       </p>
 
       <p className="eyebrow">Какие данные мы передаём</p>
       <p className="note">
-        Ваши имя и логин из Telegram, e-mail аккаунта, выбранные услугу, дату и время,
+        Ваши имя и логин из Telegram, выбранные услугу, дату и время,
         стоимость и комментарий (если вы его укажете) — мы отправим{" "}
         {settings.masterName} в Telegram и сохраним в базе заявок, чтобы она
         могла увидеть и подтвердить запись в своём кабинете.

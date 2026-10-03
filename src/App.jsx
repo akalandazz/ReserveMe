@@ -22,7 +22,10 @@ import ServicesScreen from "./screens/ServicesScreen.jsx";
 import WaitlistScreen from "./screens/WaitlistScreen.jsx";
 
 const HOME = "menu";
-const EMPTY_DRAFT = { service: null, dateKey: null, time: null, comment: "" };
+// reschedule — перенос своей записи ({ id, day, time, duration }), null —
+// новая заявка. Сбрасывается вместе со всем черновиком (home()) и при
+// старте новой записи.
+const EMPTY_DRAFT = { service: null, dateKey: null, time: null, comment: "", reschedule: null };
 // Период опроса — VITE_CLIENT_POLL_SECONDS (.env.example), по умолчанию 20 с.
 const POLL_MS = (Number(import.meta.env.VITE_CLIENT_POLL_SECONDS) || 20) * 1000;
 
@@ -147,11 +150,33 @@ function App() {
     (service) => {
       if (service) {
         // смена услуги обнуляет время: слот на 90 мин может не существовать для 120
-        setDraft((d) => ({ ...d, service, time: null }));
+        setDraft((d) => ({ ...d, service, time: null, reschedule: null }));
         push("book:date");
       } else {
+        setDraft((d) => ({ ...d, reschedule: null }));
         push("book:service");
       }
+    },
+    [push]
+  );
+
+  // «Перенести» в «Мои записи»: те же шаги, начиная с дня, с той же
+  // услугой. Сервер (reschedule_own_booking) сам проверит, что запись своя.
+  const startReschedule = useCallback(
+    (booking, service) => {
+      setDraft({
+        ...EMPTY_DRAFT,
+        service,
+        dateKey: booking.day,
+        comment: booking.comment,
+        reschedule: {
+          id: booking.id,
+          day: booking.day,
+          time: booking.time,
+          duration: booking.duration,
+        },
+      });
+      push("book:date");
     },
     [push]
   );
@@ -165,7 +190,7 @@ function App() {
   }, [home]);
 
   if (session.status === "unknown") return <BootLoading />;
-  if (!signed) return <AuthScreen />;
+  if (!signed) return <AuthScreen session={session} />;
 
   // Без контента рисовать нечего — даже имя мастера в крошке приходит из базы.
   if (!content.settings) {
@@ -197,6 +222,7 @@ function App() {
             home();
             push("book:service");
           }}
+          onReschedule={startReschedule}
         />
       );
     case "waitlist":
@@ -212,9 +238,9 @@ function App() {
     default:
       return (
         <MenuScreen
-          onOpen={push}
+          onOpen={(id) => (id === "book:service" ? startBooking() : push(id))}
           toast={toast}
-          email={session.email}
+          name={session.name}
           onSignOut={logout}
         />
       );

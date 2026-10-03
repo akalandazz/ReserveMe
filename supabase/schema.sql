@@ -8,18 +8,28 @@
 --  в src/data.js под гитом, теперь он живёт в облаке. Эта схема вместе
 --  с сидом — единственный способ воссоздать проект с нуля.
 --
---  ⚠️ ПОСЛЕ выполнения обязательны два шага в дашборде:
---    1. Authentication → Users → Add user: e-mail и пароль мастера,
---       обязательно галка «Auto Confirm User» (экрана подтверждения
---       почты в приложении нет).
---    2. Authentication → Sign In / Providers → Email →
---       ВЫКЛЮЧИТЬ «Enable sign ups».
---       Anon-ключ лежит в бандле открыто — границей безопасности служит
---       RLS. При открытой регистрации кто угодно заведёт себе аккаунт,
---       станет authenticated и перепишет прайс, адрес и логин мастера,
---       то есть перенаправит заявки клиентов себе. С таблицей bookings
---       ставки выше: authenticated-регистрация отдала бы чужому человеку
---       ещё и имена, комментарии и телефоны клиентов.
+--  Вход — только через Telegram: Edge Function telegram-auth
+--  (supabase/functions/telegram-auth) проверяет подпись initData токеном
+--  бота и выдаёт обычную сессию Supabase аккаунту, привязанному к
+--  Telegram user id (profiles.telegram_id). Паролей и писем нет.
+--
+--  ⚠️ После выполнения — шаги в дашборде:
+--    1. Authentication → Sign In / Providers: ВЫКЛЮЧИТЬ «Allow new users
+--       to sign up» и сам провайдер Email — вход по паролю и письмом
+--       становится невозможен. Функции это не мешает: admin generateLink
+--       + verifyOtp работают и с выключенным провайдером (проверено на
+--       локальном стеке, supabase/config.toml: [auth.email] enable_signup
+--       = false → «Email logins are disabled»). После деплоя войдите один
+--       раз из Telegram; если вход не проходит — включите провайдер обратно,
+--       оставив регистрацию выключенной.
+--    2. Authentication → Anonymous Sign-ins — выключить.
+--    3. Edge Functions → telegram-auth: секреты TELEGRAM_CLIENT_BOT_TOKEN
+--       и TELEGRAM_CABINET_BOT_TOKEN (см. supabase/functions/telegram-auth).
+--    4. Мастер один раз открывает кабинет (увидит «Нет доступа»), затем
+--       роль выдаётся руками — сниппет над is_master() ниже.
+--  Даже при открытой регистрации чужой e-mail-аккаунт ничего не может:
+--  каждое право проверяет is_telegram_user() — telegram_id в app_metadata
+--  JWT (его пишет только service role) и в profiles.
 -- ═══════════════════════════════════════════════════════════════
 
 -- ─── Настройки: ровно одна строка ──────────────────────────────
@@ -117,20 +127,51 @@ create table if not exists public.client_comments (
   created_at timestamptz not null default now()
 );
 
--- ─── Роли аккаунтов ──────────────────────────────────────────────
---  Клиенты мини-аппа теперь регистрируются сами (e-mail + пароль), и
---  «вошёл» больше не значит «мастер». Роль лежит здесь: 'user' — любой
---  клиент, 'master' — только мастер (выдаётся руками, см. is_master()).
+-- ─── Аккаунты и роли ─────────────────────────────────────────────
+--  Один аккаунт на Telegram user id — не на устройство, не на сессию и
+--  не на юзернейм: telegram_id уникален, и вход с телефона и с десктопа
+--  попадает в одну и ту же строку (и один auth.users.id).
+--  Роль: 'user' — любой клиент, 'master' — только мастер (выдаётся
+--  руками, см. is_master()).
 --
---  Триггера на auth.users нет — строку создаёт само приложение
---  (ensureProfile() в src/supabase.js) после регистрации или входа.
---  Отсутствующая строка равна 'user': is_master() требует явного
---  'master', так что незаписанная роль никому ничего не открывает.
+--  Пишет сюда ТОЛЬКО Edge Function telegram-auth (service role): заводит
+--  строку с 'user' при первом входе и обновляет имя/юзернейм из
+--  проверенного initData. Роль она не трогает никогда — ни при создании
+--  существующей строки, ни при обновлении. У authenticated нет ни одной
+--  политики на запись (см. RLS ниже).
+--  telegram_username/first_name/last_name — из ПРОВЕРЕННОГО initData,
+--  в отличие от initDataUnsafe на клиенте; оттуда их берёт заявка
+--  (guard_client_booking).
 create table if not exists public.profiles (
-  id         uuid primary key references auth.users(id) on delete cascade,
-  role       text not null default 'user' check (role in ('user', 'master')),
-  created_at timestamptz not null default now()
+  id                uuid primary key references auth.users(id) on delete cascade,
+  telegram_id       bigint not null,
+  role              text not null default 'user' check (role in ('user', 'master')),
+  telegram_username text not null default '',
+  first_name        text not null default '',
+  last_name         text not null default '',
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  last_login_at     timestamptz
 );
+
+-- Базы, где profiles завела ещё e-mail-версия. Строки без telegram_id —
+-- аккаунты с паролем, войти через Telegram они не могут; их надо
+-- убрать (supabase/reset-dev.sql), а не тихо оставить.
+alter table public.profiles add column if not exists telegram_id       bigint;
+alter table public.profiles add column if not exists telegram_username text not null default '';
+alter table public.profiles add column if not exists first_name        text not null default '';
+alter table public.profiles add column if not exists last_name         text not null default '';
+alter table public.profiles add column if not exists updated_at        timestamptz not null default now();
+alter table public.profiles add column if not exists last_login_at     timestamptz;
+do $$
+begin
+  if exists (select 1 from public.profiles where telegram_id is null) then
+    raise exception 'В profiles есть аккаунты без telegram_id (вход по e-mail). Сначала выполните supabase/reset-dev.sql.';
+  end if;
+  alter table public.profiles alter column telegram_id set not null;
+end
+$$;
+create unique index if not exists profiles_telegram_id_uq on public.profiles (telegram_id);
 
 create index if not exists client_comments_client_idx
   on public.client_comments (client_id, created_at desc);
@@ -225,6 +266,12 @@ alter table public.bookings add column if not exists client_token uuid;
 -- cancel_seen — мастер видела отмену клиента в «Заявках» («Понятно»).
 alter table public.bookings add column if not exists cancelled_by text not null default '';
 alter table public.bookings add column if not exists cancel_seen boolean not null default false;
+-- Кто СОЗДАЛ строку — в отличие от user_id, чья она. Заявка клиента:
+-- оба — он сам. Запись, которую мастер завела клиенту мини-аппа:
+-- user_id — клиент (он видит её в «Мои записи»), created_by — мастер.
+-- Ставит только триггер bookings_set_created_by (auth.uid()), что бы ни
+-- пришло в теле запроса.
+alter table public.bookings add column if not exists created_by uuid references auth.users(id) on delete set null;
 
 -- Проверка статуса вынесена из create table: там её не расширить на
 -- живой базе. Имя — то, что Postgres дал прежней inline-проверке.
@@ -328,6 +375,33 @@ create trigger clients_touch_updated_at
   before update on public.clients
   for each row execute function public.touch_updated_at();
 
+drop trigger if exists profiles_touch_updated_at on public.profiles;
+create trigger profiles_touch_updated_at
+  before update on public.profiles
+  for each row execute function public.touch_updated_at();
+
+-- ─── Создатель записи ────────────────────────────────────────────
+--  Для каждой вставки, чья бы она ни была (заявка клиента, функции
+--  мастера, прямой insert мастера): created_by — вызывающий, не тело
+--  запроса. Имя — после bookings_guard_client и bookings_link_client по
+--  алфавиту, но от них не зависит.
+create or replace function public.set_booking_created_by()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  new.created_by := auth.uid();
+  return new;
+end
+$$;
+
+drop trigger if exists bookings_set_created_by on public.bookings;
+create trigger bookings_set_created_by
+  before insert on public.bookings
+  for each row execute function public.set_booking_created_by();
+
 -- ─── Заявка клиента: сервер решает, что в ней лежит ─────────────
 --  Anon-политика проверяет только status/source/day, а остальные
 --  колонки аноним присылает какие хочет: длительность 600 минут на
@@ -346,11 +420,13 @@ create trigger clients_touch_updated_at
 --  две заявки на одно окно — обычное дело, их разбирает мастер.
 --
 --  Потолок max_per_hour на все заявки клиентов салона за скользящий
---  час: anon-ключ публичный, и без него скрипт закрыл бы клиентам всё
---  расписание через busy_slots за минуту. Потолок не отличает людей —
---  личность клиента (initDataUnsafe) не проверена, и пока её не
---  проверяет сервер, другого ключа для лимита нет. Поднимите число, если
---  настоящих заявок в час бывает больше.
+--  час: аккаунт Telegram заводит кто угодно, и без потолка скрипт с
+--  десятком аккаунтов закрыл бы клиентам всё расписание через
+--  busy_slots за минуту. Поднимите число, если настоящих заявок в час
+--  бывает больше.
+--
+--  Имя и юзернейм заявки — из profiles (проверенный initData), а не из
+--  тела запроса.
 --
 --  Отказ триггера клиент видит: createBooking (src/bookings.js) ждёт
 --  ответа, и без строки в базе сообщение мастеру не уходит.
@@ -368,14 +444,24 @@ create index if not exists bookings_client_created_idx
   on public.bookings (created_at)
   where source = 'client';
 
-create or replace function public.guard_client_booking()
-returns trigger
+-- ─── assert_client_slot(): то, что клиент вправе выбрать ─────────
+--  Одно правило для новой заявки (guard_client_booking) и переноса
+--  своей записи (reschedule_own_booking) — чтобы они не разошлись.
+--  Возвращает услугу: цену и длительность берут из неё, а не от клиента.
+--  Исполнять напрямую не может никто (revoke ниже) — только функции-
+--  владельцы (security definer), которые её вызывают.
+create or replace function public.assert_client_slot(
+  p_service_id text,
+  p_day        date,
+  p_start_min  integer
+)
+returns public.services
 language plpgsql
-security definer
+stable
+security invoker
 set search_path = ''
 as $$
 declare
-  max_per_hour constant integer := 30;
   svc       public.services;
   st        public.settings;
   hours     jsonb;
@@ -383,11 +469,7 @@ declare
   close_min integer;
   today     date := (now() at time zone 'Asia/Tbilisi')::date;
 begin
-  if new.source <> 'client' then
-    return new;
-  end if;
-
-  select * into svc from public.services s where s.id = new.service_id;
+  select * into svc from public.services s where s.id = p_service_id;
   if not found then
     raise exception 'Услуга не найдена';
   end if;
@@ -399,26 +481,57 @@ begin
 
   -- today - 1: список дней клиент строит по часам устройства, а у
   -- клиента западнее Тбилиси «сегодня» ещё вчерашнее по Тбилиси.
-  if new.day < today - 1 or new.day > today + st.booking_days_ahead then
+  if p_day < today - 1 or p_day > today + st.booking_days_ahead then
     raise exception 'День вне окна записи';
   end if;
 
-  if exists (select 1 from public.days_off d where d.day = new.day) then
+  if exists (select 1 from public.days_off d where d.day = p_day) then
     raise exception 'В этот день мастер не принимает';
   end if;
 
-  hours := st.working_hours -> extract(dow from new.day)::int::text;
+  hours := st.working_hours -> extract(dow from p_day)::int::text;
   if hours is null or jsonb_typeof(hours) <> 'object' then
     raise exception 'В этот день мастер не принимает';
   end if;
   open_min  := extract(epoch from (hours ->> 'from')::time)::int / 60;
   close_min := extract(epoch from (hours ->> 'to')::time)::int / 60;
-  if new.start_min < open_min
-     or new.start_min + svc.duration > close_min
-     or ((new.start_min - open_min) % st.slot_step_minutes <> 0
-         and new.start_min % st.slot_step_minutes <> 0) then
+  if p_start_min < open_min
+     or p_start_min + svc.duration > close_min
+     or ((p_start_min - open_min) % st.slot_step_minutes <> 0
+         and p_start_min % st.slot_step_minutes <> 0) then
     raise exception 'Такого времени нет в расписании';
   end if;
+
+  return svc;
+end
+$$;
+
+revoke all on function public.assert_client_slot(text, date, integer) from public, anon, authenticated;
+
+create or replace function public.guard_client_booking()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  max_per_hour constant integer := 30;
+  svc       public.services;
+  prof      public.profiles;
+begin
+  if new.source <> 'client' then
+    return new;
+  end if;
+
+  -- Заявка — только от аккаунта, вошедшего через Telegram. Политика
+  -- bookings_insert_client проверяет то же, но после триггера; здесь —
+  -- чтобы имя и юзернейм взять из проверенного профиля.
+  select * into prof from public.profiles p where p.id = auth.uid();
+  if not found or not public.is_telegram_user() then
+    raise exception 'Войдите через Telegram' using errcode = '42501';
+  end if;
+
+  svc := public.assert_client_slot(new.service_id, new.day, new.start_min);
 
   -- Лок — чтобы параллельные вставки не прошли потолок все разом,
   -- посчитав одно и то же число.
@@ -437,8 +550,10 @@ begin
   new.cancelled_by    := '';
   new.cancel_seen     := false;
   new.client_id       := null; -- выставит link_booking_client()
-  new.client_name     := left(btrim(coalesce(new.client_name, '')), 128);
-  new.client_username := left(btrim(coalesce(new.client_username, '')), 64);
+  -- Имя и юзернейм — из профиля (проверенный initData, см. telegram-auth),
+  -- а не из тела запроса: то, что прислал клиент, игнорируется.
+  new.client_name     := left(btrim(concat_ws(' ', nullif(prof.first_name, ''), nullif(prof.last_name, ''))), 128);
+  new.client_username := left(prof.telegram_username, 64);
   new.comment         := left(btrim(coalesce(new.comment, '')), 1000);
   new.created_at      := now();
   new.updated_at      := now();
@@ -459,9 +574,8 @@ create trigger bookings_guard_client
 --  напрямую. Заявка из мини-аппа несёт user_id (аккаунт клиента, его
 --  ставит guard_client_booking()) — клиент ищется только по нему; нет
 --  такого — заводим нового (юзернейм занят другим клиентом — без него).
---  Клиента, которого мастер завела раньше, по юзернейму НЕ подхватываем:
---  юзернейм не проверен, см. комментарий в теле. Имя — из Telegram, а
---  если его нет — начало e-mail до «@».
+--  Клиента, которого мастер завела раньше, по юзернейму НЕ подхватываем,
+--  см. комментарий в теле. Имя — из профиля Telegram (guard_client_booking).
 --  Строки без user_id (мастер завела сама) — как раньше: по юзернейму,
 --  потом по точному имени среди клиентов без юзернейма.
 --
@@ -482,41 +596,34 @@ set search_path = ''
 as $$
 declare
   found_id bigint;
-  mail     text;
 begin
   if new.source = 'master' and new.client_id is not null then
     return new;
   end if;
 
   if new.user_id is not null then
-    mail := left(coalesce(auth.jwt() ->> 'email', ''), 254);
-    if new.client_name = '' then
-      new.client_name := left(split_part(mail, '@', 1), 128);
-    end if;
-
-    -- Только по аккаунту. НЕ по telegram_username: юзернейм приходит из
-    -- initDataUnsafe (а через PostgREST — вообще из тела запроса), его
-    -- подставит кто угодно. Привязка «чужого» клиента к своему аккаунту
-    -- отдала бы злоумышленнику через bookings_select_own все записи,
-    -- которые мастер потом заведёт этому клиенту (create_master_booking
-    -- копирует clients.user_id), и право отменять их (cancel_own_booking).
+    -- Только по аккаунту. НЕ по telegram_username: даже проверенный
+    -- юзернейм владелец может сменить, а освободившийся займёт другой
+    -- человек. Привязка «чужого» клиента к своему аккаунту отдала бы
+    -- через bookings_select_own все записи, которые мастер потом заведёт
+    -- этому клиенту (create_master_booking копирует clients.user_id), и
+    -- право отменять и переносить их.
     select id into found_id from public.clients where user_id = new.user_id;
     if found_id is null then
-      insert into public.clients (name, telegram_username, user_id, email)
-      values (new.client_name, new.client_username, new.user_id, mail)
+      insert into public.clients (name, telegram_username, user_id)
+      values (new.client_name, new.client_username, new.user_id)
       -- юзернейм уже занят клиентом с другим аккаунтом — заводим без него
       on conflict (telegram_username) where telegram_username <> ''
       do nothing
       returning id into found_id;
       if found_id is null then
-        insert into public.clients (name, user_id, email)
-        values (new.client_name, new.user_id, mail)
+        insert into public.clients (name, user_id)
+        values (new.client_name, new.user_id)
         returning id into found_id;
       end if;
     else
       update public.clients
-         set name  = case when name = '' then new.client_name else name end,
-             email = case when email = '' then mail else email end
+         set name = case when name = '' then new.client_name else name end
        where id = found_id;
     end if;
     new.client_id = found_id;
@@ -561,21 +668,60 @@ create trigger bookings_link_client
 --  иначе её название не найдётся для прошлой записи.
 -- ═══════════════════════════════════════════════════════════════
 
--- ─── is_master(): кто считается мастером ─────────────────────────
---  Роль authenticated — не то же самое, что «мастер»: включённые в
---  дашборде Anonymous Sign-ins тоже выдают authenticated, любому, без
---  пароля. Поэтому каждое право на запись (и на чтение bookings/clients)
---  проверяет эту функцию, а не только роль: пользователь должен быть
---  не анонимным. И с тех пор как клиенты регистрируются сами — ещё и
---  иметь роль 'master' в profiles. Без этой проверки открытая
---  регистрация сделала бы мастером любого клиента.
+-- ─── Кто вошёл: аутентификация ───────────────────────────────────
+--  Роль authenticated — не то же самое, что «клиент мини-аппа»:
+--  Anonymous Sign-ins и e-mail-регистрация (если их включить в дашборде)
+--  тоже выдают authenticated. Поэтому каждое право клиента проверяет
+--  is_telegram_user(), а каждое право мастера — is_master() поверх неё.
 --
---  ⚠️ Порядок развёртывания: сначала profiles + строка мастера (ниже),
---  потом эта функция, и только потом — включённые Email signups.
---  Роль мастера выдаётся руками, в SQL-редакторе:
---    insert into public.profiles (id, role)
---    select id, 'master' from auth.users where email = '<e-mail мастера>'
---    on conflict (id) do update set role = 'master';
+--  telegram_id в app_metadata JWT пишет только Edge Function telegram-auth
+--  (admin API, service role): сам пользователь app_metadata не меняет.
+--  Совпадение с profiles.telegram_id привязывает сессию к аккаунту,
+--  который вошёл через проверенный initData.
+create or replace function public.jwt_telegram_id()
+returns bigint
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select case
+    when (auth.jwt() -> 'app_metadata' ->> 'telegram_id') ~ '^[0-9]{1,19}$'
+      then (auth.jwt() -> 'app_metadata' ->> 'telegram_id')::bigint
+  end
+$$;
+
+create or replace function public.is_telegram_user()
+returns boolean
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select coalesce(auth.jwt() ->> 'role', '') = 'authenticated'
+     and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
+     and exists (
+       select 1 from public.profiles p
+        where p.id = auth.uid()
+          and p.telegram_id = public.jwt_telegram_id()
+     )
+$$;
+
+grant execute on function public.jwt_telegram_id()  to anon, authenticated;
+grant execute on function public.is_telegram_user() to anon, authenticated;
+
+-- ─── is_master(): авторизация мастера ────────────────────────────
+--  Вошёл через Telegram И роль 'master' в profiles. Роль читается из
+--  базы на каждый запрос, а не из JWT: снятая роль действует сразу.
+--
+--  ⚠️ Роль мастера выдаётся руками, в SQL-редакторе. Мастер сначала один
+--  раз открывает кабинет из Telegram — так появляется её строка (с ролью
+--  'user', кабинет скажет «Нет доступа»), — затем:
+--    update public.profiles set role = 'master'
+--     where telegram_id = <Telegram user id мастера>;
+--  и открывает кабинет заново. Свой id мастер узнаёт у @userinfobot.
+--  Никакой запрос из приложения роль не меняет: у authenticated нет
+--  политик записи в profiles, а функция входа роль не пишет.
 --
 --  В политиках вызывается как (select public.is_master()) — так Postgres
 --  считает её один раз на запрос, а не на каждую строку. security
@@ -587,8 +733,7 @@ stable
 security invoker
 set search_path = ''
 as $$
-  select coalesce(auth.jwt() ->> 'role', '') = 'authenticated'
-     and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
+  select public.is_telegram_user()
      and exists (
        select 1 from public.profiles p
         where p.id = auth.uid() and p.role = 'master'
@@ -597,9 +742,11 @@ $$;
 
 grant execute on function public.is_master() to anon, authenticated;
 
--- ─── profiles: каждый видит и заводит только свою строку ────────────
---  insert — только себе и только 'user': поднять себе роль нельзя.
---  update/delete-политик нет вовсе — роль меняется только из SQL-редактора.
+-- ─── profiles: каждый видит только свою строку, не пишет никто ──────
+--  Пишет только service role (Edge Function telegram-auth), она RLS
+--  обходит. Ни insert-, ни update-, ни delete-политик нет — и права на
+--  запись отозваны целиком: поднять себе роль нельзя ни запросом, ни
+--  «первой строкой» до функции входа.
 alter table public.profiles enable row level security;
 
 drop policy if exists profiles_select_own  on public.profiles;
@@ -608,13 +755,7 @@ drop policy if exists profiles_insert_self on public.profiles;
 create policy profiles_select_own on public.profiles
   for select to authenticated using (id = (select auth.uid()));
 
-create policy profiles_insert_self on public.profiles
-  for insert to authenticated
-  with check (
-    id = (select auth.uid())
-    and role = 'user'
-    and coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false) = false
-  );
+revoke insert, update, delete, truncate on public.profiles from anon, authenticated;
 
 alter table public.settings    enable row level security;
 alter table public.services    enable row level security;
@@ -690,7 +831,7 @@ create policy bookings_insert_client on public.bookings
     status = 'new' and source = 'client'
     and user_id = (select auth.uid())
     and day >= (now() at time zone 'Asia/Tbilisi')::date - 1
-    and coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, false) = false
+    and (select public.is_telegram_user())
   );
 
 create policy bookings_insert_auth on public.bookings
@@ -715,8 +856,10 @@ drop function if exists public.cancel_own_booking(uuid);
 --  колонки — status, cancelled_by, cancel_seen — и только в строке, чей
 --  user_id совпадает с вызывающим. Мастер видит отмену в «Заявках» →
 --  «Отмены», окно освобождается для других клиентов.
---  Уже отменённую или прошедшую запись не трогаем (повторный тап —
---  не ошибка, а false).
+--  Чужая или несуществующая запись — ошибка 42501 (PostgREST: 403), одна
+--  и та же для обоих случаев, чтобы по ответу нельзя было перебрать
+--  чужие id. Уже отменённую или прошедшую свою запись не трогаем
+--  (повторный тап — не ошибка, а false).
 create or replace function public.cancel_own_booking(p_id bigint)
 returns boolean
 language plpgsql
@@ -724,23 +867,98 @@ volatile
 security definer
 set search_path = ''
 as $$
+declare
+  bk public.bookings;
 begin
+  if not public.is_telegram_user() then
+    raise exception 'Войдите через Telegram' using errcode = '42501';
+  end if;
+
+  select * into bk from public.bookings b where b.id = p_id for update;
+  if not found or bk.user_id is distinct from auth.uid() then
+    raise exception 'Нет доступа к этой записи' using errcode = '42501';
+  end if;
+  -- today - 1 — то же правило, что у вставки (bookings_insert_client).
+  if bk.status not in ('new', 'ok')
+     or bk.day < (now() at time zone 'Asia/Tbilisi')::date - 1 then
+    return false;
+  end if;
+
   update public.bookings b
      set status = 'cancelled',
          cancelled_by = 'client',
          cancel_seen = false
-   where b.id = p_id
-     and b.user_id = auth.uid()
-     and b.status in ('new', 'ok')
-     -- today - 1 — то же правило, что у вставки (bookings_insert_client).
-     and b.day >= (now() at time zone 'Asia/Tbilisi')::date - 1;
-  return found;
+   where b.id = p_id;
+  return true;
 end
 $$;
 
 -- Функции по умолчанию исполняемы для public — сужаем явно.
 revoke all on function public.cancel_own_booking(bigint) from public, anon;
 grant execute on function public.cancel_own_booking(bigint) to authenticated;
+
+-- ─── reschedule_own_booking(): клиент переносит свою запись ─────────
+--  Тот же приём, что у cancel_own_booking: update-политики у клиента
+--  нет, функция меняет ровно день/время (и производные от услуги) в
+--  СВОЕЙ строке — user_id из строки, а не из аргумента, id чужой записи
+--  даёт 42501 (403).
+--  Новое время проверяет assert_client_slot — то же правило, что у новой
+--  заявки. Перенос возвращает запись в «Заявки» (status 'new'): даже
+--  подтверждённую мастер подтверждает заново, пересечения с чужими
+--  заявками, как и у новой заявки, разбирает она. Цена и длительность —
+--  текущие из прайса, как у новой заявки.
+--  Возвращает строку целиком — клиенту можно читать свою строку и так
+--  (bookings_select_own).
+create or replace function public.reschedule_own_booking(
+  p_id        bigint,
+  p_day       date,
+  p_start_min integer
+)
+returns public.bookings
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  bk  public.bookings;
+  svc public.services;
+begin
+  if not public.is_telegram_user() then
+    raise exception 'Войдите через Telegram' using errcode = '42501';
+  end if;
+
+  select * into bk from public.bookings b where b.id = p_id for update;
+  if not found or bk.user_id is distinct from auth.uid() then
+    raise exception 'Нет доступа к этой записи' using errcode = '42501';
+  end if;
+  if bk.status not in ('new', 'ok')
+     or bk.day < (now() at time zone 'Asia/Tbilisi')::date - 1 then
+    raise exception 'Эту запись уже нельзя перенести';
+  end if;
+  if bk.service_id is null then
+    raise exception 'Этой услуги больше нет — отмените запись и запишитесь заново';
+  end if;
+
+  svc := public.assert_client_slot(bk.service_id, p_day, p_start_min);
+
+  update public.bookings b
+     set day          = p_day,
+         start_min    = p_start_min,
+         duration     = svc.duration,
+         price        = svc.price,
+         service_name = svc.name,
+         status       = 'new',
+         cancelled_by = '',
+         cancel_seen  = false
+   where b.id = p_id
+  returning * into bk;
+  return bk;
+end
+$$;
+
+revoke all on function public.reschedule_own_booking(bigint, date, integer) from public, anon;
+grant execute on function public.reschedule_own_booking(bigint, date, integer) to authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
 --  clients — как bookings: телефон и комментарии мастера не должны
@@ -877,6 +1095,12 @@ declare
   close_min integer;
   now_min   integer;
 begin
+  -- Под RLS клиента функция видела бы только его записи и посчитала бы
+  -- занятое свободным — не ошибка безопасности, но и не его функция.
+  if not public.is_master() then
+    raise exception 'Нет доступа' using errcode = '42501';
+  end if;
+
   select st.working_hours, st.slot_step_minutes into wh, step
     from public.settings st where st.id = 1;
   select sv.duration into dur from public.services sv where sv.id = p_service_id;
@@ -988,6 +1212,13 @@ declare
   cl     public.clients;
   new_id bigint;
 begin
+  -- RLS (clients, bookings) и так не пустит не-мастера, но явная
+  -- проверка — первая: 403 вместо «Клиент не найден», и функция не
+  -- полагается на то, что каждая её таблица закрыта политикой.
+  if not public.is_master() then
+    raise exception 'Нет доступа' using errcode = '42501';
+  end if;
+
   select * into svc from public.services sv where sv.id = p_service_id;
   if not found then
     raise exception 'Услуга не найдена — обновите страницу';
@@ -1082,6 +1313,10 @@ declare
   tgu   text := regexp_replace(coalesce(btrim(p_client_telegram), ''), '^@+', '');
   moved boolean;
 begin
+  if not public.is_master() then
+    raise exception 'Нет доступа' using errcode = '42501';
+  end if;
+
   if nm = '' then
     raise exception 'Укажите имя клиента.';
   end if;
@@ -1192,6 +1427,10 @@ as $$
 declare
   bk public.bookings;
 begin
+  if not public.is_master() then
+    raise exception 'Нет доступа' using errcode = '42501';
+  end if;
+
   select * into bk from public.bookings b where b.id = p_id;
   if not found then
     raise exception 'Заявка не найдена — обновите страницу';
@@ -1257,7 +1496,7 @@ declare
 begin
   -- security definer обходит RLS — право проверяем сами, как политики.
   if not public.is_master() then
-    raise exception 'Нет доступа';
+    raise exception 'Нет доступа' using errcode = '42501';
   end if;
 
   -- Блокировка строки: заявка, которую link_booking_client() сейчас

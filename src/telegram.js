@@ -8,7 +8,18 @@ import { contentSnapshot } from "./content.js";
 
 export const tg = () => window.Telegram?.WebApp;
 
+/** Непроверенные данные — только для показа (приветствие, подпись в сообщении). */
 export const tgUser = () => window.Telegram?.WebApp?.initDataUnsafe?.user ?? null;
+
+/**
+ * Подписанная Telegram строка initData — как есть, для входа (src/supabase.js
+ * → Edge Function telegram-auth, которая проверяет подпись). "" в обычном
+ * браузере и в Telegram, открывшем страницу не как мини-апп.
+ */
+export const initData = () => {
+  const v = window.Telegram?.WebApp?.initData;
+  return typeof v === "string" ? v : "";
+};
 
 /** Есть ли нативная кнопка «назад» — считаем один раз при загрузке модуля. */
 export const HAS_TG_BACK = Boolean(window.Telegram?.WebApp?.BackButton);
@@ -179,6 +190,17 @@ export function cancelMessage(b) {
     `Хочу отменить запись:\n\n` +
     `💅 ${b.serviceName}\n` +
     `📅 ${b.dateLabel}, 🕒 ${b.time}` +
+    signature()
+  );
+}
+
+export function rescheduleMessage(b) {
+  return (
+    `Здравствуйте, ${masterName()}!\n` +
+    `Хочу перенести запись:\n\n` +
+    `💅 ${b.serviceName}\n` +
+    `📅 Было: ${b.wasLabel}, ${b.wasTime}\n` +
+    `📅 Стало: ${b.dateLabel}, 🕒 ${b.time}` +
     signature()
   );
 }

@@ -140,6 +140,11 @@ test.describe("Мини-апп: записи с сервера", () => {
       status: "new",
       source: "client",
     });
+    // Имя, юзернейм и владельца ставит сервер — клиент их не присылает.
+    const sent = backend.inserts.find((i) => i.table === "bookings").body;
+    expect(sent).not.toHaveProperty("client_name");
+    expect(sent).not.toHaveProperty("client_username");
+    expect(sent).not.toHaveProperty("user_id");
     // Главная берёт запись из ответа вставки — без лишнего запроса.
     await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
     await expect(page.getByText("Заявка сохранена")).toBeVisible();
@@ -184,6 +189,54 @@ test.describe("Мини-апп: записи с сервера", () => {
         cancel_seen: false,
       });
       await expect(page.locator(".book-card")).toHaveCount(0);
+    });
+  });
+
+  test.describe("клиент переносит сам", () => {
+    test.use({ bookings: [mine(8, { status: "ok" })] });
+
+    /** «Мои записи» → «Перенести» → первый свободный день → первое окошко. */
+    async function reachMove(page) {
+      await openMyBookings(page);
+      await page.locator(".book-card").getByRole("button", { name: "Перенести" }).click();
+      await page.locator(".day-row:not([disabled])").first().click();
+      await page.locator(".slot").first().click();
+      await expect(page.getByRole("heading", { name: "Подтвердите перенос" })).toBeVisible();
+    }
+
+    test("перенос по id — на сервере до сообщения, запись снова ждёт мастера", async ({
+      miniapp,
+    }) => {
+      const { page, backend } = miniapp;
+      await stubChat(page);
+      await reachMove(page);
+      await expect(page.locator(".msg-preview")).toContainText("Хочу перенести запись");
+
+      await page.getByRole("button", { name: "Перенести запись" }).click();
+      await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
+
+      const calls = backend.rpcs.filter((r) => r.name === "reschedule_own_booking");
+      expect(calls).toHaveLength(1);
+      // Только id, день и минута — ни владельца, ни цены, ни статуса.
+      expect(Object.keys(calls[0].body).sort()).toEqual(["p_day", "p_id", "p_start_min"]);
+      expect(calls[0].body.p_id).toBe(8);
+      expect(backend.tables.bookings[0].status).toBe("new");
+      await expect(page.getByText("Запрос на перенос сохранён")).toBeVisible();
+      await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
+    });
+
+    test("сервер не признал запись своей (403) — сообщение не уходит", async ({ miniapp }) => {
+      const { page, backend } = miniapp;
+      await stubChat(page);
+      await reachMove(page);
+
+      // Запись «ушла» другому аккаунту, пока экран был открыт.
+      backend.tables.bookings[0].user_id = "00000000-0000-4000-8000-000000000099";
+      await page.getByRole("button", { name: "Перенести запись" }).click();
+
+      await expect(page.getByRole("alert")).toContainText("Нет доступа");
+      expect(await page.evaluate(() => window.__chats)).toBe(0);
+      expect(backend.tables.bookings[0].day).toBe(DAY);
     });
   });
 });
