@@ -1,3 +1,5 @@
+import { OPERATOR } from "../../src/legal.js";
+import { POLICY_VERSION } from "../../supabase/functions/_shared/consent.js";
 import { CLIENT, initDataFor, installFakeSupabase } from "../support/fake-supabase.js";
 import { expect, test, withTelegram } from "../support/fixtures.js";
 
@@ -25,17 +27,57 @@ test("вход по initData: в функцию уходит только initDa
   expect(backend.authCalls).toEqual([{ initData: initDataFor(CLIENT.telegramId) }]);
 });
 
-test("первый вход нового пользователя — роль user, не мастер", async ({ page, backend }) => {
+test("первый вход нового пользователя — сначала согласие на ПДн, потом роль user", async ({
+  page,
+  backend,
+}) => {
   const newcomer = { telegramId: 3003, firstName: "Новый", username: "" };
   await withTelegram(page, newcomer);
   await page.goto("/");
 
+  // 152-ФЗ: без согласия сервер не заводит аккаунт.
+  await expect(
+    page.getByRole("heading", { name: "Согласие на обработку персональных данных" })
+  ).toBeVisible();
+  expect(backend.users.find((u) => u.telegramId === 3003)).toBeUndefined();
+
+  await page.getByRole("button", { name: "Согласен" }).click();
   await expect(page.getByText("Привет, Новый!")).toBeVisible();
+  expect(backend.authCalls).toEqual([
+    { initData: initDataFor(3003) },
+    { initData: initDataFor(3003), consent: POLICY_VERSION },
+  ]);
   const created = backend.users.find((u) => u.telegramId === 3003);
   expect(backend.tables.profiles.find((p) => p.id === created.id)).toMatchObject({
     telegram_id: 3003,
     role: "user",
   });
+});
+
+test("политику можно прочитать до согласия, не входя", async ({ page, backend }) => {
+  await withTelegram(page, { telegramId: 3004, firstName: "Читатель", username: "" });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Политика обработки персональных данных" }).click();
+  await expect(page.getByRole("heading", { name: "8. Ваши права" })).toBeVisible();
+  await page.getByRole("button", { name: "Назад к согласию" }).click();
+  await expect(page.getByRole("button", { name: "Согласен" })).toBeVisible();
+  expect(backend.authCalls).toHaveLength(1);
+  expect(backend.sessions.size).toBe(0);
+});
+
+// backend — ставит подделку до первого запроса, хоть тест её и не читает.
+test("«Важная информация» — сведения об исполнителе и политика", async ({ page, backend: _backend }) => {
+  await withTelegram(page, CLIENT);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Важная информация" }).click();
+
+  await expect(page.getByText("Об исполнителе")).toBeVisible();
+  await expect(page.getByText(OPERATOR.inn)).toBeVisible();
+  await page.getByRole("button", { name: "Политика обработки персональных данных" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Политика обработки персональных данных" })
+  ).toBeVisible();
 });
 
 test("сессия не лежит в localStorage", async ({ page, backend }) => {

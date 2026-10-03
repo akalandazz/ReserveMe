@@ -13,6 +13,8 @@ export default defineConfig({
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
         admin: resolve(import.meta.dirname, 'admin.html'),
+        // Политика ПДн по постоянному адресу (@BotFather, кабинет).
+        privacy: resolve(import.meta.dirname, 'privacy.html'),
       },
     },
   },

@@ -6,8 +6,10 @@
 // PostgREST, RLS и auth.uid() — граница безопасности; функция только
 // решает, КТО вошёл.
 //
-// Что функция НЕ принимает: роль, id пользователя, имя — из тела берётся
-// ровно initData, остальное игнорируется. Роль не пишет никогда: строку
+// Что функция НЕ принимает: роль, id пользователя, имя — из тела берутся
+// ровно initData и consent (редакция политики ПДн, с которой клиент
+// согласился; без согласия — 403 consent_required, см. public.consents),
+// остальное игнорируется. Роль не пишет никогда: строку
 // profiles заводит с 'user' по умолчанию, а существующую не трогает
 // (мастера назначают руками, см. is_master() в schema.sql).
 //
@@ -31,6 +33,7 @@
 // (локально то же задаёт supabase/config.toml).
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { POLICY_VERSION } from "../_shared/consent.js";
 import { validateInitData } from "../_shared/telegram-init-data.js";
 
 const env = (name: string) => Deno.env.get(name)?.trim() ?? "";
@@ -136,6 +139,33 @@ async function findOrCreateUser(tg: TgUser): Promise<string> {
   return winner.data.id;
 }
 
+/**
+ * Согласие на обработку ПДн (152-ФЗ): есть ли строка на текущую редакцию
+ * политики. Без неё функция не заводит аккаунт и не пишет ничего —
+ * клиент показывает экран согласия и повторяет вход с { consent }.
+ */
+async function hasConsent(telegramId: number): Promise<boolean> {
+  const got = await admin
+    .from("consents")
+    .select("telegram_id")
+    .eq("telegram_id", telegramId)
+    .eq("version", POLICY_VERSION)
+    .maybeSingle();
+  must("consents.select", got.error);
+  return Boolean(got.data);
+}
+
+/** Повторное согласие на ту же редакцию — не ошибка, дата первого остаётся. */
+async function recordConsent(telegramId: number) {
+  const ins = await admin
+    .from("consents")
+    .upsert(
+      { telegram_id: telegramId, version: POLICY_VERSION },
+      { onConflict: "telegram_id,version", ignoreDuplicates: true },
+    );
+  must("consents.insert", ins.error);
+}
+
 /** Обычная сессия Supabase для аккаунта — штатными средствами Auth. */
 async function mintSession(userId: string, tg: TgUser) {
   const got = await admin.auth.admin.getUserById(userId);
@@ -183,9 +213,13 @@ Deno.serve(async (req) => {
   }
 
   let initData = "";
+  // Редакция политики, с которой клиент только что согласился на экране
+  // согласия. Чужая (устаревший бандл) — не согласие на текущую.
+  let consent = "";
   try {
     const body = await req.json();
     if (typeof body?.initData === "string") initData = body.initData;
+    if (typeof body?.consent === "string") consent = body.consent;
   } catch {
     // пустое или не-JSON тело — то же, что неверные данные
   }
@@ -194,6 +228,14 @@ Deno.serve(async (req) => {
   if (!user) return json(401, { error: expired ? "expired" : "invalid_init_data" });
 
   try {
+    // Согласие — до любой записи о человеке (152-ФЗ, ст. 9): без него ни
+    // auth.users, ни profiles не заводятся, а прежний аккаунт не входит,
+    // пока не согласится с новой редакцией.
+    if (consent === POLICY_VERSION) await recordConsent(user.id);
+    else if (!(await hasConsent(user.id))) {
+      return json(403, { error: "consent_required", version: POLICY_VERSION });
+    }
+
     const userId = await findOrCreateUser(user);
     const session = await mintSession(userId, user);
     // Имя и юзернейм — из проверенного initData; роль не трогаем.

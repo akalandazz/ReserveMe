@@ -195,6 +195,19 @@ seed, kept in the repo because the content is no longer in git otherwise.
   writes `role`. The app keeps that session **in memory only** (`persistSession: false`)
   and signs in again from fresh `initData` on every launch; logout is
   `signOut({ scope: "local" })` — this device's refresh token only.
+  - **Consent to personal-data processing (152-ФЗ) comes before the account.**
+    Without a `public.consents` row (`telegram_id`, `version`) for the current
+    `POLICY_VERSION` ([supabase/functions/_shared/consent.js](supabase/functions/_shared/consent.js)),
+    `telegram-auth` returns **403 `consent_required`** and writes nothing; the app
+    shows the consent screen (session status `"consent"`, `AuthScreen` / cabinet
+    `SignIn`) and `acceptConsent()` signs in again with `{ initData, consent }`.
+    Applies to the master too. `consents` is service-role only and keyed by
+    Telegram id so it outlives `delete_client`. All legal text and the operator's
+    details live in [src/legal.js](src/legal.js) (shared, no React; **placeholders
+    until the master's details arrive**) — rendered by the consent screens,
+    «Об исполнителе» in «Важная информация», the `privacy` screen and the
+    standalone `privacy.html` (third Vite entry, the URL for @BotFather). A
+    substantive change to the policy text means bumping `POLICY_VERSION`.
   - **Authentication in SQL:** `is_telegram_user()` — `authenticated`, not anonymous,
     and `profiles.telegram_id` equals the JWT's `app_metadata.telegram_id` (writable
     only by the service role). Every client write checks it, so an e-mail/password or

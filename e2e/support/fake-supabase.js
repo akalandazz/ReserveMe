@@ -14,6 +14,8 @@
 // (telegram-web-app.js, Google Fonts), обрывается — как в браузере без
 // сети, где window.Telegram и так undefined.
 
+import { POLICY_VERSION } from "../../supabase/functions/_shared/consent.js";
+
 export const SUPABASE_URL = "https://e2e-project.supabase.invalid";
 export const ANON_KEY = "e2e-anon-key";
 
@@ -182,6 +184,8 @@ export function clientRow(id, fields) {
  *  - users     — аккаунты ({ id, telegramId, firstName, username }), сюда же
  *    telegram-auth дописывает новых;
  *  - authCalls — тела каждого вызова telegram-auth;
+ *  - consents  — согласия на обработку ПДн ("<telegram id>:<редакция>"), как
+ *    public.consents; MASTER и CLIENT уже согласились, новые — нет;
  *  - logouts   — каждый /auth/v1/logout ({ scope, sid });
  *  - sessions  — выданные сессии (sid → user id); logout удаляет свою;
  *  - failBookingInsert — текст отказа guard_client_booking для вставки заявки
@@ -193,6 +197,7 @@ export async function installFakeSupabase(page) {
     tables: seed(),
     users: [{ ...MASTER }, { ...CLIENT }],
     authCalls: [],
+    consents: new Set([MASTER, CLIENT].map((u) => `${u.telegramId}:${POLICY_VERSION}`)),
     logouts: [],
     sessions: new Map(),
     inserts: [],
@@ -261,6 +266,13 @@ async function handle(route, state) {
     if (body.initData === "e2e:expired") return json(401, { error: "expired" });
     const tgId = Number(/^e2e:(\d+)$/.exec(body.initData ?? "")?.[1]);
     if (!tgId) return json(401, { error: "invalid_init_data" });
+
+    // Согласие на ПДн — до аккаунта, как в настоящей функции.
+    const consentKey = `${tgId}:${POLICY_VERSION}`;
+    if (body.consent === POLICY_VERSION) state.consents.add(consentKey);
+    else if (!state.consents.has(consentKey)) {
+      return json(403, { error: "consent_required", version: POLICY_VERSION });
+    }
 
     let user = state.users.find((u) => u.telegramId === tgId);
     if (!user) {

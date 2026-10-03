@@ -15,6 +15,9 @@
 // Никогда не направляйте их на проект из .env.
 
 import { createHmac, randomInt } from "node:crypto";
+import { POLICY_VERSION } from "../../supabase/functions/_shared/consent.js";
+
+export { POLICY_VERSION };
 
 export const IT = {
   url: process.env.SUPABASE_IT_URL?.replace(/\/$/, "") ?? "",
@@ -79,9 +82,16 @@ export async function api(path, { method = "GET", token, body, key = IT.anon, he
 /** Запрос от service role — только для подготовки и проверки состояния. */
 export const admin = (path, opts = {}) => api(path, { ...opts, key: IT.service, token: IT.service });
 
-/** Вход через Edge Function. body — дополнительные поля тела (их функция обязана игнорировать). */
+/**
+ * Вход через Edge Function — с согласием на текущую редакцию политики ПДн,
+ * как после «Согласен». body — дополнительные поля тела (их функция обязана
+ * игнорировать); { consent: undefined } — вход без согласия.
+ */
 export const login = (initData, body = {}) =>
-  api("/functions/v1/telegram-auth", { method: "POST", body: { initData, ...body } });
+  api("/functions/v1/telegram-auth", {
+    method: "POST",
+    body: { initData, consent: POLICY_VERSION, ...body },
+  });
 
 /** Вошедший пользователь: { tg, token, refresh, uid }. */
 export async function signIn(user, opts) {

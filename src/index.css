@@ -515,6 +515,47 @@ button {
   text-wrap: pretty;
 }
 
+/* ─── Юридический текст: согласие, политика, «Об исполнителе» ──── */
+
+.legal {
+  margin-top: 18px;
+  font-size: 14px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.legal h2 {
+  margin: 22px 0 6px;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.legal p,
+.legal ul {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.legal ul {
+  padding-left: 18px;
+}
+
+.legal dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.legal dt {
+  color: var(--muted);
+}
+
+.legal dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 /* ─── Строка дня ──────────────────────────────────────────────── */
 
 .day-row {
