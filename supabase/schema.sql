@@ -768,6 +768,26 @@ create policy profiles_select_own on public.profiles
 
 revoke insert, update, delete, truncate on public.profiles from anon, authenticated;
 
+-- ─── Согласия на обработку персональных данных (152-ФЗ, ст. 9) ──────
+--  Доказательство согласия: кто (Telegram id), на какую редакцию политики
+--  (supabase/functions/_shared/consent.js) и когда. Пишет только
+--  telegram-auth (service role) — ДО того, как заведёт аккаунт: без строки
+--  на текущую редакцию функция отвечает 403 consent_required и ничего не
+--  сохраняет.
+--  Ключ — telegram_id, а не auth.users.id: строка должна пережить удаление
+--  аккаунта и клиента (delete_client), иначе после отзыва согласия нечем
+--  подтвердить, что до отзыва обработка была законной. Ни читать, ни
+--  писать её не может никто, кроме service role.
+create table if not exists public.consents (
+  telegram_id bigint      not null,
+  version     text        not null,
+  accepted_at timestamptz not null default now(),
+  primary key (telegram_id, version)
+);
+
+alter table public.consents enable row level security;
+revoke all on public.consents from anon, authenticated;
+
 alter table public.settings    enable row level security;
 alter table public.services    enable row level security;
 alter table public.days_off    enable row level security;

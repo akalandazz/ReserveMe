@@ -21,6 +21,7 @@
 
 import { useSyncExternalStore } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { POLICY_VERSION } from "./legal.js";
 import { initData } from "./telegram.js";
 
 const URL = import.meta.env.VITE_SUPABASE_URL;
@@ -72,6 +73,8 @@ export const NOT_CONFIGURED =
      "unknown"     — идёт вход;
      "signed"      — вошёл;
      "no-telegram" — открыто не как мини-апп (обычный браузер): входить нечем;
+     "consent"     — сервер ждёт согласия на обработку ПДн (152-ФЗ) с
+                     текущей редакцией политики: экран согласия → acceptConsent();
      "guest"       — вышел сам или сессию не удалось продлить;
      "error"       — вход не удался, error — текст для экрана.
    role: null — ещё не прочитана, "user" | "master", "error" — прочитать
@@ -175,6 +178,8 @@ const SIGN_IN_ERRORS = {
   not_configured: NOT_SET_UP,
   not_deployed: NOT_SET_UP,
 };
+const STALE_POLICY =
+  "Политика обработки данных обновилась. Закройте приложение и откройте его заново из Telegram.";
 
 /** Код ошибки из тела ответа функции (FunctionsHttpError), если есть. */
 async function functionError(error) {
@@ -190,8 +195,22 @@ async function functionError(error) {
 /**
  * Войти по initData текущего запуска. Вызывают initAuth() при старте и
  * экраны входа («Повторить», «Войти снова»). Ничего не бросает.
+ * Аргументов не берёт — экраны отдают её прямо в onClick.
  */
-export async function signInWithTelegram() {
+export function signInWithTelegram() {
+  return signIn(false);
+}
+
+/**
+ * «Согласен» на экране согласия: тот же вход, но с редакцией политики,
+ * которую клиент только что видел, — telegram-auth запишет согласие до
+ * того, как заведёт аккаунт.
+ */
+export function acceptConsent() {
+  return signIn(true);
+}
+
+async function signIn(consent) {
   if (!supabase) {
     publish(signedOut("error", NOT_CONFIGURED));
     return;
@@ -204,8 +223,9 @@ export async function signInWithTelegram() {
   const mine = ++signInSeq;
   publish(signedOut("unknown"));
 
+  const body = consent ? { initData: data, consent: POLICY_VERSION } : { initData: data };
   const res = await withTimeout(
-    supabase.functions.invoke("telegram-auth", { body: { initData: data } }),
+    supabase.functions.invoke("telegram-auth", { body }),
     SIGN_IN_TIMEOUT_MS
   );
   if (mine !== signInSeq) return;
@@ -216,6 +236,12 @@ export async function signInWithTelegram() {
   if (res.error || !res.data?.access_token || !res.data?.refresh_token) {
     const code = res.error ? await functionError(res.error) : null;
     if (mine !== signInSeq) return;
+    // Согласие с ЭТОЙ редакцией сервер уже получил бы — значит, у сервера
+    // новее, а бандл старый: снова показывать тот же текст бессмысленно.
+    if (code === "consent_required") {
+      publish(consent ? signedOut("error", STALE_POLICY) : signedOut("consent"));
+      return;
+    }
     publish(signedOut("error", SIGN_IN_ERRORS[code] ?? "Не удалось войти. Попробуйте ещё раз."));
     return;
   }

@@ -4,6 +4,7 @@ import {
   ENABLED,
   IT,
   LOCAL_ONLY,
+  POLICY_VERSION,
   admin,
   api,
   claims,
@@ -130,6 +131,56 @@ test.describe("telegram-auth: вход", () => {
     const sa = await signIn(a);
     const sb = await signIn(b);
     expect(sb.uid).not.toBe(sa.uid);
+  });
+});
+
+test.describe("telegram-auth: согласие на обработку ПДн (152-ФЗ)", () => {
+  const consentsOf = async (telegramId) =>
+    (await admin(`/rest/v1/consents?telegram_id=eq.${telegramId}&select=*`)).data;
+
+  test("без согласия — 403 consent_required, и о человеке ничего не сохранено", async () => {
+    const user = tgUser("NoConsent");
+    const res = await login(signInitData(user), { consent: undefined });
+
+    expect(res).toEqual({
+      status: 403,
+      data: { error: "consent_required", version: POLICY_VERSION },
+    });
+    expect(await profileOf(user.id)).toEqual([]);
+    expect(await consentsOf(user.id)).toEqual([]);
+  });
+
+  test("согласие на чужую (старую) редакцию — не согласие", async () => {
+    const user = tgUser("OldPolicy");
+    const res = await login(signInitData(user), { consent: "2000-01-01" });
+    expect(res.status).toBe(403);
+    expect(await profileOf(user.id)).toEqual([]);
+  });
+
+  test("согласие записано один раз; дальше вход без него", async () => {
+    const user = tgUser("Agreed");
+    await signIn(user);
+    const [row] = await consentsOf(user.id);
+    expect(row).toMatchObject({ telegram_id: user.id, version: POLICY_VERSION });
+
+    const again = await login(signInitData(user), { consent: undefined });
+    expect(again.status).toBe(200);
+    await signIn(user);
+    expect(await consentsOf(user.id)).toEqual([row]);
+  });
+
+  test("ни anon, ни клиент не читают и не пишут consents", async () => {
+    const s = await signIn(tgUser("Peek"));
+    for (const token of [undefined, s.token]) {
+      const read = await api("/rest/v1/consents?select=*", { token });
+      expect(read.status).toBeGreaterThanOrEqual(401);
+      const write = await api("/rest/v1/consents", {
+        method: "POST",
+        token,
+        body: { telegram_id: 1, version: POLICY_VERSION },
+      });
+      expect(write.status).toBeGreaterThanOrEqual(401);
+    }
   });
 });
 

@@ -18,6 +18,7 @@ import InfoScreen from "./screens/InfoScreen.jsx";
 import LocationScreen from "./screens/LocationScreen.jsx";
 import MenuScreen from "./screens/MenuScreen.jsx";
 import MyBookingsScreen from "./screens/MyBookingsScreen.jsx";
+import PrivacyScreen from "./screens/PrivacyScreen.jsx";
 import ServicesScreen from "./screens/ServicesScreen.jsx";
 import WaitlistScreen from "./screens/WaitlistScreen.jsx";
 
@@ -234,7 +235,15 @@ function App() {
     case "contact":
       return <ContactScreen onBack={back} />;
     case "info":
-      return <InfoScreen onBack={back} onContact={() => push("contact")} />;
+      return (
+        <InfoScreen
+          onBack={back}
+          onContact={() => push("contact")}
+          onPrivacy={() => push("privacy")}
+        />
+      );
+    case "privacy":
+      return <PrivacyScreen onBack={back} />;
     default:
       return (
         <MenuScreen
