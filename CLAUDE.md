@@ -140,7 +140,7 @@ Consequences that constrain every change here:
 
 Shared as plain imports (both apps use these as-is, no duplication):
 [src/supabase.js](src/supabase.js), [src/theme.js](src/theme.js),
-[src/telegram.js](src/telegram.js), and from [src/schedule.js](src/schedule.js) the
+[src/telegram.js](src/telegram.js), [src/money.js](src/money.js), and from [src/schedule.js](src/schedule.js) the
 date/time helpers (`dateKey`, `toMinutes`, `toHHMM`, `labelForKey`) — but **not**
 `buildSlots`/`buildDays`/`serverBusyFor`/`isPast`, which are shaped around the client's
 booking flow, not the cabinet's day/week/month calendar
@@ -408,8 +408,13 @@ once those bundles are gone.
 
 ## Conventions
 
-- UI copy is Russian (`<html lang="ru">`); prices are Georgian lari (`₾`). Keep new
-  strings in Russian, in both apps.
+- UI copy is Russian (`<html lang="ru">`); prices are whole Russian rubles (`₽`).
+  Keep new strings in Russian, in both apps. Every price on screen and in a message
+  goes through `formatPrice()` ([src/money.js](src/money.js) → `"2 500 ₽"`, with
+  non-breaking spaces), and the bare symbol through `CURRENCY` — never type `₽` by hand.
+  The price limit (0–99 999) lives in three places that must agree:
+  `services_price_check`, `bookings_price_check` (`schema.sql`) and
+  `validateServiceFields()` in `src/admin/api.js`.
 - Both [src/index.css](src/index.css) and [src/admin/admin.css](src/admin/admin.css)
   define **their own** token layer at the top of the file: warm neutral surfaces plus a
   single `--accent`, written out **twice** — once for light, once for dark

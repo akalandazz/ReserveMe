@@ -1,3 +1,4 @@
+import { formatPrice } from "../../money.js";
 import { labelForKey, toHHMM } from "../../schedule.js";
 import {
   blockSlot,
@@ -116,7 +117,7 @@ export default function DayPanel({
                           <span className="booking-name">
                             {r.booking.client_name || "Клиент"} · {r.booking.service_name}
                           </span>
-                          <span className="booking-price">{r.booking.price} ₾</span>
+                          <span className="booking-price">{formatPrice(r.booking.price)}</span>
                         </span>
                         <span className="booking-meta">
                           {r.time}–{toHHMM(r.booking.start_min + r.booking.duration)}

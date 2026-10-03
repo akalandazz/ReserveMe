@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CURRENCY } from "../../money.js";
 import {
   createService,
   deleteService,
@@ -138,7 +139,7 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
                     value={s.price}
                     onChange={(e) => edit(s.id, "price", e.target.value)}
                   />
-                  <span className="unit-suffix">₾</span>
+                  <span className="unit-suffix">{CURRENCY}</span>
                 </span>
               </span>
             </span>

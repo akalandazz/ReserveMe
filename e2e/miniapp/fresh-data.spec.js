@@ -57,7 +57,7 @@ test.describe("Мини-апп: свежие данные", () => {
     backend.tables.services[0].price = 75;
 
     await page.getByRole("button", { name: /Услуги и цены/ }).click();
-    await expect(page.locator(".list-row")).toContainText("75 ₾");
+    await expect(page.locator(".list-row")).toContainText("75 ₽");
   });
 
   test("цена поменялась перед отправкой — заявка не уходит, пока клиент не увидит новую", async ({
@@ -66,13 +66,13 @@ test.describe("Мини-апп: свежие данные", () => {
     const { page, backend } = miniapp;
     await stubChat(page);
     await reachConfirm(page);
-    await expect(page.locator(".summary")).toContainText("60 ₾");
+    await expect(page.locator(".summary")).toContainText("60 ₽");
 
     backend.tables.services[0].price = 75;
     await page.getByRole("button", { name: "Отправить заявку" }).click();
 
     await expect(page.getByRole("alert")).toContainText("данные обновились");
-    await expect(page.locator(".summary")).toContainText("75 ₾");
+    await expect(page.locator(".summary")).toContainText("75 ₽");
     await expect(page.locator(".msg-preview")).toContainText("75");
     expect(bookingInserts(backend)).toHaveLength(0);
     expect(await page.evaluate(() => window.__chats)).toBe(0);
@@ -107,11 +107,11 @@ test.describe("Мини-апп: свежие данные", () => {
     test("цена, поменянная в базе, видна без перехода по экранам", async ({ miniapp }) => {
       const { page, backend } = miniapp;
       await page.getByRole("button", { name: /Услуги и цены/ }).click();
-      await expect(page.locator(".list-row")).toContainText("60 ₾");
+      await expect(page.locator(".list-row")).toContainText("60 ₽");
 
       backend.tables.services[0].price = 75;
       await page.clock.fastForward(20_000);
-      await expect(page.locator(".list-row")).toContainText("75 ₾");
+      await expect(page.locator(".list-row")).toContainText("75 ₽");
     });
 
     test("окошко, которое заняли, пока клиент смотрит на сетку, пропадает само", async ({

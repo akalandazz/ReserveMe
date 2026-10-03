@@ -5,6 +5,7 @@ import {
   useContent,
 } from "../content.js";
 import { createBooking, rescheduleMyBooking } from "../bookings.js";
+import { formatPrice } from "../money.js";
 import {
   buildDays,
   buildSlots,
@@ -260,7 +261,7 @@ export default function BookingScreen({
               key={s.id}
               title={s.name}
               meta={[s.note, `${s.duration} мин`].filter(Boolean).join(" · ")}
-              price={`${s.price} ₾`}
+              price={formatPrice(s.price)}
               selected={draft.service?.id === s.id}
               onClick={() => pickService(s)}
             />
@@ -457,7 +458,7 @@ export default function BookingScreen({
         </div>
         <div className="summary-row">
           <dt>Стоимость</dt>
-          <dd>{service?.price} ₾</dd>
+          <dd>{formatPrice(service?.price)}</dd>
         </div>
       </dl>
 

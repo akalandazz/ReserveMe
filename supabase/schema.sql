@@ -66,7 +66,8 @@ create table if not exists public.services (
   name       text    not null check (length(btrim(name)) between 1 and 80),
   -- integer, а не numeric: PostgREST отдаёт numeric строкой JSON,
   -- и цена утекла бы в запись клиента как "70".
-  price      integer not null check (price between 0 and 9999),
+  -- Рубли. Граница переопределяется ниже (services_price_check).
+  price      integer not null check (price between 0 and 99999),
   duration   integer not null check (duration > 0 and duration <= 600 and duration % 15 = 0),
   note       text    not null default '',
   sort       integer not null default 0,
@@ -77,6 +78,12 @@ create table if not exists public.services (
 );
 
 create index if not exists services_sort_idx on public.services (sort, id);
+
+-- Цены в рублях: прежние 9999 (лари) для них малы. Отдельным alter table,
+-- чтобы граница расширилась и на уже развёрнутой базе.
+alter table public.services drop constraint if exists services_price_check;
+alter table public.services add constraint services_price_check
+  check (price between 0 and 99999);
 
 -- ─── Отдельные выходные и отпуск ───────────────────────────────
 create table if not exists public.days_off (
@@ -229,7 +236,7 @@ create table if not exists public.bookings (
   -- Длительность и цена денормализованы: правка услуги или её удаление
   -- не должны переписывать то, что уже согласовано с клиентом.
   duration        integer not null check (duration > 0 and duration <= 600),
-  price           integer not null check (price between 0 and 9999),
+  price           integer not null check (price between 0 and 99999),
   service_id      text references public.services(id) on delete set null,
   service_name    text    not null,
   -- Из initDataUnsafe.user — непроверенные данные, только для показа мастеру.
@@ -281,6 +288,10 @@ alter table public.bookings add constraint bookings_status_check
 alter table public.bookings drop constraint if exists bookings_cancelled_by_check;
 alter table public.bookings add constraint bookings_cancelled_by_check
   check (cancelled_by in ('', 'client', 'master'));
+-- Та же граница цены, что у services_price_check (рубли).
+alter table public.bookings drop constraint if exists bookings_price_check;
+alter table public.bookings add constraint bookings_price_check
+  check (price between 0 and 99999);
 
 create index if not exists bookings_day_idx on public.bookings (day, start_min);
 create index if not exists bookings_client_id_idx on public.bookings (client_id);
@@ -1601,10 +1612,10 @@ insert into public.settings (
 on conflict (id) do nothing;
 
 insert into public.services (id, emoji, name, price, duration, note, sort) values
-  ('manicure',     '💅', 'Маникюр комбинированный', 50,  90, 'Снятие, форма, уход за кутикулой', 10),
-  ('manicure_gel', '✨', 'Маникюр + гель-лак',      70, 120, 'Покрытие в один тон',              20),
-  ('pedicure',     '🦶', 'Педикюр',                 80, 120, '',                                 30),
-  ('design',       '🎨', 'Дизайн (за 1 ноготь)',     5,  15, 'Добавляется к основной услуге',    40)
+  ('manicure',     '💅', 'Маникюр комбинированный', 1500,  90, 'Снятие, форма, уход за кутикулой', 10),
+  ('manicure_gel', '✨', 'Маникюр + гель-лак',      2200, 120, 'Покрытие в один тон',              20),
+  ('pedicure',     '🦶', 'Педикюр',                 2500, 120, '',                                 30),
+  ('design',       '🎨', 'Дизайн (за 1 ноготь)',     150,  15, 'Добавляется к основной услуге',    40)
 on conflict (id) do nothing;
 
 insert into public.days_off (day) values

@@ -6,6 +6,7 @@ import {
   useMyBookings,
 } from "../bookings.js";
 import { useContent } from "../content.js";
+import { formatPrice } from "../money.js";
 import { isPast, labelForKey } from "../schedule.js";
 import { cancelMessage, haptic, sendToMaster, showConfirm } from "../telegram.js";
 import {
@@ -44,7 +45,7 @@ function UpcomingCard({ booking, title, onCancel, onReschedule }) {
     <div className="book-card">
       <div className="book-head">
         <p>{title}</p>
-        <span className="price sm">{booking.price} ₾</span>
+        <span className="price sm">{formatPrice(booking.price)}</span>
       </div>
       <p className="book-meta">
         {labelForKey(booking.day)} · {booking.time}
@@ -188,7 +189,7 @@ export default function MyBookingsScreen({ onBack, onBook, onReschedule }) {
                     {labelForKey(b.day)} · {b.time}
                   </span>
                 </span>
-                <span className="price xs">{b.price} ₾</span>
+                <span className="price xs">{formatPrice(b.price)}</span>
               </div>
             ))}
           </div>
