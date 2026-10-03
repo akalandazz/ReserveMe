@@ -1,5 +1,16 @@
 import { test as base, expect } from "@playwright/test";
-import { CLIENT, MASTER, installFakeSupabase, sessionFor } from "./fake-supabase.js";
+import { CLIENT, MASTER, installFakeSupabase, telegramStub } from "./fake-supabase.js";
+
+/**
+ * Открыть страницу «из Telegram»: window.Telegram.WebApp с initData этого
+ * пользователя появляется до первого скрипта страницы (и после reload).
+ * Настоящий telegram-web-app.js подделка обрывает (fake-supabase.js).
+ */
+export async function withTelegram(page, user, opts) {
+  await page.addInitScript((webApp) => {
+    window.Telegram = { WebApp: { ...webApp, ready() {}, expand() {} } };
+  }, telegramStub(user, opts));
+}
 
 /**
  * clients — строки client_stats, которые уже лежат в «базе» до входа
@@ -8,11 +19,12 @@ import { CLIENT, MASTER, installFakeSupabase, sessionFor } from "./fake-supabase
  * backend — поддельный Supabase (fake-supabase.js), поставленный до
  *   первого запроса страницы. После теста проверяет, что приложение не
  *   сходило ни в один адрес, которого подделка не знает.
- * cabinet — кабинет мастера (admin.html) после входа по паролю;
- *   openedChats() — чаты с клиентами, которые он открыл (window.open).
- * miniapp — мини-апп клиента (index.html) на главной, уже вошедший как
- *   CLIENT: сессия auth-js лежит в localStorage до загрузки. Экран входа
- *   проверяет e2e/miniapp/auth.spec.js — без этой фикстуры.
+ * cabinet — кабинет мастера (admin.html), открытый из Telegram мастером:
+ *   вход по initData проходит сам. openedChats() — чаты с клиентами,
+ *   которые он открыл (window.open).
+ * miniapp — мини-апп клиента (index.html) на главной, открытый из Telegram
+ *   как CLIENT. Экран входа проверяет e2e/miniapp/auth.spec.js — без этой
+ *   фикстуры.
  * fakeClock — поставить page.clock до загрузки мини-аппа или кабинета,
  *   чтобы тест мог промотать таймеры (опрос занятости в BookingScreen,
  *   опрос записей в кабинете — pollAdminData).
@@ -32,7 +44,7 @@ export const test = base.extend({
 
   cabinet: async ({ page, backend, fakeClock }, use) => {
     if (fakeClock) await page.clock.install();
-    // Без Telegram openChatWith (src/telegram.js) открывает t.me во
+    // Без openTelegramLink openChatWith (src/telegram.js) открывает t.me во
     // вкладке — запоминаем адреса вместо настоящего окна.
     await page.addInitScript(() => {
       window.__openedChats = [];
@@ -41,10 +53,8 @@ export const test = base.extend({
         return null;
       };
     });
+    await withTelegram(page, MASTER);
     await page.goto("/admin.html");
-    await page.getByLabel("E-mail").fill(MASTER.email);
-    await page.getByLabel("Пароль").fill(MASTER.password);
-    await page.getByRole("button", { name: "Войти" }).click();
     await expect(page.getByRole("heading", { name: "Расписание" })).toBeVisible();
     await use({
       page,
@@ -63,19 +73,9 @@ export const test = base.extend({
 
   miniapp: async ({ page, backend, fakeClock }, use) => {
     if (fakeClock) await page.clock.install();
-    await page.addInitScript(
-      ({ session }) => {
-        // Только при первой загрузке — перезагрузка в тесте видит то, что
-        // приложение само сохранило. Ключ — AUTH_STORAGE_KEY мини-аппа в
-        // src/supabase.js.
-        if (localStorage.getItem("vs_sb_client_v1") === null) {
-          localStorage.setItem("vs_sb_client_v1", JSON.stringify(session));
-        }
-      },
-      { session: sessionFor(CLIENT) }
-    );
+    await withTelegram(page, CLIENT);
     await page.goto("/");
-    await expect(page.getByText("Добро пожаловать!")).toBeVisible();
+    await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
     await use({ page, backend });
   },
 });

@@ -37,7 +37,7 @@ const STATUS = {
   new: { cls: "status", icon: "clockSm", text: "Ожидает подтверждения" },
 };
 
-function UpcomingCard({ booking, title, onCancel }) {
+function UpcomingCard({ booking, title, onCancel, onReschedule }) {
   const cancelled = booking.status === "cancelled";
   const s = STATUS[booking.status] ?? STATUS.new;
   return (
@@ -56,19 +56,24 @@ function UpcomingCard({ booking, title, onCancel }) {
           {s.text}
         </span>
         {!cancelled && (
-          <button className="btn-link" type="button" onClick={() => onCancel(booking)}>
-            Отменить
-          </button>
+          <span>
+            <button className="btn-link" type="button" onClick={() => onReschedule(booking)}>
+              Перенести
+            </button>{" "}
+            <button className="btn-link" type="button" onClick={() => onCancel(booking)}>
+              Отменить
+            </button>
+          </span>
         )}
       </div>
     </div>
   );
 }
 
-export default function MyBookingsScreen({ onBack, onBook }) {
+export default function MyBookingsScreen({ onBack, onBook, onReschedule }) {
   const { status, list: bookings } = useMyBookings();
   const [toast, setToast] = useState("");
-  const { settings, services } = useContent();
+  const { settings, services, activeServices } = useContent();
   const masterName = settings.masterName;
 
   // Стор уже может быть загружен (главная) — экран рисуется сразу, а
@@ -108,6 +113,18 @@ export default function MyBookingsScreen({ onBack, onBook }) {
         );
       });
     });
+  };
+
+  // Перенос — в шаги записи (App.jsx), с той же услугой. Если услуги в
+  // прайсе больше нет, переносить не на что: сервер тоже откажет.
+  const reschedule = (booking) => {
+    const service = activeServices.find((s) => s.id === booking.serviceId);
+    if (!service) {
+      setToast("Этой услуги больше нет в прайсе — отмените запись и запишитесь заново.");
+      return;
+    }
+    haptic("select");
+    onReschedule(booking, service);
   };
 
   const upcoming = bookings.filter((b) => !isPast(b));
@@ -152,6 +169,7 @@ export default function MyBookingsScreen({ onBack, onBook }) {
                 booking={b}
                 title={serviceName(services, b)}
                 onCancel={cancel}
+                onReschedule={reschedule}
               />
             ))}
           </div>
@@ -182,8 +200,8 @@ export default function MyBookingsScreen({ onBack, onBook }) {
       )}
 
       <p className="note">
-        Записи привязаны к вашему аккаунту — войдите с того же e-mail на любом
-        устройстве, и они будут здесь. {masterName} узнаёт о заявке из
+        Записи привязаны к вашему аккаунту Telegram — откройте приложение на
+        любом устройстве, и они будут здесь. {masterName} узнаёт о заявке из
         сообщения в чате; статус здесь меняется, когда она подтверждает,
         переносит или отменяет запись.
       </p>

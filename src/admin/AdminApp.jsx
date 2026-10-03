@@ -83,7 +83,7 @@ export default function AdminApp() {
 
   useEffect(() => {
     if (isMaster) loadAdminData();
-    else if (session.status === "guest") resetAdminData();
+    else if (session.status !== "signed" && session.status !== "unknown") resetAdminData();
   }, [isMaster, session.status]);
 
   // Кабинет открыт часами, а заявки и отмены клиентов приходят сами по
@@ -237,7 +237,7 @@ export default function AdminApp() {
           <ThemeToggle />
         </div>
         <div className="page-body">
-          <SignIn />
+          <SignIn session={session} />
         </div>
       </div>
     );
@@ -257,7 +257,7 @@ export default function AdminApp() {
             <p className="sub">
               {failed
                 ? "Не удалось проверить доступ к кабинету. Проверьте соединение."
-                : `${session.email ?? "Этот аккаунт"} — не аккаунт мастера. Кабинет открыт только мастеру.`}
+                : `${session.name ?? "Этот аккаунт Telegram"} — не аккаунт мастера. Кабинет открыт только мастеру.`}
             </p>
             {failed && (
               <button className="btn-primary inline" type="button" onClick={retryRole}>
@@ -386,10 +386,10 @@ export default function AdminApp() {
 
                 {/* Кто вошёл — рядом с «Выйти»: аккаунт, а не имя мастера из
                     settings (то — контент салона, его видят клиенты). */}
-                {session.email && (
+                {session.name && (
                   <div className="account">
                     <span className="eyebrow">Аккаунт</span>
-                    <span className="account-email">{session.email}</span>
+                    <span className="account-email">{session.name}</span>
                   </div>
                 )}
 

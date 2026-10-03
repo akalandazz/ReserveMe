@@ -1,71 +1,33 @@
-import { useState } from "react";
-import { signIn } from "../../supabase.js";
+import { signInWithTelegram } from "../../supabase.js";
 
 /**
- * Форма входа мастера. В отличие от клиентской кнопки-в-теле-экрана
- * (см. CLAUDE.md про AdminScreen) здесь тоже вся страница — один
- * скролл без липкой нижней панели, так что сдвиг клавиатурой не
- * страшен, но паттерн «кнопка рядом с полями» тот же самый.
+ * Гейт кабинета до входа. Формы нет: вход — через Telegram (src/supabase.js
+ * отправляет initData при запуске), кабинет открывается только как мини-апп —
+ * на телефоне или в Telegram Desktop. В обычном браузере входить нечем.
+ * Кнопка — рядом с текстом, как у прежней формы входа.
  */
-export default function SignIn() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+export default function SignIn({ session }) {
+  if (session.status === "no-telegram") {
+    return (
+      <div className="signin-wrap">
+        <h1 className="title">Кабинет мастера</h1>
+        <p className="sub">
+          Кабинет открывается только в Telegram — через бота кабинета, на
+          телефоне или в Telegram Desktop.
+        </p>
+      </div>
+    );
+  }
 
-  const submit = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    const res = await signIn(email, password);
-    setBusy(false);
-    if (!res.ok) setError(res.error);
-  };
-
-  const onKeyDown = (e) => {
-    if (e.key === "Enter") submit();
-  };
-
+  const failed = session.status === "error";
   return (
     <div className="signin-wrap">
-      <h1 className="title">Кабинет мастера</h1>
-      <p className="sub">Войдите, чтобы управлять расписанием и ценами.</p>
-
-      <label className="eyebrow" htmlFor="admin-email">
-        E-mail
-      </label>
-      <input
-        id="admin-email"
-        className="field"
-        type="email"
-        autoComplete="username"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        onKeyDown={onKeyDown}
-      />
-
-      <label className="eyebrow" htmlFor="admin-password">
-        Пароль
-      </label>
-      <input
-        id="admin-password"
-        className="field"
-        type="password"
-        autoComplete="current-password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        onKeyDown={onKeyDown}
-      />
-
-      {error && <p className="form-error">{error}</p>}
-
-      <button
-        className="btn-primary inline"
-        type="button"
-        onClick={submit}
-        disabled={busy}
-      >
-        {busy ? "Входим…" : "Войти"}
+      <h1 className="title">{failed ? "Не удалось войти" : "Вы вышли"}</h1>
+      <p className={failed ? "form-error" : "sub"} role={failed ? "alert" : undefined}>
+        {failed ? session.error : "Войдите снова, чтобы управлять расписанием и ценами."}
+      </p>
+      <button className="btn-primary inline" type="button" onClick={signInWithTelegram}>
+        {failed ? "Повторить" : "Войти снова"}
       </button>
     </div>
   );

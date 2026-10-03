@@ -10,24 +10,42 @@ npm run build    # production build to dist/ — two separate bundles, see "Two 
 npm run preview  # serve the built dist/
 npm run lint     # oxlint (NOT eslint — config is .oxlintrc.json)
 npm run e2e      # Playwright, e2e/ — PW_CHANNEL=msedge to use an installed browser
+npx playwright test --project=unit         # initData signature validator, plain Node
+npx playwright test --project=integration  # real Edge Function + RLS, local Supabase (see below)
 ```
 
-The only tests are Playwright e2e in `e2e/`. They run against their **own** Vite server
-(port 5179) built with a fake `VITE_SUPABASE_URL`, and `e2e/support/fake-supabase.js`
-answers Auth/PostgREST/RPC in the browser, for both `admin.html` (`cabinet` fixture)
-and `index.html` (`miniapp` fixture) — never point them at the real project from
-`.env`, it would write test clients into the master's base. The fake fails the test on
-any request it doesn't handle; extend it when a new flow reads or writes a new table.
+All tests are Playwright, in three projects (`playwright.config.js`):
+
+- **`mobile-chromium`** (UI, `e2e/cabinet`, `e2e/miniapp`) — runs against its **own** Vite
+  server (port 5179) built with a fake `VITE_SUPABASE_URL`, and
+  `e2e/support/fake-supabase.js` answers the `telegram-auth` function, Auth, PostgREST and
+  RPC in the browser, for both `admin.html` (`cabinet` fixture) and `index.html`
+  (`miniapp` fixture). `withTelegram(page, user)` (fixtures.js) stubs
+  `window.Telegram.WebApp` with a fake `initData` (`"e2e:<telegram id>"`) — the fake does
+  **not** check signatures. Never point these at the real project from `.env`, it would
+  write test clients into the master's base. The fake fails the test on any request it
+  doesn't handle; extend it when a new flow reads or writes a new table.
+- **`unit`** (`e2e/unit`) — `supabase/functions/_shared/telegram-init-data.js`, signing its
+  fixtures with its own `node:crypto` code (never with the module under test).
+- **`integration`** (`e2e/integration`) — the real `telegram-auth` function, PostgREST and
+  the RLS from `schema.sql`, on a **local** Supabase in Docker (`npx supabase start …`,
+  then `SUPABASE_IT_URL`/`SUPABASE_IT_ANON_KEY`/`SUPABASE_IT_SERVICE_KEY` from
+  `npx supabase status -o env`; exact commands in `e2e/integration/support.js`). Skipped
+  without those variables; refuses a non-localhost URL; wipes bookings and clients.
+  `supabase/config.toml` exists only for this stack: it seeds from `schema.sql` and holds
+  **fake** bot tokens the tests sign with.
 
 ## Architecture
 
 Two Telegram Mini Apps in one repo, one React 19 + Vite 8 codebase:
 
 - **The client** (`index.html` → `src/main.jsx` → `src/App.jsx`) — where a customer
-  browses services and submits a booking request. **The whole app sits behind an
-  email + password sign-in / sign-up** ([AuthScreen.jsx](src/screens/AuthScreen.jsx));
-  every account it creates has the role `user` (see "Accounts and roles" below). No
-  Supabase writes except the client's own `profiles` row and new bookings (see below).
+  browses services, submits a booking request and moves or cancels their own bookings.
+  **The whole app sits behind Telegram sign-in** — no form, no password, no e-mail:
+  the signed `initData` goes to the `telegram-auth` Edge Function on launch
+  ([AuthScreen.jsx](src/screens/AuthScreen.jsx) only explains failures). Every account
+  it creates has the role `user` (see "Accounts and roles" below). No Supabase writes
+  except new bookings and the client's own `cancel_own_booking`/`reschedule_own_booking`.
 - **The cabinet** (`admin.html` → `src/admin/main.jsx` → `src/admin/AdminApp.jsx`) —
   where the master signs in to manage her schedule, requests and prices. Completely
   separate bundle, separate CSS (`src/admin/admin.css`, not `src/index.css`), separate
@@ -98,7 +116,8 @@ Consequences that constrain every change here:
   master still resolves any collision by hand in the cabinet.
 - **The cabinet opens a chat only with a Mini App client who has a Telegram username**
   (`canMessageClient()` in [src/admin/api.js](src/admin/api.js): `user_id` **and**
-  `client_username`, the latter still read from Telegram `initDataUnsafe`). After «Подтвердить»/«Отклонить» in «Заявки», a save in the sheet
+  `client_username`, which for Mini App requests now comes from the verified profile).
+  After «Подтвердить»/«Отклонить» in «Заявки», a save in the sheet
   that confirms, moves or changes the service, the sheet's «Отменить запись» and the
   trash icon (upcoming bookings only), it calls `openChatWith(username, text)`
   ([src/telegram.js](src/telegram.js)) with the `clientMessage()` text
@@ -113,9 +132,9 @@ Consequences that constrain every change here:
 
 | | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
 |---|---|---|
-| Auth | Supabase Auth sign-in **or sign-up**, role `user`; session under `vs_sb_client_v1` | Supabase Auth sign-in, role `master` only; session under `vs_sb_auth_v1` |
+| Auth | Telegram `initData` → `telegram-auth` → Supabase session, **in memory only**; role `user` | the same, through the cabinet bot; data only for role `master` |
 | Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only) |
-| Writes | its own `profiles` row (`role = 'user'`), its own rows into `bookings`, `cancel_own_booking(id)` | everything, incl. its own confirmed bookings via `create_master_booking()` |
+| Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)` — never `profiles` | everything, incl. its own confirmed bookings via `create_master_booking()` — never `profiles` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
 
@@ -144,10 +163,14 @@ booking flow, not the cabinet's day/week/month calendar
   visibility keyed on `stack.length`, and a `hide()` on unmount. Merging them
   re-subscribes on every navigation and misbehaves under `React.StrictMode`. The cabinet
   has no BackButton wiring — it's a single scrolling page, not a stack.
-- `initDataUnsafe` is unverified client data — fine for the greeting and for reading
-  the client's name/username onto a new booking row. It is **not** an authorization
-  signal anywhere: cabinet writes are gated by Supabase Auth + RLS, not by anything
-  read from Telegram.
+- `initDataUnsafe` is unverified client data — fine for the greeting and the signature
+  line of a message the client sends themselves, nothing else. Identity comes only from
+  the **signed** `initData` string (`initData()` in telegram.js), which the client never
+  interprets: it goes as-is to the `telegram-auth` Edge Function, which checks the HMAC
+  with the bot token and `auth_date` freshness
+  ([supabase/functions/_shared/telegram-init-data.js](supabase/functions/_shared/telegram-init-data.js)).
+  A booking's name/username come from `profiles` (written by that function from verified
+  data), never from the request body. Bot tokens live only in the function's secrets.
 
 ### Content, bookings and RLS
 
@@ -160,35 +183,62 @@ seed, kept in the repo because the content is no longer in git otherwise.
 
 - The anon key ships **inside the bundle** — that is expected. The security boundary is
   RLS.
-- **Accounts and roles.** Clients register themselves (email + password), so
-  "signed in" no longer means "the master". The role lives in `public.profiles`
-  (`'user'` | `'master'`), and `is_master()` requires a `'master'` row — a missing row
-  counts as `user`. There is **no trigger on `auth.users`** (deliberately): the app
-  creates the row itself — `loadRole()` in [src/supabase.js](src/supabase.js) upserts
-  `{ id, role: 'user' }` with `ignoreDuplicates` every time a session appears (sign-up,
-  sign-in, restored session), so email-confirmed sign-ups get their row on first
-  sign-in, and the master's row is never overwritten. RLS lets a user insert only
-  their own row and only as `'user'`; there are no update/delete policies, so nobody
-  can promote themselves. The master's row is granted **by hand** in the SQL editor
-  (the snippet is above `is_master()` in `schema.sql`). **Deployment order matters:**
-  `profiles` + the master's row → the new `is_master()` → only then enable Email
-  signups in the dashboard. With the old `is_master()` ("any non-anonymous
-  `authenticated`") an open sign-up would hand every client the whole cabinet. The
-  cabinet shows «Нет доступа» to a signed-in non-master and never loads its data.
-  Bookings belong to the account (`bookings.user_id`), not the device: signing out
-  clears the client's in-memory store (`resetMyBookings()`), and signing in on
-  another phone shows the same «Мои записи».
+- **Accounts and roles — Telegram is the identity provider.** One account per
+  **Telegram user id** (`profiles.telegram_id`, unique) — never per device, session or
+  username. The `telegram-auth` Edge Function
+  ([supabase/functions/telegram-auth/index.ts](supabase/functions/telegram-auth/index.ts))
+  takes **only** `initData` from the request body, validates it, finds the profile by
+  `telegram_id` or creates an `auth.users` row (synthetic e-mail `tg<id>@…`, **no
+  password**, `app_metadata.telegram_id`) plus a `profiles` row with the default role
+  `'user'`, refreshes name/username, and mints an ordinary Supabase session (admin
+  `generateLink` magic link + server-side `verifyOtp` — no hand-made JWTs). It never
+  writes `role`. The app keeps that session **in memory only** (`persistSession: false`)
+  and signs in again from fresh `initData` on every launch; logout is
+  `signOut({ scope: "local" })` — this device's refresh token only.
+  - **Authentication in SQL:** `is_telegram_user()` — `authenticated`, not anonymous,
+    and `profiles.telegram_id` equals the JWT's `app_metadata.telegram_id` (writable
+    only by the service role). Every client write checks it, so an e-mail/password or
+    anonymous account — even one with a `'master'` profile row — can do nothing.
+  - **Authorization in SQL:** `is_master()` = `is_telegram_user()` and `role = 'master'`,
+    read from `profiles` on every request (revoking the role works immediately).
+    `authenticated` has **no** write privilege on `profiles` at all (revoked; select own
+    only) — nobody can promote themselves, and the client never writes `profiles`.
+  - **The master's role is granted by hand**: she opens the cabinet once from Telegram
+    (gets her row as `'user'`, sees «Нет доступа»), then
+    `update profiles set role = 'master' where telegram_id = <id>` in the SQL editor
+    (snippet above `is_master()` in `schema.sql`). No Telegram id is in the code.
+  - Bookings belong to the account (`bookings.user_id`), not the device: signing out
+    clears the client's in-memory store (`resetMyBookings()`), and the same Telegram
+    account on another device shows the same «Мои записи».
+  - Old e-mail accounts are not migrated: `supabase/reset-dev.sql` wipes users and
+    bookings (dev only); `schema.sql` refuses to run while a `profiles` row lacks
+    `telegram_id`.
+  - **Deploying:** `reset-dev.sql` → `schema.sql` → `supabase secrets set
+    TELEGRAM_CLIENT_BOT_TOKEN=… TELEGRAM_CABINET_BOT_TOKEN=…` → `supabase functions
+    deploy telegram-auth --no-verify-jwt` → in the dashboard turn off sign-ups, the
+    Email provider and Anonymous sign-ins (the function doesn't need any of them) →
+    raise *Authentication → Rate Limits → token verifications*: every login is one OTP
+    verification, and all of them come **from the function's IP** (default 30 per
+    5 min) → master opens the cabinet once → grant the role by SQL.
 - **`bookings` RLS is asymmetric, unlike every other table**: a signed-in client may
   `insert` a row (`bookings_insert_client`: `status = 'new'`, `source = 'client'`,
   `user_id = auth.uid()`, `day` no earlier than yesterday **in Tbilisi** — the database
   clock is UTC, and a client west of Tbilisi builds its day list from a device clock
   that's still on the Tbilisi "yesterday" — enforced by the insert policy's
   `with check`), `select` **only its own rows** (`bookings_select_own`:
-  `user_id = auth.uid()`), and cancel one of them through `cancel_own_booking(id)` — a
+  `user_id = auth.uid()`), cancel one of them through `cancel_own_booking(id)` — a
   `security definer` function that changes exactly `status`/`cancelled_by`/
   `cancel_seen` and checks `user_id = auth.uid()` itself (no update policy: it would
-  open every column). `user_id` is written by `guard_client_booking()` from
-  `auth.uid()`, never taken from the client. `anon` can do none of this. Only the
+  open every column) — and move one through `reschedule_own_booking(id, day, start)`,
+  same shape: own row only, the new start checked by `assert_client_slot()` (the same
+  rule as a new request), price/duration re-read from `services`, and the booking goes
+  **back to `'new'`** («Заявки») for the master to confirm again. Someone else's or a
+  missing id is the same `42501` → **403** in both, so ids can't be probed. All three
+  require `is_telegram_user()`. `user_id` (owner) is written by
+  `guard_client_booking()` from `auth.uid()` and `created_by` (creator) by the
+  `bookings_set_created_by` trigger for every insert — neither is ever taken from the
+  request: a master-created booking for a Mini App client has `user_id` = the client,
+  `created_by` = the master. `anon` can do none of this (401). Only the
   master (`is_master()`) reads or changes every booking. Availability comes from the
   `busy_slots` view (day/start/duration only, no names), which bypasses RLS in one
   small place with a fixed column list. The client row's contents are not trusted: the `guard_client_booking()` trigger overwrites `duration`/`price`/
@@ -201,8 +251,13 @@ seed, kept in the repo because the content is no longer in git otherwise.
   reaches the client: `createBooking` shows the trigger's message and nothing is sent.
   Every write policy (and every read on `bookings`/`clients`/`client_comments`) checks
   `public.is_master()`, not just the `authenticated` role, because every client is
-  `authenticated` now (and Supabase's Anonymous Sign-ins hand it out too);
-  `security definer` master functions (`delete_client`) call it themselves. If you
+  `authenticated` now (and Supabase's Anonymous Sign-ins hand it out too). Every master
+  function (`free_slots`, `create_master_booking`, `update_master_booking`,
+  `approve_booking`, `delete_client`) also starts with an explicit
+  `if not is_master() then raise … errcode '42501'` → a clean **403**, instead of
+  relying on each table it touches being closed by RLS. Reads are different: RLS
+  *filters* rows, so a client asking for someone else's booking gets **200 `[]`**, not
+  403 — the integration tests assert exactly that. If you
   ever need more booking data on the client, add columns to the `select` in
   `bookings.js` (own rows only) or widen `busy_slots` (everyone's, no personal data);
   **never** grant `anon` — or `authenticated` without `is_master()` or
@@ -210,13 +265,12 @@ seed, kept in the repo because the content is no longer in git otherwise.
   would hand every client's name, username and comment to anyone.
 - **Clients.** `clients` rows come from the `link_booking_client()` trigger (client
   requests, matched **only** by the account — `clients.user_id`, unique. Never by
-  Telegram username: it's unverified (`initDataUnsafe`, or any value in a raw
-  PostgREST insert), and claiming a client by it would hand the claimer every
-  booking the master later adds for that client via `bookings_select_own`, plus
-  `cancel_own_booking` on them. A new account whose username is taken gets a client
-  without it; the client's `email`
-  is copied from the JWT and the e-mail's local part stands in for a missing Telegram
-  name) and from the cabinet («Новый клиент», «Новая
+  Telegram username: even a verified one can be changed and then taken by someone
+  else, and claiming a client by it would hand the claimer every booking the master
+  later adds for that client via `bookings_select_own`, plus `cancel_own_booking`/
+  `reschedule_own_booking` on them. A new account whose username is taken gets a
+  client without it; name and username come from the verified profile;
+  `clients.email` is no longer written) and from the cabinet («Новый клиент», «Новая
   запись»). Bookings link to clients by `client_id`, **never by name**: `store.js`
   (`withClientNames`) overwrites each booking's `client_name`/`client_username` from
   its client, so a rename in «Клиенты» shows everywhere. The trigger never overwrites
@@ -312,7 +366,11 @@ seed, kept in the repo because the content is no longer in git otherwise.
 stack, which is what makes BackButton walk the flow backwards for free. Going back
 preserves the draft; only `home()` clears it. Changing the service resets
 `draft.time`, because a slot valid for a 90-minute service may not exist for a
-120-minute one.
+120-minute one. «Перенести» in «Мои записи» reuses the same steps from `book:date`
+with `draft.reschedule = { id, day, time, duration }` (`startReschedule` in `App.jsx`);
+`BookingScreen` then hides the booking's own window from `busy` (`withoutOwn`), calls
+`rescheduleMyBooking` instead of `createBooking` — still **before** `sendToMaster` — and
+sends `rescheduleMessage`. Starting a new booking clears `draft.reschedule`.
 
 **Cabinet**: no stack, no router — one scrolling page
 ([src/admin/AdminApp.jsx](src/admin/AdminApp.jsx)) that renders every section in order
@@ -325,8 +383,9 @@ month/week/day is showing) and each section's own edit-in-place state.
 | File | Role |
 |---|---|
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
-| [src/supabase.js](src/supabase.js) | Shared by both apps. Client (its `storageKey` differs per app — `AUTH_STORAGE_KEY`, picked by the page path) + the session store (`useSession` → `{ status, email, role }`, `signIn`, `signUp`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. Every export must survive `supabase === null` (env vars unset). |
-| [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
+| [src/supabase.js](src/supabase.js) | Shared by both apps. Client (`persistSession: false` — the session never touches `localStorage`) + the session store (`useSession` → `{ status: "unknown" \| "signed" \| "no-telegram" \| "guest" \| "error", error, name, role }`, `signInWithTelegram`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. `initAuth()` signs in from `initData` on every launch. Every export must survive `supabase === null` (env vars unset). |
+| [supabase/functions/telegram-auth/](supabase/functions/telegram-auth/index.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Deployed with `--no-verify-jwt`. Logs no initData, tokens or e-mails. |
+| [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
 | [src/theme.js](src/theme.js) | Light/dark resolution and the manual override, shared by both apps. No React. |
