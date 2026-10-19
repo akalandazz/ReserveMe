@@ -48,13 +48,14 @@ export function useAdminData() {
   return useSyncExternalStore(subscribeAdmin, adminSnapshot, adminSnapshot);
 }
 
-/** Из настроек кабинету нужны только имя (шапка), шаг сетки и график. */
+/** Из настроек кабинету нужны имя (шапка), шаг сетки, график и напоминания. */
 function toAdminSettings(row) {
   if (!row) return null;
   return {
     masterName: row.master_name ?? "",
     slotStepMinutes: Number(row.slot_step_minutes) || 30,
     workingHours: row.working_hours ?? {},
+    reminderHours: Number.isInteger(row.reminder_hours) ? row.reminder_hours : 24,
   };
 }
 
@@ -99,7 +100,7 @@ const LOADERS = {
   settings: () =>
     supabase
       .from("settings")
-      .select("master_name,slot_step_minutes,working_hours")
+      .select("master_name,slot_step_minutes,working_hours,reminder_hours")
       .eq("id", 1)
       .maybeSingle(),
   services: () =>

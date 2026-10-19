@@ -42,8 +42,22 @@ test("подписанный initData — пользователь из подп
   expect(res).toEqual({
     ok: true,
     authDate: NOW - 60,
-    user: { id: USER.id, username: "anna_tg", firstName: "Анна", lastName: "Тест" },
+    user: {
+      id: USER.id,
+      username: "anna_tg",
+      firstName: "Анна",
+      lastName: "Тест",
+      allowsWriteToPm: false,
+    },
   });
+});
+
+test("allows_write_to_pm — только true из подписанного user", async () => {
+  const allowed = await check(sign(fields({ user: JSON.stringify({ ...USER, allows_write_to_pm: true }) })));
+  expect(allowed.ok && allowed.user.allowsWriteToPm).toBe(true);
+  // Не булево true (строка, число) — не разрешение.
+  const odd = await check(sign(fields({ user: JSON.stringify({ ...USER, allows_write_to_pm: "true" }) })));
+  expect(odd.ok && odd.user.allowsWriteToPm).toBe(false);
 });
 
 test("подменённое поле — неверная подпись", async () => {

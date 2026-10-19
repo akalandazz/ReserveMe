@@ -57,7 +57,13 @@ const CORS = {
 const NO_SESSION = { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false };
 const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: NO_SESSION });
 
-type TgUser = { id: number; username: string; firstName: string; lastName: string };
+type TgUser = {
+  id: number;
+  username: string;
+  firstName: string;
+  lastName: string;
+  allowsWriteToPm: boolean;
+};
 
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -239,6 +245,9 @@ Deno.serve(async (req) => {
     const userId = await findOrCreateUser(user);
     const session = await mintSession(userId, user);
     // Имя и юзернейм — из проверенного initData; роль не трогаем.
+    // Разрешение боту писать (allows_write_to_pm) снимает отметку «бот
+    // недоступен» — напоминания (send-reminders) пойдут снова. Без него
+    // отметку не ставим: поле есть не в каждом initData.
     const upd = await admin
       .from("profiles")
       .update({
@@ -246,6 +255,7 @@ Deno.serve(async (req) => {
         first_name: user.firstName,
         last_name: user.lastName,
         last_login_at: new Date().toISOString(),
+        ...(user.allowsWriteToPm ? { bot_unreachable_at: null } : {}),
       })
       .eq("id", userId);
     must("profiles.update", upd.error);

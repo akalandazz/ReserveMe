@@ -49,6 +49,8 @@ function toSettings(row) {
     workingHoursText: row.working_hours_text ?? "",
     workingHours: row.working_hours ?? {},
     timeOfDay: Array.isArray(row.time_of_day) ? row.time_of_day : [],
+    // За сколько часов бот напоминает о записи; 0 — салон не напоминает.
+    reminderHours: Number.isInteger(row.reminder_hours) ? row.reminder_hours : 24,
     location: {
       address: row.address ?? "",
       landmark: row.landmark ?? "",

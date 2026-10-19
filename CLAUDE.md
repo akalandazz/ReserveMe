@@ -33,7 +33,10 @@ All tests are Playwright, in three projects (`playwright.config.js`):
   `npx supabase status -o env`; exact commands in `e2e/integration/support.js`). Skipped
   without those variables; refuses a non-localhost URL; wipes bookings and clients.
   `supabase/config.toml` exists only for this stack: it seeds from `schema.sql` and holds
-  **fake** bot tokens the tests sign with.
+  **fake** bot tokens the tests sign with, plus `send-reminders`' fake cron secret and a
+  `TELEGRAM_API_URL` pointing at the Bot API stub that `e2e/integration/reminders.spec.js`
+  serves on the host (`host.docker.internal:54399`). Run the integration project with
+  `--workers=1`: its files share one database.
 
 ## Architecture
 
@@ -114,6 +117,25 @@ Consequences that constrain every change here:
   Two clients racing on the same slot is still possible — there is no reservation, only
   a read — but the window is now the seconds between two refreshes, not days. The
   master still resolves any collision by hand in the cabinet.
+- **Reminders are the one message the server sends by itself.** pg_cron
+  (`supabase/reminders-cron.sql`, run once by hand, **not** part of `schema.sql`, so the
+  test stack never fires it) POSTs every 10 min to the `send-reminders` Edge Function
+  ([supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts),
+  `x-cron-secret` = `REMINDERS_CRON_SECRET`, `--no-verify-jwt`). It calls
+  `claim_due_reminders()` (service role only): `status = 'ok'` bookings with a `user_id`,
+  starting in `(now + 30 min, now + settings.reminder_hours]` (0 = off, set in the
+  cabinet's «Настройки» → «Напоминания»), whose profile has `reminders` and no
+  `bot_unreachable_at`. It stamps `reminded_at` **before** sending
+  (`for update skip locked`), so overlapping runs never double-send, and then sends
+  `sendMessage` from the **client bot** to `profiles.telegram_id`. Telegram's answer
+  decides the rest ([_shared/reminders.js](supabase/functions/_shared/reminders.js), unit-tested):
+  403 → `mark_bot_unreachable`, 429/5xx/network → `release_reminder`, other 4xx → dropped.
+  Moving a booking (any path) clears `reminded_at` via the `bookings_reset_reminder`
+  trigger. A bot may only write to someone who allowed it: the client's «Напоминать о
+  записи» switch in «Мои записи» calls `requestWriteAccess()` (6.9+) before
+  `set_reminders(true)`; `telegram-auth` clears `bot_unreachable_at` when the signed
+  initData carries `allows_write_to_pm`. Reminders are a purpose in the 152-ФЗ policy
+  ([src/legal.js](src/legal.js)) — dropping or widening them means bumping `POLICY_VERSION`.
 - **The cabinet opens a chat only with a Mini App client who has a Telegram username**
   (`canMessageClient()` in [src/admin/api.js](src/admin/api.js): `user_id` **and**
   `client_username`, which for Mini App requests now comes from the verified profile).
@@ -134,7 +156,7 @@ Consequences that constrain every change here:
 |---|---|---|
 | Auth | Telegram `initData` → `telegram-auth` → Supabase session, **in memory only**; role `user` | the same, through the cabinet bot; data only for role `master` |
 | Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only) |
-| Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)` — never `profiles` | everything, incl. its own confirmed bookings via `create_master_booking()` — never `profiles` |
+| Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)`, `set_reminders(enabled)` (its own `profiles.reminders` only) — never `profiles` directly | everything, incl. its own confirmed bookings via `create_master_booking()` — never `profiles` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
 
@@ -232,7 +254,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
     Email provider and Anonymous sign-ins (the function doesn't need any of them) →
     raise *Authentication → Rate Limits → token verifications*: every login is one OTP
     verification, and all of them come **from the function's IP** (default 30 per
-    5 min) → master opens the cabinet once → grant the role by SQL.
+    5 min) → master opens the cabinet once → grant the role by SQL → reminders:
+    `supabase secrets set REMINDERS_CRON_SECRET=… CLIENT_APP_URL=…` → `supabase
+    functions deploy send-reminders --no-verify-jwt` → the two `vault.create_secret`
+    calls from the header of `supabase/reminders-cron.sql`, then that file.
 - **`bookings` RLS is asymmetric, unlike every other table**: a signed-in client may
   `insert` a row (`bookings_insert_client`: `status = 'new'`, `source = 'client'`,
   `user_id = auth.uid()`, `day` no earlier than yesterday **in Tbilisi** — the database
@@ -398,6 +423,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
 | [src/supabase.js](src/supabase.js) | Shared by both apps. Client (`persistSession: false` — the session never touches `localStorage`) + the session store (`useSession` → `{ status: "unknown" \| "signed" \| "no-telegram" \| "guest" \| "error", error, name, role }`, `signInWithTelegram`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. `initAuth()` signs in from `initData` on every launch. Every export must survive `supabase === null` (env vars unset). |
 | [supabase/functions/telegram-auth/](supabase/functions/telegram-auth/index.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Deployed with `--no-verify-jwt`. Logs no initData, tokens or e-mails. |
+| [supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts) | Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
 | [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |

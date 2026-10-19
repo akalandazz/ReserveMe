@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { toHHMM, toMinutes } from "../../schedule.js";
-import { saveWorkingHours } from "../api.js";
+import { saveReminderHours, saveWorkingHours } from "../api.js";
 
 const LABELS = ["Воскр.", "Понед.", "Вторн.", "Среда", "Четв.", "Пятн.", "Суббота"];
 const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];
-
+// За сколько часов бот напоминает клиенту (settings.reminder_hours); 0 — выкл.
+const REMINDER_STEPS = [0, 2, 3, 6, 12, 24, 48];
+const reminderLabel = (h) => (h ? `${h} ч` : "Выкл.");
 /**
  * Правки применяются сразу — как «Закрыть день» в панели дня, а не
  * копятся в черновике с отдельным «Сохранить», как у услуг: щелчок
@@ -17,12 +19,30 @@ const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];
  */
 export default function ScheduleSection({ settings, onError }) {
   const [hours, setHours] = useState({});
+  const [reminder, setReminder] = useState(24);
   const [seeded, setSeeded] = useState(false);
 
   if (settings && !seeded) {
     setHours(settings.workingHours ?? {});
+    setReminder(settings.reminderHours ?? 24);
     setSeeded(true);
   }
+
+  // Значение не из списка (выставлено в SQL) — шаг к ближайшему в нужную сторону.
+  const stepReminder = async (delta) => {
+    const next =
+      delta > 0
+        ? REMINDER_STEPS.find((h) => h > reminder)
+        : [...REMINDER_STEPS].reverse().find((h) => h < reminder);
+    if (next === undefined) return;
+    const prev = reminder;
+    setReminder(next);
+    const res = await saveReminderHours(next);
+    if (!res.ok) {
+      setReminder(prev);
+      onError(res.error);
+    }
+  };
 
   const persist = async (next) => {
     const res = await saveWorkingHours(next);
@@ -115,6 +135,38 @@ export default function ScheduleSection({ settings, onError }) {
         })}
         <p className="schedule-note">
           Окошки для записи пересчитываются автоматически. Уже созданные записи остаются.
+        </p>
+      </div>
+
+      <p className="eyebrow">Напоминания</p>
+      <div className="schedule-panel">
+        <div className={reminder ? "hours-row" : "hours-row is-closed"}>
+          <span className="hours-day-label">Напоминание клиенту</span>
+          <span className="hours-controls">
+            <button
+              className="stepper-btn"
+              type="button"
+              aria-label="Напоминать позже"
+              onClick={() => stepReminder(-1)}
+            >
+              −
+            </button>
+            <span className="hours-value" data-testid="reminder-hours">
+              {reminderLabel(reminder)}
+            </span>
+            <button
+              className="stepper-btn"
+              type="button"
+              aria-label="Напоминать раньше"
+              onClick={() => stepReminder(1)}
+            >
+              +
+            </button>
+          </span>
+        </div>
+        <p className="schedule-note">
+          Бот пишет клиенту из мини-приложения за столько часов до подтверждённой записи.
+          Клиенты, которые записаны вами вручную без Telegram, напоминаний не получают.
         </p>
       </div>
     </div>
