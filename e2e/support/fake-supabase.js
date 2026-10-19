@@ -1,7 +1,8 @@
 // Поддельный Supabase для e2e: вход через Telegram (Edge Function
 // telegram-auth), Auth (getUser, refresh, logout) и PostgREST — ровно
 // столько, сколько читают и пишут кабинет и мини-апп клиента (контент,
-// заявка, свои записи клиента, cancel_own_booking, reschedule_own_booking).
+// заявка, свои записи клиента, cancel_own_booking, reschedule_own_booking,
+// set_reminders, настройки из кабинета).
 //
 // Подпись initData здесь НЕ проверяется — это UI-тесты. Настоящую проверку
 // подписи гоняют e2e/unit (валидатор) и e2e/integration (функция + RLS на
@@ -102,6 +103,7 @@ const profileRow = (u, role) => ({
   first_name: u.firstName ?? "",
   last_name: "",
   telegram_username: u.username ?? "",
+  reminders: true,
 });
 
 const HOURS = { from: "10:00", to: "19:00" };
@@ -412,6 +414,25 @@ async function handle(route, state) {
     if (!b || b.user_id !== requester(req)) return forbidden();
     Object.assign(b, { day: body.p_day, start_min: body.p_start_min, status: "new", cancelled_by: "" });
     return json(200, wantsObject ? b : [b]);
+  }
+
+  // set_reminders — одна колонка своей строки profiles; анониму — 401.
+  if (rpc === "set_reminders" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    const prof = state.tables.profiles.find((p) => p.id === requester(req));
+    if (!prof) return json(401, { code: "42501", message: "Войдите через Telegram" });
+    prof.reminders = body.p_enabled !== false;
+    return json(200, prof.reminders);
+  }
+
+  // settings из кабинета: всегда .eq("id", 1); пишет только мастер.
+  if (table === "settings" && method === "PATCH") {
+    if (requester(req) !== MASTER.id) return forbidden();
+    const body = req.postDataJSON();
+    state.changes.push({ method, table, id: 1, body });
+    Object.assign(rows[0], body);
+    return route.fulfill({ status: 204, headers: cors });
   }
 
   // ─── RPC кабинета (schema.sql) — без перепроверок времени ───────

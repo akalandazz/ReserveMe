@@ -97,6 +97,33 @@ export function haptic(type = "light") {
   }
 }
 
+/**
+ * Бот уже может писать клиенту в личку (initDataUnsafe — только для
+ * решения, просить ли разрешение; сервер узнаёт это из подписанного
+ * initData и из ответа Telegram).
+ */
+export function botCanWrite() {
+  return tgUser()?.allows_write_to_pm === true;
+}
+
+/**
+ * Попросить разрешение боту писать клиенту — для напоминаний о записи.
+ * → true (разрешил) | false (отказал) | null (спросить нечем: браузер или
+ * клиент старше 6.9 — тогда решит ответ Telegram на первую отправку).
+ * Ничего не бросает.
+ */
+export function requestWriteAccess() {
+  const w = tg();
+  if (!w?.requestWriteAccess || !atLeast("6.9")) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      w.requestWriteAccess((granted) => resolve(granted === true));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 /** Внешняя ссылка (карта). */
 export function openLink(url) {
   const w = tg();

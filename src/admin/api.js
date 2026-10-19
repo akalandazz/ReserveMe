@@ -85,6 +85,18 @@ export function saveWorkingHours(workingHours) {
   );
 }
 
+/** За сколько часов бот напоминает клиенту о записи; 0 — не напоминает. */
+export function saveReminderHours(hours) {
+  const h = Number(hours);
+  if (!Number.isInteger(h) || h < 0 || h > 72) {
+    return Promise.resolve({ ok: false, error: "Напоминание — от 0 до 72 часов" });
+  }
+  return run(
+    () => supabase.from("settings").update({ reminder_hours: h }).eq("id", 1),
+    ["settings"]
+  );
+}
+
 /* ─── Дни без записи ────────────────────────────────────────────── */
 
 export function closeDay(day) {

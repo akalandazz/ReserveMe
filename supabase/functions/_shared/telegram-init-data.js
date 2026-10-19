@@ -57,7 +57,8 @@ const fail = (reason) => ({ ok: false, reason });
  * @param {{ maxAgeSeconds: number, now?: number }} opts  now — секунды Unix.
  * @returns {Promise<
  *   | { ok: true, authDate: number,
- *       user: { id: number, username: string, firstName: string, lastName: string } }
+ *       user: { id: number, username: string, firstName: string, lastName: string,
+ *               allowsWriteToPm: boolean } }
  *   | { ok: false, reason: "malformed" | "bad_signature" | "expired" | "no_user" }
  * >}
  */
@@ -115,6 +116,9 @@ export async function validateInitData(initData, botToken, { maxAgeSeconds, now 
       username: text(user.username, 64),
       firstName: text(user.first_name, 64),
       lastName: text(user.last_name, 64),
+      // Пользователь разрешил боту писать ему в личку — для напоминаний
+      // (send-reminders). Нет поля — не разрешал.
+      allowsWriteToPm: user.allows_write_to_pm === true,
     },
   };
 }

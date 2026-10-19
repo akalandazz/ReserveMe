@@ -79,9 +79,17 @@ export const NOT_CONFIGURED =
      "error"       — вход не удался, error — текст для экрана.
    role: null — ещё не прочитана, "user" | "master", "error" — прочитать
    не удалось (кабинет предлагает повторить, а не пускает «на всякий случай»).
-   name — имя из профиля (проверенный initData), для «Вы вошли как …».  */
+   name — имя из профиля (проверенный initData), для «Вы вошли как …».
+   reminders — напоминания о записи от бота включены (profiles.reminders);
+   null — ещё не прочитано. Меняет setReminders().  */
 
-const signedOut = (status, error = null) => ({ status, error, name: null, role: null });
+const signedOut = (status, error = null) => ({
+  status,
+  error,
+  name: null,
+  role: null,
+  reminders: null,
+});
 
 let snapshot = signedOut("unknown");
 let started = false;
@@ -105,15 +113,17 @@ function publish(next) {
 async function loadRole(id, seq) {
   let role = "error";
   let name = null;
+  let reminders = null;
   try {
     const { data, error } = await supabase
       .from("profiles")
-      .select("role,first_name,last_name,telegram_username")
+      .select("role,first_name,last_name,telegram_username,reminders")
       .eq("id", id)
       .limit(1);
     if (!error) {
       const p = data?.[0];
       role = p?.role ?? "user";
+      reminders = p?.reminders !== false;
       name =
         [p?.first_name, p?.last_name].filter(Boolean).join(" ") ||
         (p?.telegram_username ? `@${p.telegram_username}` : null);
@@ -121,7 +131,24 @@ async function loadRole(id, seq) {
   } catch {
     // role остаётся "error"
   }
-  if (seq === roleSeq) publish({ ...snapshot, role, name });
+  if (seq === roleSeq) publish({ ...snapshot, role, name, reminders });
+}
+
+/**
+ * Включить или выключить напоминания о записи — set_reminders() в базе
+ * (писать в profiles клиенту нельзя, функция меняет ровно эту колонку
+ * своей строки). → { ok, error }, ничего не бросает.
+ */
+export async function setReminders(enabled) {
+  if (!supabase) return { ok: false, error: NOT_CONFIGURED };
+  if (snapshot.status !== "signed") return { ok: false, error: "Войдите через Telegram" };
+  const seq = roleSeq;
+  const res = await withTimeout(supabase.rpc("set_reminders", { p_enabled: enabled }), 10_000);
+  if (!res || res.error) {
+    return { ok: false, error: res?.error?.message || "Нет связи с сервером" };
+  }
+  if (seq === roleSeq) publish({ ...snapshot, reminders: res.data !== false });
+  return { ok: true, error: null };
 }
 
 function applySession(session) {
@@ -138,7 +165,7 @@ function applySession(session) {
   if (id === userId && snapshot.status === "signed") return;
   userId = id;
   const seq = ++roleSeq;
-  publish({ status: "signed", error: null, name: null, role: null });
+  publish({ status: "signed", error: null, name: null, role: null, reminders: null });
   // Не внутри колбэка onAuthStateChange: запрос к базе оттуда ждёт
   // блокировку auth, которую держит сам колбэк, — взаимная блокировка.
   setTimeout(() => loadRole(id, seq), 0);

@@ -8,7 +8,15 @@ import {
 import { useContent } from "../content.js";
 import { formatPrice } from "../money.js";
 import { isPast, labelForKey } from "../schedule.js";
-import { cancelMessage, haptic, sendToMaster, showConfirm } from "../telegram.js";
+import { setReminders, useSession } from "../supabase.js";
+import {
+  botCanWrite,
+  cancelMessage,
+  haptic,
+  requestWriteAccess,
+  sendToMaster,
+  showConfirm,
+} from "../telegram.js";
 import {
   Icon,
   PrimaryButton,
@@ -67,6 +75,74 @@ function UpcomingCard({ booking, title, onCancel, onReschedule }) {
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+/** 24 → "за сутки", 3 → "за 3 часа", 12 → "за 12 часов". */
+function beforeLabel(hours) {
+  if (hours === 24) return "за сутки";
+  if (hours === 48) return "за двое суток";
+  if (hours === 72) return "за трое суток";
+  const n10 = hours % 10;
+  const n100 = hours % 100;
+  const word =
+    n10 === 1 && n100 !== 11 ? "час" : n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14) ? "часа" : "часов";
+  return `за ${hours} ${word}`;
+}
+
+/**
+ * Напоминания о подтверждённой записи от бота (Edge Function
+ * send-reminders). Включение сначала просит у Telegram разрешение боту
+ * писать — без него сообщение не дойдёт. Отказ — не включаем.
+ */
+function RemindersRow({ hours, onToast }) {
+  const { reminders } = useSession();
+  const [busy, setBusy] = useState(false);
+  if (reminders === null) return null;
+
+  const toggle = async () => {
+    if (busy) return;
+    const next = !reminders;
+    setBusy(true);
+    haptic("select");
+    if (next && !botCanWrite()) {
+      const granted = await requestWriteAccess();
+      if (granted === false) {
+        setBusy(false);
+        onToast("Без разрешения бот не сможет прислать напоминание.");
+        return;
+      }
+    }
+    const res = await setReminders(next);
+    setBusy(false);
+    if (!res.ok) {
+      haptic("error");
+      onToast("Не удалось сохранить — проверьте связь и попробуйте ещё раз.");
+      return;
+    }
+    onToast(next ? "Напомним о записи в Telegram." : "Напоминания выключены.");
+  };
+
+  return (
+    <div className="reminder-row">
+      <span className="list-main">
+        <span className="day-label">Напоминать о записи</span>
+        <span className="day-meta">
+          Бот пришлёт сообщение {beforeLabel(hours)} до подтверждённой записи
+        </span>
+      </span>
+      <button
+        className="switch"
+        type="button"
+        role="switch"
+        aria-checked={reminders}
+        aria-label="Напоминать о записи"
+        disabled={busy}
+        onClick={toggle}
+      >
+        <span className="switch-knob" />
+      </button>
     </div>
   );
 }
@@ -198,6 +274,10 @@ export default function MyBookingsScreen({ onBack, onBook, onReschedule }) {
 
       {bookings.length === 0 && (
         <div className="blank tall">Пока нет записей</div>
+      )}
+
+      {settings.reminderHours > 0 && (
+        <RemindersRow hours={settings.reminderHours} onToast={setToast} />
       )}
 
       <p className="note">

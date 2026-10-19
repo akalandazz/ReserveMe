@@ -56,6 +56,14 @@ create table if not exists public.settings (
   updated_at         timestamptz not null default now()
 );
 
+-- За сколько часов до начала бот напоминает клиенту о подтверждённой
+-- записи (claim_due_reminders, Edge Function send-reminders). 0 —
+-- напоминания выключены для всего салона. Правит мастер в кабинете.
+alter table public.settings add column if not exists reminder_hours integer not null default 24;
+alter table public.settings drop constraint if exists settings_reminder_hours_check;
+alter table public.settings add constraint settings_reminder_hours_check
+  check (reminder_hours between 0 and 72);
+
 -- ─── Услуги ────────────────────────────────────────────────────
 --  id — text, а не uuid: сохранённые у клиентов заявки ссылаются на
 --  услугу по нему (короткий ключ "s"), и по нему же достаётся название
@@ -170,6 +178,13 @@ alter table public.profiles add column if not exists first_name        text not 
 alter table public.profiles add column if not exists last_name         text not null default '';
 alter table public.profiles add column if not exists updated_at        timestamptz not null default now();
 alter table public.profiles add column if not exists last_login_at     timestamptz;
+-- Напоминания о записи от бота клиента (send-reminders). reminders —
+-- выбор самого клиента: пишет только set_reminders() (своя строка, одна
+-- колонка). bot_unreachable_at — Telegram ответил 403 (бота заблокировали
+-- или не разрешили ему писать): больше не пытаемся, пока telegram-auth не
+-- увидит в подписанном initData allows_write_to_pm и не сбросит отметку.
+alter table public.profiles add column if not exists reminders          boolean not null default true;
+alter table public.profiles add column if not exists bot_unreachable_at timestamptz;
 do $$
 begin
   if exists (select 1 from public.profiles where telegram_id is null) then
@@ -279,6 +294,11 @@ alter table public.bookings add column if not exists cancel_seen boolean not nul
 -- Ставит только триггер bookings_set_created_by (auth.uid()), что бы ни
 -- пришло в теле запроса.
 alter table public.bookings add column if not exists created_by uuid references auth.users(id) on delete set null;
+-- Когда бот отправил (точнее, взял в отправку) напоминание о записи —
+-- claim_due_reminders(). Перенос записи (другой день или время)
+-- сбрасывает отметку триггером bookings_reset_reminder: о новом времени
+-- клиенту напомнят заново.
+alter table public.bookings add column if not exists reminded_at timestamptz;
 
 -- Проверка статуса вынесена из create table: там её не расширить на
 -- живой базе. Имя — то, что Postgres дал прежней inline-проверке.
@@ -380,6 +400,28 @@ drop trigger if exists bookings_touch_updated_at on public.bookings;
 create trigger bookings_touch_updated_at
   before update on public.bookings
   for each row execute function public.touch_updated_at();
+
+-- ─── Перенос записи — напоминание заново ────────────────────────
+--  Одно место на все пути переноса: reschedule_own_booking,
+--  update_master_booking и всё, что появится потом.
+create or replace function public.reset_booking_reminder()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if new.day is distinct from old.day or new.start_min is distinct from old.start_min then
+    new.reminded_at := null;
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists bookings_reset_reminder on public.bookings;
+create trigger bookings_reset_reminder
+  before update on public.bookings
+  for each row execute function public.reset_booking_reminder();
 
 drop trigger if exists clients_touch_updated_at on public.clients;
 create trigger clients_touch_updated_at
@@ -990,6 +1032,173 @@ $$;
 
 revoke all on function public.reschedule_own_booking(bigint, date, integer) from public, anon;
 grant execute on function public.reschedule_own_booking(bigint, date, integer) to authenticated;
+
+-- ═══════════════════════════════════════════════════════════════
+--  Напоминания о записи — бот клиента пишет ему сам
+--
+--  Единственное место, где сервер пишет клиенту без его действия.
+--  pg_cron (supabase/reminders-cron.sql) раз в несколько минут дёргает
+--  Edge Function send-reminders, та берёт подошедшие записи через
+--  claim_due_reminders() и шлёт sendMessage от бота клиента на
+--  profiles.telegram_id. Токен бота живёт только в секретах функции,
+--  в базу он не попадает.
+--
+--  Напоминание — только о ПОДТВЕРЖДЁННОЙ записи (status = 'ok') клиента
+--  мини-аппа (user_id не пуст): у заявки время ещё не согласовано, а у
+--  клиентов, которых мастер завела сама, нет Telegram-аккаунта в базе.
+-- ═══════════════════════════════════════════════════════════════
+
+-- Начало записи как момент времени: day/start_min — тбилисские дата и
+-- минуты (см. busy_slots), now() — UTC.
+create or replace function public.booking_starts_at(p_day date, p_start_min integer)
+returns timestamptz
+language sql
+immutable
+security invoker
+set search_path = ''
+as $$
+  select (p_day + make_interval(mins => p_start_min)) at time zone 'Asia/Tbilisi'
+$$;
+
+-- Ищем только среди подтверждённых и ещё не напомненных.
+create index if not exists bookings_reminder_due_idx
+  on public.bookings (day, start_min)
+  where status = 'ok' and reminded_at is null and user_id is not null;
+
+-- ─── claim_due_reminders(): записи, о которых пора напомнить ──────
+--  Окно — (now + 30 мин, now + settings.reminder_hours]: о записи,
+--  которая начнётся меньше чем через полчаса, напоминать уже поздно.
+--  Запись, подтверждённую позже, чем за reminder_hours, напомнят сразу.
+--
+--  Отметка reminded_at ставится ЗДЕСЬ, до отправки, в том же update,
+--  что выбирает строки (for update skip locked): два наложившихся
+--  запуска не возьмут одну запись дважды. Временная ошибка Telegram —
+--  release_reminder() возвращает запись в очередь.
+--
+--  Только service role (Edge Function): клиенту и мастеру не нужно, а
+--  ответ несёт telegram_id.
+create or replace function public.claim_due_reminders(p_limit integer default 50)
+returns table (
+  booking_id   bigint,
+  telegram_id  bigint,
+  first_name   text,
+  day          date,
+  start_min    integer,
+  service_name text,
+  master_name  text,
+  address      text,
+  landmark     text
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+#variable_conflict use_column
+declare
+  hrs   integer;
+  today date := (now() at time zone 'Asia/Tbilisi')::date;
+begin
+  select s.reminder_hours into hrs from public.settings s where s.id = 1;
+  if coalesce(hrs, 0) <= 0 then
+    return;
+  end if;
+
+  return query
+  with due as (
+    select b.id
+      from public.bookings b
+      join public.profiles p on p.id = b.user_id
+     where b.status = 'ok'
+       and b.reminded_at is null
+       and p.reminders
+       and p.bot_unreachable_at is null
+       -- day — для индекса; точная граница — по моменту начала ниже.
+       and b.day between today and today + 4
+       and public.booking_starts_at(b.day, b.start_min) > now() + interval '30 minutes'
+       and public.booking_starts_at(b.day, b.start_min) <= now() + make_interval(hours => hrs)
+     order by b.day, b.start_min, b.id
+     limit greatest(1, least(p_limit, 200))
+     for update of b skip locked
+  ), claimed as (
+    update public.bookings b
+       set reminded_at = now()
+      from due
+     where b.id = due.id
+    returning b.id, b.user_id, b.day, b.start_min, b.service_name
+  )
+  select c.id, p.telegram_id, p.first_name, c.day, c.start_min, c.service_name,
+         st.master_name, st.address, st.landmark
+    from claimed c
+    join public.profiles p on p.id = c.user_id
+    cross join public.settings st
+   where st.id = 1
+   order by c.day, c.start_min, c.id;
+end
+$$;
+
+-- ─── release_reminder(): не дошло — попробовать в следующий раз ─────
+--  Для временных ошибок (сеть, 429, 5xx Telegram). Только если запись
+--  всё ещё та же: отметку, сброшенную переносом, трогать незачем.
+create or replace function public.release_reminder(p_id bigint)
+returns void
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+  update public.bookings set reminded_at = null
+   where id = p_id and reminded_at is not null
+$$;
+
+-- ─── mark_bot_unreachable(): Telegram ответил 403 ──────────────────
+--  Бот заблокирован или ему не разрешали писать. Без отметки каждый
+--  запуск снова получал бы 403 на каждую запись этого клиента.
+create or replace function public.mark_bot_unreachable(p_telegram_id bigint)
+returns void
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+  update public.profiles set bot_unreachable_at = now()
+   where telegram_id = p_telegram_id and bot_unreachable_at is null
+$$;
+
+revoke all on function public.claim_due_reminders(integer)  from public, anon, authenticated;
+revoke all on function public.release_reminder(bigint)      from public, anon, authenticated;
+revoke all on function public.mark_bot_unreachable(bigint)  from public, anon, authenticated;
+grant execute on function public.claim_due_reminders(integer)  to service_role;
+grant execute on function public.release_reminder(bigint)      to service_role;
+grant execute on function public.mark_bot_unreachable(bigint)  to service_role;
+
+-- ─── set_reminders(): клиент включает и выключает напоминания ─────
+--  Писать в profiles клиенту нельзя вовсе (см. RLS profiles) — эта
+--  функция меняет ровно одну колонку в строке вызывающего. Включение
+--  заодно снимает отметку «бот недоступен»: клиент только что разрешил
+--  боту писать (requestWriteAccess в мини-аппе). Если нет — следующая
+--  отправка снова получит 403 и поставит её обратно.
+create or replace function public.set_reminders(p_enabled boolean)
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.is_telegram_user() then
+    raise exception 'Войдите через Telegram' using errcode = '42501';
+  end if;
+  update public.profiles
+     set reminders = coalesce(p_enabled, true),
+         bot_unreachable_at = case when coalesce(p_enabled, true) then null else bot_unreachable_at end
+   where id = auth.uid();
+  return coalesce(p_enabled, true);
+end
+$$;
+
+revoke all on function public.set_reminders(boolean) from public, anon;
+grant execute on function public.set_reminders(boolean) to authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
 --  clients — как bookings: телефон и комментарии мастера не должны
