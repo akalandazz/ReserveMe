@@ -2,8 +2,9 @@
 rem Preview buttons in the cabinet bot - a wrapper around setup-admin-bot.mjs.
 rem Asks for the bot token, your Telegram id and the Vercel bypass secret; stores nothing.
 rem (ASCII only above chcp: cmd reads this file in the OEM code page.)
-rem   scripts\setup-admin-bot.cmd          - set the buttons
-rem   scripts\setup-admin-bot.cmd --reset  - restore the default menu button
+rem The menu button is left alone: it keeps opening the production cabinet.
+rem   scripts\setup-admin-bot.cmd          - send + pin the preview buttons message
+rem   scripts\setup-admin-bot.cmd --reset  - restore the production menu button in your chat
 chcp 65001 >nul
 setlocal
 

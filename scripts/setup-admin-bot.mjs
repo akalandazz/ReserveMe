@@ -1,9 +1,8 @@
 // Кнопки тестовой среды в боте кабинета — запускается вручную, один раз и после
 // смены секрета Vercel или адреса превью. Только в ОДНОМ чате (PREVIEW_CHAT_ID —
-// ваш числовой Telegram id), чат мастера остаётся с обычной кнопкой:
-//   • кнопка меню этого чата → кабинет из превью (setChatMenuButton);
-//   • закреплённое сообщение с двумя web_app-кнопками: «Кабинет (preview)» и
-//     «Клиент (preview)» (sendMessage, pinChatMessage).
+// ваш числовой Telegram id): закреплённое сообщение с двумя web_app-кнопками
+// «Кабинет (preview)» и «Клиент (preview)» (sendMessage, pinChatMessage).
+// Кнопка меню не трогается — она и дальше открывает кабинет из прода.
 // Превью закрыто Vercel Authentication, поэтому в URL идёт секрет
 // Protection Bypass for Automation (Project → Settings → Deployment Protection).
 // Превью работает на той же базе Supabase, что и прод: тестовые записи — настоящие.
@@ -11,7 +10,8 @@
 // Токен и секрет — только из переменных окружения, в репозиторий не пишутся:
 //   TELEGRAM_CABINET_BOT_TOKEN=… PREVIEW_CHAT_ID=… VERCEL_BYPASS_SECRET=… \
 //   node scripts/setup-admin-bot.mjs
-// PREVIEW_URL — по умолчанию алиас ветки dev. Вернуть обычную кнопку меню:
+// PREVIEW_URL — по умолчанию алиас ветки dev. Если кнопка меню этого чата была
+// переставлена на превью (старая версия скрипта), вернуть её к проду:
 //   node scripts/setup-admin-bot.mjs --reset
 
 const env = (name) => process.env[name]?.trim() ?? "";
@@ -61,10 +61,6 @@ const bypass = new URLSearchParams({
 const cabinetUrl = `${BASE}/admin.html?${bypass}`;
 const clientUrl = `${BASE}/?${bypass}`;
 
-await call("setChatMenuButton", {
-  chat_id,
-  menu_button: { type: "web_app", text: "Preview", web_app: { url: cabinetUrl } },
-});
 const msg = await call("sendMessage", {
   chat_id,
   text: "Тестовая среда (ветка dev)",
