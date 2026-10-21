@@ -397,20 +397,10 @@ deno_version = 2
 [edge_runtime.secrets]
 TELEGRAM_CLIENT_BOT_TOKEN = "111111:local-test-client-bot"
 TELEGRAM_CABINET_BOT_TOKEN = "222222:local-test-cabinet-bot"
-# send-reminders: секрет cron-задачи и поддельный Bot API — HTTP-сервер,
-# который поднимает e2e/integration/reminders.spec.js на хосте.
-REMINDERS_CRON_SECRET = "local-test-cron-secret"
-TELEGRAM_API_URL = "http://host.docker.internal:54399"
-CLIENT_APP_URL = "https://example.invalid/miniapp"
 
 # Вызывается до появления сессии — без проверки JWT (в проекте:
 # `supabase functions deploy telegram-auth --no-verify-jwt`).
 [functions.telegram-auth]
-verify_jwt = false
-
-# Доступ закрыт заголовком x-cron-secret (в проекте:
-# `supabase functions deploy send-reminders --no-verify-jwt`).
-[functions.send-reminders]
 verify_jwt = false
 
 [analytics]

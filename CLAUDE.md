@@ -33,9 +33,9 @@ All tests are Playwright, in three projects (`playwright.config.js`):
   `npx supabase status -o env`; exact commands in `e2e/integration/support.js`). Skipped
   without those variables; refuses a non-localhost URL; wipes bookings and clients.
   `supabase/config.toml` exists only for this stack: it seeds from `schema.sql` and holds
-  **fake** bot tokens the tests sign with, plus `send-reminders`' fake cron secret and a
-  `TELEGRAM_API_URL` pointing at the Bot API stub that `e2e/integration/reminders.spec.js`
-  serves on the host (`host.docker.internal:54399`). Run the integration project with
+  **fake** bot tokens the tests sign with. `e2e/integration/reminders.spec.js` calls the
+  Vercel reminder handler (`createHandler` from `api/send-reminders.js`) in Node, with its
+  own env and a Bot API stub on `localhost:54399`. Run the integration project with
   `--workers=1`: its files share one database.
 
 ## Architecture
@@ -117,12 +117,12 @@ Consequences that constrain every change here:
   Two clients racing on the same slot is still possible — there is no reservation, only
   a read — but the window is now the seconds between two refreshes, not days. The
   master still resolves any collision by hand in the cabinet.
-- **Reminders are the one message the server sends by itself.** pg_cron
-  (`supabase/reminders-cron.sql`, run once by hand, **not** part of `schema.sql`, so the
-  test stack never fires it) POSTs every 10 min to the `send-reminders` Edge Function
-  ([supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts),
-  `x-cron-secret` = `REMINDERS_CRON_SECRET`, `--no-verify-jwt`). It calls
-  `claim_due_reminders()` (service role only): `status = 'ok'` bookings with a `user_id`,
+- **Reminders are the one message the server sends by itself.** Vercel Cron
+  (`vercel.json` → `crons`, every 10 min) GETs the Vercel function
+  [api/send-reminders.js](api/send-reminders.js) with
+  `Authorization: Bearer <CRON_SECRET>` — **not** Supabase pg_cron / an Edge Function
+  anymore (that path was dropped; `supabase/reminders-cron-drop.sql` removes the old job).
+  It calls `claim_due_reminders()` with the service-role key (service role only): `status = 'ok'` bookings with a `user_id`,
   starting in `(now + 30 min, now + settings.reminder_hours]` (0 = off, set in the
   cabinet's «Настройки» → «Напоминания»), whose profile has `reminders` and no
   `bot_unreachable_at`. It stamps `reminded_at` **before** sending
@@ -254,10 +254,13 @@ seed, kept in the repo because the content is no longer in git otherwise.
     Email provider and Anonymous sign-ins (the function doesn't need any of them) →
     raise *Authentication → Rate Limits → token verifications*: every login is one OTP
     verification, and all of them come **from the function's IP** (default 30 per
-    5 min) → master opens the cabinet once → grant the role by SQL → reminders:
-    `supabase secrets set REMINDERS_CRON_SECRET=… CLIENT_APP_URL=…` → `supabase
-    functions deploy send-reminders --no-verify-jwt` → the two `vault.create_secret`
-    calls from the header of `supabase/reminders-cron.sql`, then that file.
+    5 min) → master opens the cabinet once → grant the role by SQL → reminders: in
+    Vercel → Environment Variables (Production, **no** `VITE_` prefix) set
+    `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TELEGRAM_CLIENT_BOT_TOKEN`,
+    `CRON_SECRET`, optional `CLIENT_APP_URL` → deploy (the cron comes from
+    `vercel.json`; a 10-minute schedule needs the Pro plan — Hobby allows daily crons
+    only, so on Hobby point an external scheduler at the same URL with the same
+    Bearer header instead).
 - **`bookings` RLS is asymmetric, unlike every other table**: a signed-in client may
   `insert` a row (`bookings_insert_client`: `status = 'new'`, `source = 'client'`,
   `user_id = auth.uid()`, `day` no earlier than yesterday **in Tbilisi** — the database
@@ -423,7 +426,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
 | [src/supabase.js](src/supabase.js) | Shared by both apps. Client (`persistSession: false` — the session never touches `localStorage`) + the session store (`useSession` → `{ status: "unknown" \| "signed" \| "no-telegram" \| "guest" \| "error", error, name, role }`, `signInWithTelegram`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. `initAuth()` signs in from `initData` on every launch. Every export must survive `supabase === null` (env vars unset). |
 | [supabase/functions/telegram-auth/](supabase/functions/telegram-auth/index.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Deployed with `--no-verify-jwt`. Logs no initData, tokens or e-mails. |
-| [supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts) | Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
+| [api/send-reminders.js](api/send-reminders.js) | Reminder sender — a **Vercel** Node function (not part of the Vite bundle), called by Vercel Cron (`vercel.json`) with `Authorization: Bearer <CRON_SECRET>`. `runReminders()` from `supabase/functions/_shared/reminders.js`: `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`; text and outcome rules live there too (used by `e2e/unit` and `e2e/integration`). `createHandler(env)` takes the env as a parameter so tests call it directly. Vercel env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TELEGRAM_CLIENT_BOT_TOKEN`, `CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Never imported from `src/`. Logs counts only. |
 | [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |

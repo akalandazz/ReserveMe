@@ -57,7 +57,7 @@ create table if not exists public.settings (
 );
 
 -- За сколько часов до начала бот напоминает клиенту о подтверждённой
--- записи (claim_due_reminders, Edge Function send-reminders). 0 —
+-- записи (claim_due_reminders, Vercel-функция api/send-reminders.js). 0 —
 -- напоминания выключены для всего салона. Правит мастер в кабинете.
 alter table public.settings add column if not exists reminder_hours integer not null default 24;
 alter table public.settings drop constraint if exists settings_reminder_hours_check;
@@ -1037,11 +1037,11 @@ grant execute on function public.reschedule_own_booking(bigint, date, integer) t
 --  Напоминания о записи — бот клиента пишет ему сам
 --
 --  Единственное место, где сервер пишет клиенту без его действия.
---  pg_cron (supabase/reminders-cron.sql) раз в несколько минут дёргает
---  Edge Function send-reminders, та берёт подошедшие записи через
---  claim_due_reminders() и шлёт sendMessage от бота клиента на
---  profiles.telegram_id. Токен бота живёт только в секретах функции,
---  в базу он не попадает.
+--  Vercel Cron (vercel.json) раз в 10 минут дёргает функцию
+--  api/send-reminders.js, та берёт подошедшие записи через
+--  claim_due_reminders() (service role) и шлёт sendMessage от бота
+--  клиента на profiles.telegram_id. Токен бота живёт только в окружении
+--  Vercel, в базу он не попадает.
 --
 --  Напоминание — только о ПОДТВЕРЖДЁННОЙ записи (status = 'ok') клиента
 --  мини-аппа (user_id не пуст): у заявки время ещё не согласовано, а у

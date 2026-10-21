@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { expect, test } from "@playwright/test";
+import { createHandler } from "../../api/send-reminders.js";
 import {
   CLIENT_BOT,
   ENABLED,
@@ -18,15 +19,14 @@ import {
 } from "./support.js";
 
 // Напоминания о записи на локальном Supabase: claim_due_reminders() и
-// соседи из supabase/schema.sql, set_reminders() под RLS и настоящая Edge
-// Function send-reminders. Bot API подменён HTTP-сервером на хосте:
-// функция в Docker ходит на TELEGRAM_API_URL из supabase/config.toml
-// (host.docker.internal:54399).
+// соседи из supabase/schema.sql, set_reminders() под RLS и настоящий
+// обработчик Vercel-функции api/send-reminders.js, вызванный здесь же, в
+// Node. Bot API подменён HTTP-сервером на localhost:54399.
 
 test.skip(!ENABLED, "нет SUPABASE_IT_* — локальный Supabase не поднят (см. support.js)");
 test.skip(ENABLED && !LOCAL_ONLY, "SUPABASE_IT_URL должен указывать на локальный стек");
 
-const CRON_SECRET = "local-test-cron-secret"; // supabase/config.toml
+const CRON_SECRET = "local-test-cron-secret";
 const BOT_PORT = 54399;
 // Функция без результата: PostgREST отвечает 204 (старые версии — 200).
 const VOID_OK = [200, 204];
@@ -220,7 +220,7 @@ test.describe("права", () => {
   });
 });
 
-test.describe("Edge Function send-reminders", () => {
+test.describe("Vercel-функция send-reminders", () => {
   /** Поддельный Bot API: ответ по chat_id, все запросы — в журнал. */
   let server;
   const calls = [];
@@ -246,12 +246,24 @@ test.describe("Edge Function send-reminders", () => {
     await new Promise((resolve) => (server ? server.close(resolve) : resolve()));
   });
 
-  const run = (secret = CRON_SECRET) =>
-    api("/functions/v1/send-reminders", {
-      method: "POST",
-      headers: secret === null ? {} : { "x-cron-secret": secret },
-      body: {},
-    });
+  const handler = createHandler({
+    SUPABASE_URL: IT.url,
+    SUPABASE_SERVICE_ROLE_KEY: IT.service,
+    TELEGRAM_CLIENT_BOT_TOKEN: CLIENT_BOT,
+    CRON_SECRET,
+    CLIENT_APP_URL: "https://example.invalid/miniapp",
+    TELEGRAM_API_URL: `http://127.0.0.1:${BOT_PORT}`,
+  });
+
+  /** Как Vercel Cron: GET с Authorization: Bearer <CRON_SECRET>. */
+  const run = async (secret = CRON_SECRET) => {
+    const res = await handler(
+      new Request("http://localhost/api/send-reminders", {
+        headers: secret === null ? {} : { authorization: `Bearer ${secret}` },
+      })
+    );
+    return { status: res.status, data: await res.json() };
+  };
 
   test("без секрета или с чужим — 401, ничего не берёт", async () => {
     const b = await booking(A, 3);

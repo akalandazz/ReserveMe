@@ -1,8 +1,8 @@
 // Напоминания о записи: текст сообщения и цикл отправки.
 //
 // Обычный ESM без зависимостей, как telegram-init-data.js: его исполняет
-// Edge Function send-reminders (Deno) и юнит-тест e2e/unit (Node). Сеть и
-// база приходят параметрами (send/release/markUnreachable) — здесь только
+// Vercel-функция api/send-reminders.js и тесты e2e/unit, e2e/integration
+// (Node). Сеть и база приходят параметрами (rpc/send) — здесь только
 // решения: что написать и что делать с ответом Telegram.
 //
 // Строки — из claim_due_reminders() (supabase/schema.sql):
@@ -119,4 +119,21 @@ export async function deliverReminders(rows, { send, release, markUnreachable, n
     }
   }
   return counts;
+}
+
+/**
+ * Один запуск: claim_due_reminders() → deliverReminders.
+ *   rpc(name, args) → данные ответа; бросает при ошибке базы;
+ *   send(body) → HTTP-статус Telegram, как у deliverReminders.
+ * Ошибка claim уходит наружу — запуск не состоялся, записи не тронуты.
+ */
+export async function runReminders({ rpc, send, now = new Date(), appUrl = "", batch = 50 }) {
+  const rows = (await rpc("claim_due_reminders", { p_limit: batch })) ?? [];
+  return deliverReminders(rows, {
+    send,
+    release: (id) => rpc("release_reminder", { p_id: id }),
+    markUnreachable: (tgId) => rpc("mark_bot_unreachable", { p_telegram_id: tgId }),
+    now,
+    appUrl,
+  });
 }

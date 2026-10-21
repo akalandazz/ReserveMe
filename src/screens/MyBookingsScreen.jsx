@@ -92,8 +92,8 @@ function beforeLabel(hours) {
 }
 
 /**
- * Напоминания о подтверждённой записи от бота (Edge Function
- * send-reminders). Включение сначала просит у Telegram разрешение боту
+ * Напоминания о подтверждённой записи от бота (Vercel-функция
+ * api/send-reminders.js). Включение сначала просит у Telegram разрешение боту
  * писать — без него сообщение не дойдёт. Отказ — не включаем.
  */
 function RemindersRow({ hours, onToast }) {
