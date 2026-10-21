@@ -53,7 +53,16 @@ function toAdminSettings(row) {
   if (!row) return null;
   return {
     masterName: row.master_name ?? "",
+    masterUsername: row.master_username ?? "",
+    masterPhone: row.master_phone ?? "",
+    address: row.address ?? "",
+    landmark: row.landmark ?? "",
+    transport: row.transport ?? "",
+    mapUrl: row.map_url ?? "",
+    workingHoursText: row.working_hours_text ?? "",
     slotStepMinutes: Number(row.slot_step_minutes) || 30,
+    bookingDaysAhead: Number(row.booking_days_ahead) || 14,
+    minLeadMinutes: Number.isInteger(row.min_lead_minutes) ? row.min_lead_minutes : 120,
     workingHours: row.working_hours ?? {},
     reminderHours: Number.isInteger(row.reminder_hours) ? row.reminder_hours : 24,
   };
@@ -100,7 +109,11 @@ const LOADERS = {
   settings: () =>
     supabase
       .from("settings")
-      .select("master_name,slot_step_minutes,working_hours,reminder_hours")
+      .select(
+        "master_name,master_username,master_phone,address,landmark,transport,map_url," +
+          "working_hours_text,slot_step_minutes,booking_days_ahead,min_lead_minutes," +
+          "working_hours,reminder_hours"
+      )
       .eq("id", 1)
       .maybeSingle(),
   services: () =>

@@ -1604,6 +1604,42 @@ input:focus {
   color: var(--muted);
 }
 
+/* ─── Профиль, адрес, правила записи (SalonSection) ───────────── */
+
+.salon-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 14px 4px;
+}
+
+.salon-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.salon-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.salon-field textarea.field {
+  resize: vertical;
+}
+
+.salon-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.salon-fields .form-error {
+  margin: 0 2px;
+}
+
 /* ─── Клиенты ─────────────────────────────────────────────────── */
 
 .clients-controls {
