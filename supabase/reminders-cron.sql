@@ -8,7 +8,10 @@
 --
 -- Адрес функции и секрет — в Vault, не в тексте задачи: cron.job читают
 -- не только суперпользователи. Секрет тот же, что
--- `supabase secrets set REMINDERS_CRON_SECRET=…` у функции.
+-- REMINDERS_CRON_SECRET у функции. Секреты функции задавать в дашборде
+-- (Edge Functions → Secrets), не `supabase secrets set` из репозитория:
+-- CLI заодно заливает тестовые значения из [edge_runtime.secrets] в
+-- supabase/config.toml поверх настоящих токенов ботов.
 --
 -- Перед первым запуском (подставьте свои значения, один раз):
 --   select vault.create_secret('https://<project-ref>.supabase.co/functions/v1/send-reminders',

@@ -258,6 +258,11 @@ seed, kept in the repo because the content is no longer in git otherwise.
     `supabase secrets set REMINDERS_CRON_SECRET=… CLIENT_APP_URL=…` → `supabase
     functions deploy send-reminders --no-verify-jwt` → the two `vault.create_secret`
     calls from the header of `supabase/reminders-cron.sql`, then that file.
+    **Set project secrets in the dashboard** (*Edge Functions → Secrets*), never with
+    `supabase secrets set` from this repo: the CLI (seen on v2.119, even with
+    `--workdir`) also pushes every `[edge_runtime.secrets]` entry from
+    `supabase/config.toml` — the fake test bot tokens, `TELEGRAM_API_URL` (the test
+    stub) and `CLIENT_APP_URL` — overwriting the real ones. `secrets unset` is safe.
 - **`bookings` RLS is asymmetric, unlike every other table**: a signed-in client may
   `insert` a row (`bookings_insert_client`: `status = 'new'`, `source = 'client'`,
   `user_id = auth.uid()`, `day` no earlier than yesterday **in Tbilisi** — the database
