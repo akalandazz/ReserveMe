@@ -13,6 +13,7 @@ import ClientsSection from "./components/ClientsSection.jsx";
 import BookingSheet from "./components/BookingSheet.jsx";
 import { Icon } from "./components/Icons.jsx";
 import RequestsSection from "./components/RequestsSection.jsx";
+import SalonSection from "./components/SalonSection.jsx";
 import ScheduleSection from "./components/ScheduleSection.jsx";
 import ServicesSection from "./components/ServicesSection.jsx";
 import SignIn from "./components/SignIn.jsx";
@@ -381,6 +382,16 @@ export default function AdminApp() {
                   onToast={flash}
                   onError={showError}
                 />
+
+                {data.settings && (
+                  <SalonSection
+                    settings={data.settings}
+                    busy={busy}
+                    busyThen={busyThen}
+                    onToast={flash}
+                    onError={showError}
+                  />
+                )}
 
                 <ScheduleSection settings={data.settings} onError={showError} />
 
