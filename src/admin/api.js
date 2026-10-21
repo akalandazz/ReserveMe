@@ -97,6 +97,76 @@ export function saveReminderHours(hours) {
   );
 }
 
+/* ─── Салон: профиль, адрес, правила записи ─────────────────────── */
+
+// Ключ из toAdminSettings (store.js) → колонка settings.
+const SETTINGS_COLUMNS = {
+  masterName: "master_name",
+  masterUsername: "master_username",
+  masterPhone: "master_phone",
+  address: "address",
+  landmark: "landmark",
+  transport: "transport",
+  mapUrl: "map_url",
+  workingHoursText: "working_hours_text",
+  slotStepMinutes: "slot_step_minutes",
+  bookingDaysAhead: "booking_days_ahead",
+  minLeadMinutes: "min_lead_minutes",
+};
+
+// settings_slot_step_minutes_check в schema.sql.
+export const SLOT_STEPS = [5, 10, 15, 20, 30, 60];
+
+const NUMERIC_SETTINGS = new Set(["slotStepMinutes", "bookingDaysAhead", "minLeadMinutes"]);
+
+/** Обрезает пробелы, снимает «@» с логина, числа — в числа. Только переданные ключи. */
+export function normalizeSettingsFields(patch) {
+  const out = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (!(key in SETTINGS_COLUMNS)) continue;
+    if (NUMERIC_SETTINGS.has(key)) out[key] = Number(value);
+    else if (key === "masterUsername") out[key] = String(value ?? "").trim().replace(/^@+/, "");
+    else out[key] = String(value ?? "").trim();
+  }
+  return out;
+}
+
+/** Первое нарушенное правило (те же ограничения, что в schema.sql) или null. */
+export function validateSettingsFields(s) {
+  if ("masterName" in s && (!s.masterName || s.masterName.length > 40))
+    return "Имя мастера — от 1 до 40 символов";
+  if ("masterUsername" in s && !/^[A-Za-z0-9_]{0,32}$/.test(s.masterUsername))
+    return "Логин Telegram — латиница, цифры и «_», до 32 символов";
+  // Клиент открывает ссылку через openLink — только https, без javascript: и т. п.
+  if ("mapUrl" in s && s.mapUrl && !/^https:\/\/\S+$/i.test(s.mapUrl))
+    return "Ссылка на карту должна начинаться с https://";
+  if ("slotStepMinutes" in s && !SLOT_STEPS.includes(s.slotStepMinutes))
+    return `Шаг записи — одно из: ${SLOT_STEPS.join(", ")} минут`;
+  if (
+    "bookingDaysAhead" in s &&
+    (!Number.isInteger(s.bookingDaysAhead) || s.bookingDaysAhead < 1 || s.bookingDaysAhead > 60)
+  )
+    return "Запись вперёд — от 1 до 60 дней";
+  if (
+    "minLeadMinutes" in s &&
+    (!Number.isInteger(s.minLeadMinutes) || s.minLeadMinutes < 0 || s.minLeadMinutes > 10080)
+  )
+    return "Запись не позже чем — от 0 минут до 7 дней";
+  return null;
+}
+
+/** Пишет только переданные поля: форма профиля не затирает правила записи и наоборот. */
+export function saveSettings(patch) {
+  const fields = normalizeSettingsFields(patch);
+  const err = validateSettingsFields(fields);
+  if (err) return Promise.resolve({ ok: false, error: err });
+  const row = Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [SETTINGS_COLUMNS[key], value])
+  );
+  if (Object.keys(row).length === 0) return Promise.resolve({ ok: true, error: null });
+  return run(() => supabase.from("settings").update(row).eq("id", 1), ["settings"]);
+}
+
 /* ─── Дни без записи ────────────────────────────────────────────── */
 
 export function closeDay(day) {
