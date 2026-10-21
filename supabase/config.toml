@@ -413,6 +413,12 @@ verify_jwt = false
 [functions.send-reminders]
 verify_jwt = false
 
+# Вебхук бота клиента: Telegram шлёт без JWT, доступ закрыт заголовком
+# X-Telegram-Bot-Api-Secret-Token (в проекте:
+# `supabase functions deploy client-bot --no-verify-jwt`).
+[functions.client-bot]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327
