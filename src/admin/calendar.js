@@ -7,7 +7,7 @@
 // специфично для страницы мастера: разбор произвольного ключа обратно
 // в Date, сетка недели и сплошная (не завязанная на услугу) сетка дня.
 
-import { dateKey, toHHMM, toMinutes } from "../schedule.js";
+import { dateKey, hoursForDay, toHHMM, toMinutes } from "../schedule.js";
 
 /** "ГГГГ-ММ-ДД" -> Date в локальном времени. Обратное к dateKey(). */
 export function parseKey(key) {
@@ -20,10 +20,26 @@ export function hoursFor(settings, dow) {
   return settings?.workingHours?.[dow] ?? null;
 }
 
-/** День закрыт целиком: либо нерабочий по графику, либо в days_off. */
-export function isDayClosed(settings, daysOff, key) {
-  const dow = parseKey(key).getDay();
-  return !hoursFor(settings, dow) || daysOff.includes(key);
+/**
+ * Шаг ± на полчаса для начала или конца рабочего дня ({from,to}): в
+ * пределах 06:00–23:00 и не короче часа. null — шаг не делается.
+ * Одно правило для «График работы» и разово открытого дня.
+ */
+export function stepHours(hours, field, delta) {
+  if (!hours) return null;
+  const m = Math.max(360, Math.min(1380, toMinutes(hours[field]) + delta * 30));
+  const next = { ...hours, [field]: toHHMM(m) };
+  if (toMinutes(next.to) - toMinutes(next.from) < 60) return null;
+  return next;
+}
+
+/**
+ * День закрыт целиком: в days_off или нерабочий по графику и не открыт
+ * разово (days_open). Правило — hoursForDay() из src/schedule.js, то же,
+ * по которому сервер считает free_slots.
+ */
+export function isDayClosed(settings, daysOff, daysOpen, key) {
+  return !hoursForDay(settings, daysOff, daysOpen, key);
 }
 
 export function bookingsForDay(bookings, key) {
@@ -123,13 +139,13 @@ export function weekStart(key) {
  * графике 10:00–19:00 треть колонки уходила в пустоту, а запись,
  * перенесённая мастером за пределы графика, из сетки просто выпадала.
  */
-export function weekRange(settings, keys, bookings, blockedSlots, step = 30) {
+export function weekRange(settings, daysOpen, keys, bookings, blockedSlots, step = 30) {
   const days = new Set(keys);
   let from = Infinity;
   let to = -Infinity;
 
   for (const key of keys) {
-    const h = hoursFor(settings, parseKey(key).getDay());
+    const h = hoursForDay(settings, [], daysOpen, key);
     if (!h) continue;
     from = Math.min(from, toMinutes(h.from));
     to = Math.max(to, toMinutes(h.to));
@@ -212,11 +228,10 @@ export function layoutEvents(events) {
  * src/schedule.js — та считает окна под конкретную услугу клиента,
  * а здесь нужна сплошная сетка независимо от услуги.
  */
-export function buildDayRows(settings, daysOff, bookings, blockedSlots, key) {
-  const dow = parseKey(key).getDay();
-  const hours = hoursFor(settings, dow);
+export function buildDayRows(settings, daysOff, daysOpen, bookings, blockedSlots, key) {
+  const hours = hoursForDay(settings, daysOff, daysOpen, key);
   const closedByOff = daysOff.includes(key);
-  if (!hours || closedByOff) {
+  if (!hours) {
     return { closed: true, closedByOff, rows: [], freeCount: 0 };
   }
 

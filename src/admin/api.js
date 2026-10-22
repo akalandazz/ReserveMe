@@ -177,6 +177,27 @@ export function openDay(day) {
   return run(() => supabase.from("days_off").delete().eq("day", day), ["daysOff"]);
 }
 
+/* ─── Разово открытые выходные ──────────────────────────────────
+   Нерабочий по графику день недели, открытый на одну дату (days_open):
+   недельный график не меняется. Upsert — и открыть, и поправить часы.  */
+
+export function openDayOnce(day, hours) {
+  if (!hours?.from || !hours?.to || hours.from >= hours.to) {
+    return Promise.resolve({ ok: false, error: "Конец дня должен быть позже начала" });
+  }
+  return run(
+    () =>
+      supabase
+        .from("days_open")
+        .upsert({ day, hours: { from: hours.from, to: hours.to } }, { onConflict: "day" }),
+    ["daysOpen"]
+  );
+}
+
+export function closeDayOnce(day) {
+  return run(() => supabase.from("days_open").delete().eq("day", day), ["daysOpen"]);
+}
+
 /* ─── Закрытые окошки ───────────────────────────────────────────── */
 
 export function blockSlot(day, startMin) {

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { DayPicker } from "react-day-picker";
 import { ru } from "react-day-picker/locale";
 import { dateKey } from "../../schedule.js";
-import { bookingCountsByDay, hoursFor, parseKey } from "../calendar.js";
+import { bookingCountsByDay, isDayClosed, parseKey } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
 
 // Своя тема вместо react-day-picker/style.css: без чужого CSS все
@@ -64,15 +64,11 @@ function MonthNav({ month, onPrev, onNext }) {
   );
 }
 
-export default function MonthGrid({ settings, daysOff, bookings, selectedKey, onSelect }) {
+export default function MonthGrid({ settings, daysOff, daysOpen, bookings, selectedKey, onSelect }) {
   const [month, setMonth] = useState(() => parseKey(selectedKey));
   const counts = useMemo(() => bookingCountsByDay(bookings), [bookings]);
-  const daysOffSet = useMemo(() => new Set(daysOff), [daysOff]);
 
-  const closed = (date) => {
-    const key = dateKey(date);
-    return !hoursFor(settings, date.getDay()) || daysOffSet.has(key);
-  };
+  const closed = (date) => isDayClosed(settings, daysOff, daysOpen, dateKey(date));
   const count1 = (date) => counts.get(dateKey(date)) === 1;
   const count2 = (date) => counts.get(dateKey(date)) === 2;
   const count3 = (date) => (counts.get(dateKey(date)) || 0) >= 3;

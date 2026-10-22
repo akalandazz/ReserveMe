@@ -23,6 +23,7 @@ const VIEWS = [
 export default function CalendarSection({
   settings,
   daysOff,
+  daysOpen,
   bookings,
   blockedSlots,
   view,
@@ -65,6 +66,7 @@ export default function CalendarSection({
         <MonthGrid
           settings={settings}
           daysOff={daysOff}
+          daysOpen={daysOpen}
           bookings={bookings}
           selectedKey={selectedKey}
           onSelect={setSelectedKey}
@@ -75,6 +77,7 @@ export default function CalendarSection({
         <WeekGrid
           settings={settings}
           daysOff={daysOff}
+          daysOpen={daysOpen}
           bookings={bookings}
           blockedSlots={blockedSlots}
           selectedKey={selectedKey}
@@ -86,6 +89,7 @@ export default function CalendarSection({
       <DayPanel
         settings={settings}
         daysOff={daysOff}
+        daysOpen={daysOpen}
         bookings={bookings}
         blockedSlots={blockedSlots}
         selectedKey={selectedKey}

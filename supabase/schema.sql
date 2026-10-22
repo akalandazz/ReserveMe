@@ -99,7 +99,24 @@ create table if not exists public.days_off (
   note text not null default ''
 );
 
--- ─── Блоки «Важной информации» ─────────────────────────────────
+-- ─── Разово открытые дни ───────────────────────────────────────
+--  Зеркало days_off: нерабочий по графику день недели, открытый на
+--  одну дату, с часами в формате working_hours ({"from","to"}).
+--  Недельный график при этом не меняется. days_off сильнее: дата в
+--  обеих таблицах закрыта (кабинет такого не делает). Часы дня — только
+--  через hours_for_day() ниже.
+create table if not exists public.days_open (
+  day   date  primary key,
+  hours jsonb not null,
+  constraint days_open_hours_check check (
+    jsonb_typeof(hours) = 'object'
+    and (hours ->> 'from') ~ '^\d{2}:\d{2}$'
+    and (hours ->> 'to')   ~ '^\d{2}:\d{2}$'
+    and (hours ->> 'from') < (hours ->> 'to')
+  )
+);
+
+-- ─── Блоки «Важной информации»─────────────────────────────────
 --  id — обычный identity: на него, в отличие от services.id, никто не
 --  ссылается. Колонка body, а не text: text — имя типа.
 create table if not exists public.info_blocks (
@@ -465,7 +482,7 @@ create trigger bookings_set_created_by
 --  Старые бандлы клиента продолжают работать: они шлют те же колонки,
 --  просто их значения теперь перезаписываются.
 --
---  Время тоже проверяется: рабочий день недели, не в days_off, услуга
+--  Время тоже проверяется: рабочий день (hours_for_day), услуга
 --  укладывается в часы, старт стоит на сетке. Сетка — та же, что у
 --  buildSlots() в src/schedule.js: от начала рабочего дня, а для
 --  «сегодня» — от полуночи (там earliest округляется до шага), поэтому
@@ -496,6 +513,30 @@ create trigger bookings_set_created_by
 create index if not exists bookings_client_created_idx
   on public.bookings (created_at)
   where source = 'client';
+
+-- ─── hours_for_day(): часы конкретной даты ───────────────────────
+--  Одно правило для заявки клиента и free_slots мастера: дата в
+--  days_off — закрыта (null); есть в days_open — её часы; иначе часы
+--  дня недели из settings.working_hours (там может лежать и JSON null).
+--  Вызывающие проверяют jsonb_typeof(...) = 'object'. Повторяет
+--  hoursForDay() в src/schedule.js — меняются вместе.
+--  Читает только публичные таблицы, поэтому исполнять может кто угодно.
+create or replace function public.hours_for_day(p_day date)
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select case
+    when exists (select 1 from public.days_off d where d.day = p_day) then null
+    else coalesce(
+      (select o.hours from public.days_open o where o.day = p_day),
+      (select s.working_hours -> extract(dow from p_day)::int::text
+         from public.settings s where s.id = 1)
+    )
+  end
+$$;
 
 -- ─── assert_client_slot(): то, что клиент вправе выбрать ─────────
 --  Одно правило для новой заявки (guard_client_booking) и переноса
@@ -538,11 +579,7 @@ begin
     raise exception 'День вне окна записи';
   end if;
 
-  if exists (select 1 from public.days_off d where d.day = p_day) then
-    raise exception 'В этот день мастер не принимает';
-  end if;
-
-  hours := st.working_hours -> extract(dow from p_day)::int::text;
+  hours := public.hours_for_day(p_day);
   if hours is null or jsonb_typeof(hours) <> 'object' then
     raise exception 'В этот день мастер не принимает';
   end if;
@@ -833,12 +870,13 @@ revoke all on public.consents from anon, authenticated;
 alter table public.settings    enable row level security;
 alter table public.services    enable row level security;
 alter table public.days_off    enable row level security;
+alter table public.days_open   enable row level security;
 alter table public.info_blocks enable row level security;
 
 do $$
 declare t text;
 begin
-  foreach t in array array['settings', 'services', 'days_off', 'info_blocks'] loop
+  foreach t in array array['settings', 'services', 'days_off', 'days_open', 'info_blocks'] loop
     execute format('drop policy if exists %I_select_public on public.%I', t, t);
     execute format('drop policy if exists %I_insert_auth   on public.%I', t, t);
     execute format('drop policy if exists %I_update_auth   on public.%I', t, t);
@@ -1299,7 +1337,8 @@ grant select on public.client_stats to authenticated;
 --  Считается на сервере, а не в кабинете: там же, где проверяет
 --  create_master_booking(), — одно правило на показ и на запись.
 --  Старт подходит, если вся услуга [t, t + duration):
---    • укладывается в рабочие часы дня недели, и день не в days_off;
+--    • укладывается в рабочие часы даты (hours_for_day: график дня
+--      недели, days_off, days_open);
 --    • не пересекает ни одну запись и ни одно закрытое окошко
 --      (у закрытого окошка длина — шаг сетки, как в busy_slots);
 --    • не в прошлом (сегодня — строго позже текущего времени);
@@ -1347,11 +1386,7 @@ begin
   if wh is null or dur is null or p_day < local_now::date then
     return;
   end if;
-  if exists (select 1 from public.days_off d where d.day = p_day) then
-    return;
-  end if;
-
-  hours := wh -> extract(dow from p_day)::int::text;
+  hours := public.hours_for_day(p_day);
   if hours is null or jsonb_typeof(hours) <> 'object' then
     return;
   end if;

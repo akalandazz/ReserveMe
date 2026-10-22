@@ -155,7 +155,7 @@ Consequences that constrain every change here:
 | | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
 |---|---|---|
 | Auth | Telegram `initData` → `telegram-auth` → Supabase session, **in memory only**; role `user` | the same, through the cabinet bot; data only for role `master` |
-| Reads | `settings`, `services`, `days_off`, `info_blocks`, `busy_slots` (public), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only) |
+| Reads | `settings`, `services`, `days_off`, `days_open`, `info_blocks`, `busy_slots` (public), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only) |
 | Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)`, `set_reminders(enabled)` (its own `profiles.reminders` only) — never `profiles` directly | everything, incl. its own confirmed bookings via `create_master_booking()` — never `profiles` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
@@ -163,7 +163,9 @@ Consequences that constrain every change here:
 Shared as plain imports (both apps use these as-is, no duplication):
 [src/supabase.js](src/supabase.js), [src/theme.js](src/theme.js),
 [src/telegram.js](src/telegram.js), [src/money.js](src/money.js), and from [src/schedule.js](src/schedule.js) the
-date/time helpers (`dateKey`, `toMinutes`, `toHHMM`, `labelForKey`) — but **not**
+date/time helpers (`dateKey`, `toMinutes`, `toHHMM`, `labelForKey`) and the
+"which hours does this date have" rule (`hoursForDay`, `toDaysOpen` — see «Days off
+and one-off open days» below) — but **not**
 `buildSlots`/`buildDays`/`serverBusyFor`/`isPast`, which are shaped around the client's
 booking flow, not the cabinet's day/week/month calendar
 ([src/admin/calendar.js](src/admin/calendar.js) has the cabinet's own equivalents).
@@ -196,12 +198,24 @@ booking flow, not the cabinet's day/week/month calendar
 
 ### Content, bookings and RLS
 
-Salon content lives in four Supabase tables (`settings` — a single row, `services`,
-`days_off`, `info_blocks`), plus two tables that exist only for the cabinet
+Salon content lives in five Supabase tables (`settings` — a single row, `services`,
+`days_off`, `days_open`, `info_blocks`), plus two tables that exist only for the cabinet
 (`bookings`, `blocked_slots`) and a view (`busy_slots`) that exposes availability
 without personal data — the client reads that view, never `bookings` itself.
 [supabase/schema.sql](supabase/schema.sql) is the schema and
 seed, kept in the repo because the content is no longer in git otherwise.
+
+- **Days off and one-off open days.** A date's hours come from one rule, written
+  twice: `hours_for_day(day)` in `schema.sql` (used by `assert_client_slot` and
+  `free_slots`) and `hoursForDay(settings, daysOff, daysOpen, key)` in `schedule.js`
+  (client's `buildDays`/`buildSlots`, the cabinet's month/week/day views and the
+  sheet). In `days_off` → closed; in `days_open` (`day`, `hours` `{from,to}`) → those
+  hours; otherwise `settings.working_hours[dow]`. They change together. In the day
+  panel a weekday that is off by schedule offers «Открыть только этот день»
+  (`openDayOnce` → `days_open`, ± for its hours, «Закрыть день» deletes the row) and,
+  secondary, «Сделать рабочими все <четверги>» (the weekly schedule). Before
+  `days_open` existed the only button was the second one, which opened every such
+  weekday — don't fold them back together.
 
 - The anon key ships **inside the bundle** — that is expected. The security boundary is
   RLS.
@@ -334,7 +348,7 @@ seed, kept in the repo because the content is no longer in git otherwise.
   `update_master_booking` does when it switches the client) — that is what makes a
   booking the master adds for a Mini App client show up in their «Мои записи», and
   what makes cancelling it a soft `cancelled`, not a delete. Start times come from `free_slots(day, service_id, exclude_id)` on the
-  server (working hours, `days_off`, overlaps with bookings and blocked slots, not in
+  server (the date's hours via `hours_for_day`, overlaps with bookings and blocked slots, not in
   the past, on the `slot_step_minutes` grid), and the per-day counts in the sheet's
   «Выберите день» step come from `free_slot_counts()`, which wraps the same function.
   `create_master_booking` re-checks under an advisory lock. The cabinet must never
