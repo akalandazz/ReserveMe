@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { toHHMM, toMinutes } from "../../schedule.js";
 import { saveReminderHours, saveWorkingHours } from "../api.js";
+import { stepHours } from "../calendar.js";
 
 const LABELS = ["Воскр.", "Понед.", "Вторн.", "Среда", "Четв.", "Пятн.", "Суббота"];
 const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];
@@ -57,12 +57,8 @@ export default function ScheduleSection({ settings, onError }) {
   };
 
   const shift = (dow, field, delta) => {
-    const cur = hours[dow];
-    if (!cur) return;
-    const patched = { ...cur };
-    const m = Math.max(360, Math.min(1380, toMinutes(patched[field]) + delta * 30));
-    patched[field] = toHHMM(m);
-    if (toMinutes(patched.to) - toMinutes(patched.from) < 60) return;
+    const patched = stepHours(hours[dow], field, delta);
+    if (!patched) return;
     const next = { ...hours, [dow]: patched };
     setHours(next);
     persist(next);

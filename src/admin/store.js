@@ -12,6 +12,7 @@
 // === "signed" — см. AdminApp.jsx.
 
 import { useSyncExternalStore } from "react";
+import { toDaysOpen } from "../schedule.js";
 import { NOT_CONFIGURED, supabase } from "../supabase.js";
 
 const EMPTY = {
@@ -20,6 +21,7 @@ const EMPTY = {
   settings: null,
   services: [],
   daysOff: [],
+  daysOpen: {}, // разово открытые выходные: { "ГГГГ-ММ-ДД": { from, to } }
   blockedSlots: [],
   bookings: [], // без отменённых — см. splitBookings()
   cancellations: [], // отмены клиентов, которые мастер ещё не видела
@@ -123,6 +125,7 @@ const LOADERS = {
       .order("sort", { ascending: true })
       .order("id", { ascending: true }),
   daysOff: () => supabase.from("days_off").select("day").order("day", { ascending: true }),
+  daysOpen: () => supabase.from("days_open").select("day,hours").order("day", { ascending: true }),
   blockedSlots: () => supabase.from("blocked_slots").select("day,start_min"),
   bookings: () =>
     selectAll((opts) =>
@@ -159,6 +162,7 @@ const PARTS = Object.keys(LOADERS);
 const PARSE = {
   settings: toAdminSettings,
   daysOff: (rows) => (rows ?? []).map((r) => r.day),
+  daysOpen: toDaysOpen,
 };
 
 // Записи как пришли из базы, до withClientNames: перечитали только

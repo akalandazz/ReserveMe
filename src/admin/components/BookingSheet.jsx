@@ -65,6 +65,7 @@ export default function BookingSheet({
   bookings,
   settings,
   daysOff,
+  daysOpen,
   initial,
   onClose,
   onDone,
@@ -628,7 +629,7 @@ export default function BookingSheet({
       const date = new Date();
       date.setDate(date.getDate() + i);
       const k = dateKey(date);
-      const closed = isDayClosed(settings, daysOff, k);
+      const closed = isDayClosed(settings, daysOff, daysOpen, k);
       const n = counts.map.get(k) ?? 0;
       const state = closed
         ? "выходной"

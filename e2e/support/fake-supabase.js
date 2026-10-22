@@ -124,6 +124,8 @@ function seed() {
       { id: "manicure", name: "Маникюр", price: 60, duration: 90, sort: 1, active: true },
     ],
     days_off: [],
+    // Разово открытые выходные: { day, hours: { from, to } }.
+    days_open: [],
     blocked_slots: [],
     bookings: [],
     client_stats: [],
@@ -432,6 +434,25 @@ async function handle(route, state) {
     const body = req.postDataJSON();
     state.changes.push({ method, table, id: 1, body });
     Object.assign(rows[0], body);
+    return route.fulfill({ status: 204, headers: cors });
+  }
+
+  // days_open из кабинета: upsert по day (openDayOnce) и delete .eq("day", …)
+  // (closeDayOnce); пишет только мастер, как политики schema.sql.
+  if (table === "days_open" && (method === "POST" || method === "DELETE")) {
+    if (requester(req) !== MASTER.id) return forbidden();
+    if (method === "POST") {
+      const body = req.postDataJSON();
+      state.inserts.push({ table, body, headers: req.headers() });
+      const i = rows.findIndex((r) => r.day === body.day);
+      if (i >= 0) rows[i] = body;
+      else rows.push(body);
+      return json(201, []);
+    }
+    const day = url.searchParams.get("day")?.replace(/^eq\./, "");
+    state.changes.push({ method, table, id: day, body: null });
+    const i = rows.findIndex((r) => r.day === day);
+    if (i >= 0) rows.splice(i, 1);
     return route.fulfill({ status: 204, headers: cors });
   }
 
