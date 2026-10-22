@@ -37,17 +37,39 @@ const fDayMonth = new Intl.DateTimeFormat("ru-RU", {
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
+ * Часы конкретной даты ({ from, to } | null): дата в daysOff — закрыта;
+ * есть в daysOpen (разово открытый выходной) — её часы; иначе — график
+ * дня недели. То же правило, что hours_for_day() в schema.sql: сервер
+ * по нему принимает заявку, поэтому меняются вместе.
+ *
+ * daysOff — массив ключей "ГГГГ-ММ-ДД", daysOpen — { "ГГГГ-ММ-ДД": { from, to } }
+ * (отдельные таблицы, меняются независимо от остальных настроек).
+ */
+export function hoursForDay(settings, daysOff = [], daysOpen = {}, key) {
+  if (!settings || daysOff.includes(key)) return null;
+  if (daysOpen[key]) return daysOpen[key];
+  const [y, mo, d] = key.split("-").map(Number);
+  return settings.workingHours?.[new Date(y, mo - 1, d).getDay()] ?? null;
+}
+
+/** Строки days_open → { "ГГГГ-ММ-ДД": { from, to } } — форма для hoursForDay(). */
+export function toDaysOpen(rows) {
+  const out = {};
+  for (const r of rows ?? []) {
+    if (r?.day && r.hours?.from && r.hours?.to) out[r.day] = { from: r.hours.from, to: r.hours.to };
+  }
+  return out;
+}
+
+/**
  * Ближайшие дни:
  * { key, dow, weekdayShort: "пн", dayMonth: "8 сентября",
- *   full: "Понедельник, 8 сентября", isToday, isTomorrow, isOpen }
- *
- * daysOff — массив ключей "ГГГГ-ММ-ДД" (отдельная таблица, меняется
- * независимо от остальных настроек).
+ *   full: "Понедельник, 8 сентября", isToday, isTomorrow, isOpen,
+ *   hours: { from, to } | null }
  */
-export function buildDays(settings, daysOff = []) {
+export function buildDays(settings, daysOff = [], daysOpen = {}) {
   if (!settings) return [];
   const count = settings.bookingDaysAhead;
-  const hours = settings.workingHours ?? {};
 
   const out = [];
   const base = new Date();
@@ -59,6 +81,7 @@ export function buildDays(settings, daysOff = []) {
     d.setDate(base.getDate() + i); // корректно перескакивает месяц и год
     const key = dateKey(d);
     const dow = d.getDay();
+    const hours = hoursForDay(settings, daysOff, daysOpen, key);
     out.push({
       key,
       dow,
@@ -67,7 +90,8 @@ export function buildDays(settings, daysOff = []) {
       full: `${cap(fWeekdayLong.format(d))}, ${fDayMonth.format(d)}`,
       isToday: key === todayKey,
       isTomorrow: i === 1,
-      isOpen: Boolean(hours[dow]) && !daysOff.includes(key),
+      isOpen: Boolean(hours),
+      hours,
     });
   }
   return out;
@@ -94,7 +118,7 @@ export function findDay(days, key) {
  */
 export function buildSlots(day, service, busy = [], settings) {
   if (!settings || !day?.isOpen) return [];
-  const hours = settings.workingHours?.[day.dow];
+  const hours = day.hours;
   if (!hours) return [];
 
   const step = settings.slotStepMinutes;

@@ -5,12 +5,26 @@ import {
   canMessageClient,
   clientSeesStatus,
   closeDay,
+  closeDayOnce,
   openDay,
+  openDayOnce,
   saveWorkingHours,
   unblockSlot,
 } from "../api.js";
-import { buildDayRows, hoursFor, isBookingPast, parseKey } from "../calendar.js";
+import { buildDayRows, hoursFor, isBookingPast, parseKey, stepHours } from "../calendar.js";
 import { Icon } from "./Icons.jsx";
+
+// «Сделать рабочими все четверги» — винительный падеж, по getDay().
+const ALL_DOW = [
+  "воскресенья",
+  "понедельники",
+  "вторники",
+  "среды",
+  "четверги",
+  "пятницы",
+  "субботы",
+];
+const DEFAULT_HOURS = { from: "10:00", to: "19:00" };
 
 /**
  * Панель одного дня. Запись — карточка с кнопкой «Изменить»:
@@ -24,6 +38,7 @@ import { Icon } from "./Icons.jsx";
 export default function DayPanel({
   settings,
   daysOff,
+  daysOpen,
   bookings,
   blockedSlots,
   selectedKey,
@@ -37,11 +52,15 @@ export default function DayPanel({
   onDeleteBooking,
 }) {
   const dow = parseKey(selectedKey).getDay();
-  const hours = hoursFor(settings, dow);
+  // Часы по недельному графику; у разово открытого выходного их нет.
+  const weekly = hoursFor(settings, dow);
+  const once = daysOpen[selectedKey] ?? null;
   const closedByOff = daysOff.includes(selectedKey);
+  const hours = closedByOff ? null : (once ?? weekly);
   const { closed, rows, freeCount } = buildDayRows(
     settings,
     daysOff,
+    daysOpen,
     bookings,
     blockedSlots,
     selectedKey
@@ -63,18 +82,28 @@ export default function DayPanel({
   const toggleBlock = (minute, isBlocked) =>
     wrap(isBlocked ? unblockSlot(selectedKey, minute) : blockSlot(selectedKey, minute));
   const toggleDayClosed = () => {
-    if (!hours) {
-      // Выходной по недельному графику — открываем весь этот день недели,
-      // как в макете. Разового исключения из выходного графика нет:
-      // days_off умеет только закрывать рабочий день, а не открывать нерабочий.
-      const next = { ...settings.workingHours, [dow]: { from: "10:00", to: "19:00" } };
-      wrap(saveWorkingHours(next), "День снова открыт для записи.");
+    if (once && !closedByOff) {
+      // Разово открытый выходной закрывается удалением исключения —
+      // день снова выходной по графику, а не «закрыт вручную».
+      wrap(closeDayOnce(selectedKey), "День закрыт для записи.");
       return;
     }
     wrap(
       closedByOff ? openDay(selectedKey) : closeDay(selectedKey),
       closedByOff ? "День снова открыт для записи." : "День закрыт для записи."
     );
+  };
+  // Выходной по графику: открыть одну эту дату (days_open) — график не меняется.
+  const openOnlyThisDay = () =>
+    wrap(openDayOnce(selectedKey, DEFAULT_HOURS), "Этот день открыт для записи.");
+  // …или весь этот день недели — через недельный график.
+  const openWholeWeekday = () => {
+    const next = { ...settings.workingHours, [dow]: DEFAULT_HOURS };
+    wrap(saveWorkingHours(next), `Все ${ALL_DOW[dow]} теперь рабочие.`);
+  };
+  const shiftOnce = (field, delta) => {
+    const next = stepHours(once, field, delta);
+    if (next) wrap(openDayOnce(selectedKey, next));
   };
 
   return (
@@ -88,7 +117,7 @@ export default function DayPanel({
           <span className="day-sub">
             {closed
               ? "нерабочий день"
-              : `${hours.from}–${hours.to} · записей: ${rows.filter((r) => r.type === "booking").length}`}
+              : `${hours.from}–${hours.to}${once ? " · открыт разово" : ""} · записей: ${rows.filter((r) => r.type === "booking").length}`}
           </span>
         </span>
         <button className="round-btn" type="button" aria-label="Следующий день" onClick={() => onShift(1)}>
@@ -97,14 +126,70 @@ export default function DayPanel({
       </div>
 
       {closed ? (
-        <div className="day-empty">
-          <p>{!hours ? "Выходной по графику" : "День закрыт вручную"}</p>
-          <button className="pill-btn" type="button" onClick={toggleDayClosed}>
-            {!hours ? "Сделать рабочим днём" : "Открыть день"}
-          </button>
-        </div>
+        closedByOff ? (
+          <div className="day-empty">
+            <p>День закрыт вручную</p>
+            <button className="pill-btn" type="button" onClick={toggleDayClosed}>
+              Открыть день
+            </button>
+          </div>
+        ) : (
+          <div className="day-empty">
+            <p>Выходной по графику</p>
+            <button className="pill-btn" type="button" onClick={openOnlyThisDay}>
+              Открыть только этот день
+            </button>
+            <button className="btn-text" type="button" onClick={openWholeWeekday}>
+              Сделать рабочими все {ALL_DOW[dow]}
+            </button>
+          </div>
+        )
       ) : (
         <div>
+          {once && (
+            <div className="hours-row">
+              <span className="hours-day-label">Часы этого дня</span>
+              <span className="hours-controls">
+                <span className="hours-open">
+                  <button
+                    className="stepper-btn"
+                    type="button"
+                    aria-label="Начало раньше"
+                    onClick={() => shiftOnce("from", -1)}
+                  >
+                    −
+                  </button>
+                  <span className="hours-value">{once.from}</span>
+                  <button
+                    className="stepper-btn"
+                    type="button"
+                    aria-label="Начало позже"
+                    onClick={() => shiftOnce("from", 1)}
+                  >
+                    +
+                  </button>
+                  <span className="hours-sep">–</span>
+                  <button
+                    className="stepper-btn"
+                    type="button"
+                    aria-label="Конец раньше"
+                    onClick={() => shiftOnce("to", -1)}
+                  >
+                    −
+                  </button>
+                  <span className="hours-value">{once.to}</span>
+                  <button
+                    className="stepper-btn"
+                    type="button"
+                    aria-label="Конец позже"
+                    onClick={() => shiftOnce("to", 1)}
+                  >
+                    +
+                  </button>
+                </span>
+              </span>
+            </div>
+          )}
           {rows.map((r) => (
             <div className="day-row" key={r.time}>
               <span className="day-row-time">{r.time}</span>

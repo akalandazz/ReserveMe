@@ -1,11 +1,10 @@
 import { useMemo } from "react";
-import { dateKey, toHHMM, toMinutes } from "../../schedule.js";
+import { dateKey, hoursForDay, toHHMM, toMinutes } from "../../schedule.js";
 import {
   PX_H,
   bookingsForDay,
   eventGeometry,
   hourLabels,
-  hoursFor,
   layoutEvents,
   parseKey,
   weekRange,
@@ -26,6 +25,7 @@ function rangeLabel(start, end) {
 export default function WeekGrid({
   settings,
   daysOff,
+  daysOpen,
   bookings,
   blockedSlots,
   selectedKey,
@@ -51,8 +51,8 @@ export default function WeekGrid({
 
   const step = settings?.slotStepMinutes || 30;
   const range = useMemo(
-    () => weekRange(settings, keys, bookings, blockedSlots, step),
-    [settings, keys, bookings, blockedSlots, step]
+    () => weekRange(settings, daysOpen, keys, bookings, blockedSlots, step),
+    [settings, daysOpen, keys, bookings, blockedSlots, step]
   );
   const labels = useMemo(() => hourLabels(range), [range]);
   const trackH = range.hours * PX_H;
@@ -62,14 +62,13 @@ export default function WeekGrid({
     () =>
       keys.map((key, i) => {
         const dow = (start.getDay() + i) % 7;
-        const hours = hoursFor(settings, dow);
-        const isClosed = !hours || daysOff.includes(key);
+        // Часы этой даты: график, days_off и разово открытый день (days_open).
+        const hours = hoursForDay(settings, daysOff, daysOpen, key);
+        const isClosed = !hours;
 
         // Рабочее окно дня — светлая полоса на приглушённом фоне колонки.
-        // Закрытый вручную день (days_off) остаётся полностью приглушённым,
-        // хотя часы в графике у него есть.
         const open =
-          hours && !isClosed
+          hours
             ? eventGeometry(range, toMinutes(hours.from), toMinutes(hours.to) - toMinutes(hours.from))
             : null;
 
@@ -116,7 +115,7 @@ export default function WeekGrid({
           events,
         };
       }),
-    [keys, start, settings, daysOff, bookings, blockedSlots, selectedKey, todayKey, range, step]
+    [keys, start, settings, daysOff, daysOpen, bookings, blockedSlots, selectedKey, todayKey, range, step]
   );
 
   return (

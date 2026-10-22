@@ -80,7 +80,7 @@ export default function BookingScreen({
   const [copied, setCopied] = useState(false);
   // Сверка перед отправкой нашла, что данные на экране устарели.
   const [outdated, setOutdated] = useState(false);
-  const { settings, services, activeServices, daysOff, busy: allBusy } = useContent();
+  const { settings, services, activeServices, daysOff, daysOpen, busy: allBusy } = useContent();
   // Перенос своей записи («Перенести» в «Мои записи»): { id, day, time,
   // duration } — какая запись и где она сейчас. null — новая заявка.
   const moving = draft.reschedule ?? null;
@@ -101,8 +101,8 @@ export default function BookingScreen({
   );
 
   const days = useMemo(
-    () => buildDays(settings, daysOff),
-    [settings, daysOff]
+    () => buildDays(settings, daysOff, daysOpen),
+    [settings, daysOff, daysOpen]
   );
   const day = findDay(days, draft.dateKey);
 
@@ -166,7 +166,7 @@ export default function BookingScreen({
       }
     }
 
-    const freshDay = findDay(buildDays(snap.settings, snap.daysOff), draft.dateKey);
+    const freshDay = findDay(buildDays(snap.settings, snap.daysOff, snap.daysOpen), draft.dateKey);
     if (!freshDay) return true;
     const freshSlots = buildSlots(
       freshDay,

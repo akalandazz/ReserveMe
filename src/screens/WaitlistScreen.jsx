@@ -30,12 +30,12 @@ export default function WaitlistScreen({ onBack, home }) {
   const [parts, setParts] = useState([]);
   const [comment, setComment] = useState("");
   const [copied, setCopied] = useState(false);
-  const { settings, activeServices, daysOff } = useContent();
+  const { settings, activeServices, daysOff, daysOpen } = useContent();
   const timeOfDay = settings.timeOfDay;
 
   const openDays = useMemo(
-    () => buildDays(settings, daysOff).filter((d) => d.isOpen),
-    [settings, daysOff]
+    () => buildDays(settings, daysOff, daysOpen).filter((d) => d.isOpen),
+    [settings, daysOff, daysOpen]
   );
   const service = activeServices.find((s) => s.id === serviceId) || null;
 

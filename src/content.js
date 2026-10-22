@@ -14,7 +14,7 @@
 // Идиома подписки — с src/theme.js.
 
 import { useSyncExternalStore } from "react";
-import { dateKey } from "./schedule.js";
+import { dateKey, toDaysOpen } from "./schedule.js";
 import { NOT_CONFIGURED, supabase } from "./supabase.js";
 
 /** Ключ кэша. Менять при смене формы хранимого объекта. */
@@ -28,6 +28,7 @@ const EMPTY = {
   services: [],
   activeServices: [],
   daysOff: [],
+  daysOpen: {},
   infoBlocks: [],
   busy: [],
 };
@@ -84,6 +85,7 @@ function withContent(base, content, extra) {
     services,
     activeServices: services.filter((s) => s.active),
     daysOff: content.daysOff ?? [],
+    daysOpen: content.daysOpen ?? {},
     infoBlocks: content.infoBlocks ?? [],
   };
 }
@@ -129,6 +131,11 @@ function readCache() {
         ? parsed.services.filter((s) => s && s.id && s.name)
         : [],
       daysOff: Array.isArray(parsed.daysOff) ? parsed.daysOff : [],
+      // Кэш старого бандла без daysOpen — просто пусто до первой загрузки.
+      daysOpen:
+        parsed.daysOpen && typeof parsed.daysOpen === "object" && !Array.isArray(parsed.daysOpen)
+          ? parsed.daysOpen
+          : {},
       infoBlocks: Array.isArray(parsed.infoBlocks) ? parsed.infoBlocks : [],
     };
   } catch {
@@ -179,6 +186,7 @@ export async function refreshContent() {
         .select("id,emoji,title,body,sort")
         .order("sort", { ascending: true })
         .order("id", { ascending: true }),
+      supabase.from("days_open").select("day,hours").order("day", { ascending: true }),
     ]);
   } catch {
     if (mine !== seq) return false;
@@ -204,11 +212,12 @@ export async function refreshContent() {
     return false;
   }
 
-  const [settingsRes, servicesRes, daysRes, infoRes] = result;
+  const [settingsRes, servicesRes, daysRes, infoRes, openRes] = result;
   const content = {
     settings: toSettings(settingsRes.data),
     services: servicesRes.data ?? [],
     daysOff: (daysRes.data ?? []).map((r) => r.day),
+    daysOpen: toDaysOpen(openRes.data),
     infoBlocks: infoRes.data ?? [],
   };
 

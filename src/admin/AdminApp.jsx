@@ -322,6 +322,7 @@ export default function AdminApp() {
                 <CalendarSection
                   settings={data.settings}
                   daysOff={data.daysOff}
+                  daysOpen={data.daysOpen}
                   bookings={data.bookings}
                   blockedSlots={data.blockedSlots}
                   view={calView}
@@ -432,6 +433,7 @@ export default function AdminApp() {
           bookings={data.bookings}
           settings={data.settings}
           daysOff={data.daysOff}
+          daysOpen={data.daysOpen}
           initial={sheet}
           onClose={closeBooking}
           onDone={onSheetDone}
