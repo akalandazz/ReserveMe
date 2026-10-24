@@ -93,9 +93,12 @@ export const login = (initData, body = {}) =>
     body: { initData, consent: POLICY_VERSION, ...body },
   });
 
-/** Вошедший пользователь: { tg, token, refresh, uid }. */
-export async function signIn(user, opts) {
-  const res = await login(signInitData(user, opts));
+/**
+ * Вошедший пользователь: { tg, token, refresh, uid }. opts — как у
+ * signInitData, плюс salon — slug салона (без него — салон 1).
+ */
+export async function signIn(user, { salon, ...opts } = {}) {
+  const res = await login(signInitData(user, opts), salon ? { salon } : {});
   if (res.status !== 200) throw new Error(`login ${res.status}: ${JSON.stringify(res.data)}`);
   return {
     tg: user,

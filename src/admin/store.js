@@ -116,7 +116,7 @@ const LOADERS = {
           "working_hours_text,slot_step_minutes,booking_days_ahead,min_lead_minutes," +
           "working_hours,reminder_hours"
       )
-      .eq("id", 1)
+      // Своего салона — RLS другую строку не отдаст.
       .maybeSingle(),
   services: () =>
     supabase

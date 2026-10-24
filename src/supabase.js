@@ -1,7 +1,8 @@
 // Клиент Supabase и сессия — вход через Telegram.
 //
-// Данные салона читают все — анонимно, публичным anon-ключом. Пишут и
-// читают личное только вошедшие: границей безопасности служит RLS в базе
+// Данные салона читают только вошедшие и только своего салона (салонов
+// несколько — см. «Салоны» в schema.sql); пишут и читают личное тоже
+// только вошедшие: границей безопасности служит RLS в базе
 // (см. supabase/schema.sql), а не секретность ключа — ключ уезжает
 // в собранный бандл и виден любому.
 //
@@ -62,6 +63,27 @@ for (const key of ["vs_sb_client_v1", "vs_sb_auth_v1"]) {
 
 export const NOT_CONFIGURED =
   "Supabase не настроен: нет VITE_SUPABASE_URL или VITE_SUPABASE_ANON_KEY.";
+
+/* ─── Салон ──────────────────────────────────────────────────────
+   ?salon=<slug> в адресе, который задан боту салона в BotFather;
+   Telegram оставляет query как есть и дописывает только хеш. Значение не
+   проверенное: telegram-auth лишь выбирает по нему, какими токенами
+   сверять подпись initData, — какой салон увидит вошедший, решает база
+   (profiles.salon_id). "" — салон 1 (адрес без параметра).
+   Здесь, а не в telegram.js: content.js берёт его при загрузке модуля
+   (ключ кэша), а telegram.js в бандле кабинета вычисляется после
+   content.js — supabase.js же всегда раньше.                         */
+
+const SALON_SLUG = (() => {
+  try {
+    const v = new URLSearchParams(globalThis.location?.search ?? "").get("salon") ?? "";
+    return /^[a-z0-9][a-z0-9-]{1,31}$/.test(v) ? v : "";
+  } catch {
+    return "";
+  }
+})();
+
+export const salonSlug = () => SALON_SLUG;
 
 /* ─── Внешнее хранилище сессии ───────────────────────────────────
    Идиома та же, что у темы в src/theme.js: снапшот — объект на уровне
@@ -204,6 +226,9 @@ const SIGN_IN_ERRORS = {
   invalid_init_data: "Telegram не подтвердил вход. Откройте приложение заново из Telegram.",
   not_configured: NOT_SET_UP,
   not_deployed: NOT_SET_UP,
+  // Один аккаунт — один салон (telegram-auth, 403 other_salon).
+  other_salon:
+    "Ваш Telegram уже записан к другому мастеру. Записаться сюда с этого аккаунта нельзя.",
 };
 const STALE_POLICY =
   "Политика обработки данных обновилась. Закройте приложение и откройте его заново из Telegram.";
@@ -250,7 +275,8 @@ async function signIn(consent) {
   const mine = ++signInSeq;
   publish(signedOut("unknown"));
 
-  const body = consent ? { initData: data, consent: POLICY_VERSION } : { initData: data };
+  const body = { initData: data, salon: SALON_SLUG };
+  if (consent) body.consent = POLICY_VERSION;
   const res = await withTimeout(
     supabase.functions.invoke("telegram-auth", { body }),
     SIGN_IN_TIMEOUT_MS

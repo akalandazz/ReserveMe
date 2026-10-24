@@ -194,6 +194,8 @@ export function clientRow(id, fields) {
  *  - sessions  — выданные сессии (sid → user id); logout удаляет свою;
  *  - failBookingInsert — текст отказа guard_client_booking для вставки заявки
  *    (null — вставка проходит);
+ *  - otherSalon — Telegram id, чей аккаунт принадлежит другому салону:
+ *    telegram-auth отвечает 403 other_salon, как настоящая;
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
  */
 export async function installFakeSupabase(page) {
@@ -208,6 +210,7 @@ export async function installFakeSupabase(page) {
     changes: [],
     rpcs: [],
     failBookingInsert: null,
+    otherSalon: new Set(),
     unhandled: [],
     nextId: 100,
   };
@@ -261,15 +264,18 @@ async function handle(route, state) {
     json(403, { code: "42501", message: "Нет доступа к этой записи", details: null, hint: null });
 
   // ─── Вход через Telegram (supabase/functions/telegram-auth) ─────
-  //  Как настоящая функция: из тела берётся только initData, аккаунт
-  //  ищется по telegram id, новому — роль 'user'. "e2e:expired" — подпись
-  //  верна, но данные устарели; любое другое — неверные данные.
+  //  Как настоящая функция: из тела берутся initData, consent и salon (slug
+  //  салона, салоны здесь не различаются), аккаунт ищется по telegram id,
+  //  новому — роль 'user'. "e2e:expired" — подпись верна, но данные
+  //  устарели; любое другое — неверные данные.
   if (url.pathname === "/functions/v1/telegram-auth" && method === "POST") {
     const body = req.postDataJSON() ?? {};
     state.authCalls.push(body);
     if (body.initData === "e2e:expired") return json(401, { error: "expired" });
     const tgId = Number(/^e2e:(\d+)$/.exec(body.initData ?? "")?.[1]);
     if (!tgId) return json(401, { error: "invalid_init_data" });
+    // Аккаунт другого салона — до согласия, как в настоящей функции.
+    if (state.otherSalon.has(tgId)) return json(403, { error: "other_salon" });
 
     // Согласие на ПДн — до аккаунта, как в настоящей функции.
     const consentKey = `${tgId}:${POLICY_VERSION}`;
@@ -428,7 +434,8 @@ async function handle(route, state) {
     return json(200, prof.reminders);
   }
 
-  // settings из кабинета: всегда .eq("id", 1); пишет только мастер.
+  // settings из кабинета: одна строка салона (фильтр salon_id=not.is.null,
+  // остальное отсекает RLS); пишет только мастер.
   if (table === "settings" && method === "PATCH") {
     if (requester(req) !== MASTER.id) return forbidden();
     const body = req.postDataJSON();

@@ -277,7 +277,12 @@ test.describe("вход в обход Telegram ничего не даёт", () =
     // Роль master в profiles — с ЧУЖИМ (не его JWT) telegram_id.
     const prof = await admin("/rest/v1/profiles", {
       method: "POST",
-      body: { id: created.data.id, telegram_id: 1 + Math.floor(Math.random() * 9e6), role: "master" },
+      body: {
+        id: created.data.id,
+        telegram_id: 1 + Math.floor(Math.random() * 9e6),
+        role: "master",
+        salon_id: 1,
+      },
     });
     expect(prof.status).toBe(201);
     const link = await admin("/auth/v1/admin/generate_link", {

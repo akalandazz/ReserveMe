@@ -7,20 +7,30 @@
 // решает, КТО вошёл.
 //
 // Что функция НЕ принимает: роль, id пользователя, имя — из тела берутся
-// ровно initData и consent (редакция политики ПДн, с которой клиент
-// согласился; без согласия — 403 consent_required, см. public.consents),
-// остальное игнорируется. Роль не пишет никогда: строку
+// ровно initData, consent (редакция политики ПДн, с которой клиент
+// согласился; без согласия — 403 consent_required, см. public.consents)
+// и salon, остальное игнорируется. Роль не пишет никогда: строку
 // profiles заводит с 'user' по умолчанию, а существующую не трогает
 // (мастера назначают руками, см. is_master() в schema.sql).
+//
+// Салон (тенант, см. «Салоны» в schema.sql). salon — slug из адреса
+// мини-аппа (?salon=… у бота салона в BotFather) — только подсказка, КАКИМИ
+// токенами проверять подпись: берутся боты этого салона из salon_bots, и
+// initData чужого бота с ними не сойдётся (401). Без salon — салон 1.
+// Салон нового аккаунта — тот, чей бот подписал initData; аккаунт другого
+// салона не входит — 403 other_salon (один аккаунт — один салон), и ничего
+// не пишется.
 //
 // Сессия выпускается штатным механизмом Auth, без своего JWT: admin
 // generateLink (magic link, письмо не уходит) → verifyOtp по hashed_token.
 // Аккаунты — с синтетическим e-mail tg<id>@<AUTH_EMAIL_DOMAIN> и без
 // пароля: войти иначе, чем через эту функцию, нельзя.
 //
-// Секреты (Dashboard → Edge Functions → Secrets / `supabase secrets set`):
-//   TELEGRAM_CLIENT_BOT_TOKEN   — бот мини-аппа клиента;
-//   TELEGRAM_CABINET_BOT_TOKEN  — бот кабинета мастера (может совпадать);
+// Токены ботов — в public.salon_bots (service role). Секреты
+// (Dashboard → Edge Functions → Secrets):
+//   TELEGRAM_CLIENT_BOT_TOKEN   — необязательно: бот клиента салона 1, пока
+//                                 его токен не перенесён в salon_bots;
+//   TELEGRAM_CABINET_BOT_TOKEN  — то же для бота кабинета салона 1;
 //   INITDATA_MAX_AGE_SECONDS    — необязательно, по умолчанию 3600;
 //   AUTH_EMAIL_DOMAIN           — необязательно, по умолчанию telegram.local.
 // SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY Supabase
@@ -41,7 +51,10 @@ const env = (name: string) => Deno.env.get(name)?.trim() ?? "";
 const SUPABASE_URL = env("SUPABASE_URL");
 const ANON_KEY = env("SUPABASE_ANON_KEY");
 const SERVICE_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
-const BOT_TOKENS = [env("TELEGRAM_CLIENT_BOT_TOKEN"), env("TELEGRAM_CABINET_BOT_TOKEN")].filter(Boolean);
+// Боты салона 1 из секретов — до переноса их токенов в salon_bots.
+const DEFAULT_SALON = 1;
+const ENV_TOKENS = [env("TELEGRAM_CLIENT_BOT_TOKEN"), env("TELEGRAM_CABINET_BOT_TOKEN")].filter(Boolean);
+const SLUG = /^[a-z0-9][a-z0-9-]{1,31}$/;
 const MAX_AGE = Number(env("INITDATA_MAX_AGE_SECONDS")) || 3600;
 const EMAIL_DOMAIN = env("AUTH_EMAIL_DOMAIN") || "telegram.local";
 
@@ -73,14 +86,32 @@ function json(status: number, body: unknown) {
 }
 
 class Failure extends Error {}
+/** Аккаунт уже принадлежит другому салону — 403 other_salon. */
+class OtherSalon extends Error {}
 const must = (what: string, error: { code?: string; message?: string } | null) => {
   if (error) throw new Failure(`${what}: ${error.code ?? error.message ?? "error"}`);
 };
 
-/** Подпись подошла к одному из ботов — пользователь; иначе причина отказа. */
-async function verify(initData: string): Promise<{ user?: TgUser; expired?: boolean }> {
+/**
+ * Салон и токены его ботов. slug — из тела запроса (непроверенный, но
+ * решает он только то, с какими токенами сверять подпись). Пустой — салон 1;
+ * неизвестный или кривой — null, то же, что неверная подпись.
+ */
+async function findSalon(slug: string): Promise<{ id: number; tokens: string[] } | null> {
+  if (slug && !SLUG.test(slug)) return null;
+  const q = admin.from("salons").select("id, salon_bots(token)");
+  const res = await (slug ? q.eq("slug", slug) : q.eq("id", DEFAULT_SALON)).maybeSingle();
+  must("salons.select", res.error);
+  if (!res.data) return null;
+  const tokens = (res.data.salon_bots ?? []).map((b: { token: string }) => b.token);
+  if (res.data.id === DEFAULT_SALON) tokens.push(...ENV_TOKENS);
+  return { id: res.data.id, tokens };
+}
+
+/** Подпись подошла к одному из ботов салона — пользователь; иначе причина отказа. */
+async function verify(initData: string, tokens: string[]): Promise<{ user?: TgUser; expired?: boolean }> {
   let expired = false;
-  for (const token of BOT_TOKENS) {
+  for (const token of tokens) {
     const res = await validateInitData(initData, token, { maxAgeSeconds: MAX_AGE });
     if (res.ok) return { user: res.user };
     // «Устарело» говорим, только если подпись верна (validateInitData
@@ -94,12 +125,16 @@ async function verify(initData: string): Promise<{ user?: TgUser; expired?: bool
  * id аккаунта для Telegram user id. Единственный ключ — telegram_id
  * (уникальный): один и тот же человек с телефона и с десктопа попадает в
  * одну строку. Новому — auth-пользователь без пароля и profiles с ролью
- * по умолчанию ('user').
+ * по умолчанию ('user') в салоне salonId. Аккаунт другого салона —
+ * OtherSalon, в том числе проигравший гонку первого входа в двух салонах.
  */
-async function findOrCreateUser(tg: TgUser): Promise<string> {
-  const found = await admin.from("profiles").select("id").eq("telegram_id", tg.id).maybeSingle();
+async function findOrCreateUser(tg: TgUser, salonId: number): Promise<string> {
+  const found = await admin.from("profiles").select("id, salon_id").eq("telegram_id", tg.id).maybeSingle();
   must("profiles.select", found.error);
-  if (found.data) return found.data.id;
+  if (found.data) {
+    if (found.data.salon_id !== salonId) throw new OtherSalon();
+    return found.data.id;
+  }
 
   const email = `tg${tg.id}@${EMAIL_DOMAIN}`;
   const created = await admin.auth.admin.createUser({
@@ -131,17 +166,18 @@ async function findOrCreateUser(tg: TgUser): Promise<string> {
   // DO NOTHING по id: строку, которая уже есть, не трогаем.
   const ins = await admin
     .from("profiles")
-    .upsert({ id, telegram_id: tg.id }, { onConflict: "id", ignoreDuplicates: true });
+    .upsert({ id, telegram_id: tg.id, salon_id: salonId }, { onConflict: "id", ignoreDuplicates: true });
   // 23505 по telegram_id — параллельный вход успел завести строку
   // раньше; ниже читаем победителя.
   if (ins.error && ins.error.code !== "23505") must("profiles.insert", ins.error);
 
-  const winner = await admin.from("profiles").select("id").eq("telegram_id", tg.id).single();
+  const winner = await admin.from("profiles").select("id, salon_id").eq("telegram_id", tg.id).single();
   must("profiles.reselect", winner.error);
   if (winner.data.id !== id && ours) {
     // Проиграли гонку — свой лишний auth-пользователь не оставляем.
     await admin.auth.admin.deleteUser(id);
   }
+  if (winner.data.salon_id !== salonId) throw new OtherSalon();
   return winner.data.id;
 }
 
@@ -213,7 +249,7 @@ async function mintSession(userId: string, tg: TgUser) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-  if (BOT_TOKENS.length === 0 || !SERVICE_KEY || !ANON_KEY) {
+  if (!SERVICE_KEY || !ANON_KEY) {
     console.error("telegram-auth: not configured");
     return json(500, { error: "not_configured" });
   }
@@ -222,18 +258,42 @@ Deno.serve(async (req) => {
   // Редакция политики, с которой клиент только что согласился на экране
   // согласия. Чужая (устаревший бандл) — не согласие на текущую.
   let consent = "";
+  // slug салона из адреса мини-аппа — см. findSalon().
+  let slug = "";
   try {
     const body = await req.json();
     if (typeof body?.initData === "string") initData = body.initData;
     if (typeof body?.consent === "string") consent = body.consent;
+    if (typeof body?.salon === "string") slug = body.salon;
   } catch {
     // пустое или не-JSON тело — то же, что неверные данные
   }
 
-  const { user, expired } = await verify(initData);
+  let salon;
+  try {
+    salon = await findSalon(slug);
+  } catch (e) {
+    console.error("telegram-auth:", e instanceof Failure ? e.message : "unexpected error");
+    return json(500, { error: "server_error" });
+  }
+  if (!salon) return json(401, { error: "invalid_init_data" });
+  if (salon.tokens.length === 0) {
+    console.error("telegram-auth: salon without bots");
+    return json(500, { error: "not_configured" });
+  }
+
+  const { user, expired } = await verify(initData, salon.tokens);
   if (!user) return json(401, { error: expired ? "expired" : "invalid_init_data" });
 
   try {
+    // Чужой салон — до согласия: человек ничего не подписывал этому
+    // мастеру, и записывать о нём нечего.
+    const existing = await admin.from("profiles").select("salon_id").eq("telegram_id", user.id).maybeSingle();
+    must("profiles.select", existing.error);
+    if (existing.data && existing.data.salon_id !== salon.id) {
+      return json(403, { error: "other_salon" });
+    }
+
     // Согласие — до любой записи о человеке (152-ФЗ, ст. 9): без него ни
     // auth.users, ни profiles не заводятся, а прежний аккаунт не входит,
     // пока не согласится с новой редакцией.
@@ -242,7 +302,7 @@ Deno.serve(async (req) => {
       return json(403, { error: "consent_required", version: POLICY_VERSION });
     }
 
-    const userId = await findOrCreateUser(user);
+    const userId = await findOrCreateUser(user, salon.id);
     const session = await mintSession(userId, user);
     // Имя и юзернейм — из проверенного initData; роль не трогаем.
     // Разрешение боту писать (allows_write_to_pm) снимает отметку «бот
@@ -261,6 +321,7 @@ Deno.serve(async (req) => {
     must("profiles.update", upd.error);
     return json(200, session);
   } catch (e) {
+    if (e instanceof OtherSalon) return json(403, { error: "other_salon" });
     console.error("telegram-auth:", e instanceof Failure ? e.message : "unexpected error");
     return json(500, { error: "server_error" });
   }

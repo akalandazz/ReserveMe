@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import "./index.css";
-import {
-  initContent,
-  refreshAll,
-  refreshContent,
-  useContent,
-} from "./content.js";
+import { refreshAll, refreshContent, useContent } from "./content.js";
 import { changesToast, refreshMyBookings, resetMyBookings } from "./bookings.js";
 import { initAuth, signOut, useSession } from "./supabase.js";
 import { init } from "./telegram.js";
@@ -57,13 +52,12 @@ function App() {
 
   const sync = useCallback(() => syncAndNotify(setToast), []);
 
-  // Первую синхронизацию записей делает эффект смены экрана ниже —
-  // стартовый экран и есть главная.
+  // Первую загрузку контента и записей делает эффект смены экрана ниже,
+  // как только вход удался: до входа контент салона не читается (RLS).
   useEffect(() => {
     init();
     initTheme();
     initAuth();
-    initContent();
   }, []);
 
   // Клиент всегда видит свежие данные: контент и занятость перечитываются

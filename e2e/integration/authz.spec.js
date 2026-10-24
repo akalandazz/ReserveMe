@@ -61,13 +61,15 @@ test.describe("клиент: свои записи", () => {
       duration: 600,
     });
     expect(res.status).toBe(201);
+    // Цена и длительность — из прайса салона, а не те, что прислал клиент.
+    const svc = (await admin("/rest/v1/services?salon_id=eq.1&id=eq.manicure&select=price,duration")).data[0];
     expect(asRow(res)).toMatchObject({
       user_id: A.uid,
       created_by: A.uid,
       client_name: "Alice",
       client_username: A.tg.username,
-      price: 50,
-      duration: 90,
+      price: svc.price,
+      duration: svc.duration,
       status: "new",
       source: "client",
     });
