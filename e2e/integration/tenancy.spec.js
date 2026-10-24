@@ -177,6 +177,56 @@ test.describe("клиент видит только свой салон", () => 
     expect((await api(`/rest/v1/bookings?id=eq.${b1.id}&select=id`, { token: C2.token })).data).toEqual([]);
     expect((await rpc("cancel_own_booking", { p_id: b1.id }, C2.token)).status).toBe(403);
   });
+
+  test("чужую запись не перенести — 403, строка не меняется", async () => {
+    const before = await bookingAsAdmin(b1.id);
+    const res = await rpc(
+      "reschedule_own_booking",
+      { p_id: b1.id, p_day: DAY_X, p_start_min: 660 },
+      C2.token
+    );
+    expect(res.status).toBe(403);
+    expect(await bookingAsAdmin(b1.id)).toEqual(before);
+  });
+
+  test("set_reminders меняет только свой профиль", async () => {
+    const remindersOf = async (u) =>
+      (await admin(`/rest/v1/profiles?id=eq.${u.uid}&select=reminders`)).data[0].reminders;
+    const before = await remindersOf(C1);
+    expect((await rpc("set_reminders", { p_enabled: !before }, C2.token)).status).toBe(200);
+    expect(await remindersOf(C1)).toBe(before);
+    expect(await remindersOf(C2)).toBe(!before);
+    await rpc("set_reminders", { p_enabled: true }, C2.token);
+  });
+
+  test("поддельная строка в чужой салон — 403, клиенты того салона не тронуты", async () => {
+    // source = 'master' guard_client_booking не чистит; link_booking_client
+    // не должен успеть поработать с клиентами салона 1 до отказа RLS, и ответ
+    // не должен зависеть от того, есть ли такой аккаунт в салоне 1 (M1 — есть,
+    // случайный uuid — нет; раньше это было 403 против 409).
+    const clientsBefore = (await admin("/rest/v1/clients?salon_id=eq.1&select=*&order=id")).data;
+    for (const userId of [M1.uid, crypto.randomUUID()]) {
+      const res = await api("/rest/v1/bookings", {
+        method: "POST",
+        token: C2.token,
+        body: {
+          salon_id: 1,
+          day: DAY_X,
+          start_min: 900,
+          duration: 60,
+          price: 1,
+          service_id: "manicure",
+          service_name: "x",
+          client_name: "Подделка",
+          status: "ok",
+          source: "master",
+          user_id: userId,
+        },
+      });
+      expect(res.status, userId === M1.uid ? "аккаунт салона 1" : "случайный uuid").toBe(403);
+    }
+    expect((await admin("/rest/v1/clients?salon_id=eq.1&select=*&order=id")).data).toEqual(clientsBefore);
+  });
 });
 
 test.describe("мастер видит и правит только свой салон", () => {
@@ -334,6 +384,71 @@ test.describe("мастер видит и правит только свой с�
     const one = await free(M1.token);
     expect(one).not.toContain(660);
     expect(one).toContain(690);
+  });
+});
+
+test.describe("контент и комментарии чужого салона", () => {
+  // Строки салона 1 в каждой таблице контента, плюс комментарий к его клиенту.
+  const rows = {};
+
+  test.beforeAll(async () => {
+    if (!ENABLED || !LOCAL_ONLY) return;
+    const add = async (table, body) => {
+      const res = await admin(`/rest/v1/${table}`, { method: "POST", headers: { prefer: "return=representation" }, body });
+      expect(res.status, `${table}: ${JSON.stringify(res.data)}`).toBe(201);
+      rows[table] = asRow(res);
+    };
+    await add("days_open", { salon_id: 1, day: DAY_X, hours: { from: "10:00", to: "12:00" } });
+    await add("blocked_slots", { salon_id: 1, day: DAY_X, start_min: 1080 });
+    await add("client_comments", { salon_id: 1, client_id: b1.client_id, body: "заметка мастера 1" });
+  });
+
+  test.afterAll(async () => {
+    if (!ENABLED || !LOCAL_ONLY) return;
+    await admin(`/rest/v1/days_open?salon_id=eq.1&day=eq.${DAY_X}`, { method: "DELETE" });
+    await admin(`/rest/v1/blocked_slots?salon_id=eq.1&day=eq.${DAY_X}`, { method: "DELETE" });
+  });
+
+  const TABLES = ["days_off", "days_open", "info_blocks", "blocked_slots"];
+  const salonRows = async (table) => (await admin(`/rest/v1/${table}?salon_id=eq.1&select=*`)).data;
+
+  test("мастер и клиент другого салона их не читают", async () => {
+    for (const t of [...TABLES, "client_comments"]) {
+      for (const [who, u] of [["M2", M2], ["C2", C2]]) {
+        const got = (await api(`/rest/v1/${t}?select=salon_id`, { token: u.token })).data;
+        expect(got.filter((r) => r.salon_id !== BETA.id), `${who} ${t}`).toEqual([]);
+      }
+    }
+    // А свой мастер — видит (иначе проверка выше ничего не доказывает).
+    const own = (await api("/rest/v1/client_comments?select=id", { token: M1.token })).data;
+    expect(own.map((r) => r.id)).toContain(rows.client_comments.id);
+  });
+
+  test("мастер другого салона их не правит, не удаляет и не дописывает", async () => {
+    const before = Object.fromEntries(
+      await Promise.all([...TABLES, "client_comments"].map(async (t) => [t, await salonRows(t)]))
+    );
+    for (const t of [...TABLES, "client_comments"]) {
+      await api(`/rest/v1/${t}?salon_id=eq.1`, { method: "DELETE", token: M2.token });
+    }
+    await api("/rest/v1/info_blocks?salon_id=eq.1", { method: "PATCH", token: M2.token, body: { title: "Захват" } });
+    await api(`/rest/v1/days_open?salon_id=eq.1`, {
+      method: "PATCH",
+      token: M2.token,
+      body: { hours: { from: "08:00", to: "09:00" } },
+    });
+    for (const t of [...TABLES, "client_comments"]) {
+      expect(await salonRows(t), t).toEqual(before[t]);
+    }
+
+    // Вставка с salon_id = 1 — отказ RLS (with check), строка не появляется.
+    const forged = await api("/rest/v1/days_off", {
+      method: "POST",
+      token: M2.token,
+      body: { salon_id: 1, day: DAY_X },
+    });
+    expect(forged.status).toBe(403);
+    expect(await salonRows("days_off")).toEqual(before.days_off);
   });
 });
 
