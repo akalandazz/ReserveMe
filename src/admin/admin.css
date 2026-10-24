@@ -1433,9 +1433,13 @@ input:focus {
   gap: 8px;
 }
 
+/* 16px — иначе iOS зумит страницу при фокусе. */
 .service-note-input {
-  font-size: 14px;
+  width: 100%;
+  border-radius: 10px;
+  font-size: 16px;
   padding: 8px 10px;
+  resize: vertical;
 }
 
 .unit-group {

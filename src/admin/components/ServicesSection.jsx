@@ -296,10 +296,10 @@ function ServiceRow({ service: s, onEdit, onRemove }) {
             <span className="unit-suffix">{CURRENCY}</span>
           </span>
         </span>
-        <input
-          type="text"
+        <textarea
+          rows={2}
           className="mini-field service-note-input"
-          placeholder="Комментарий для клиента"
+          placeholder="Комментарий для клиентов (необязательно)"
           aria-label="Комментарий"
           maxLength={120}
           value={s.note ?? ""}
