@@ -1,4 +1,19 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { CURRENCY } from "../../money.js";
 import {
   createService,
@@ -7,6 +22,13 @@ import {
   validateServiceFields,
 } from "../api.js";
 import { Icon } from "./Icons.jsx";
+
+// Строка ездит только по вертикали — без @dnd-kit/modifiers ради одной строки.
+const vertical = ({ transform }) => ({ ...transform, x: 0 });
+
+// Подсказки скринридеру — по-русски, у dnd-kit по умолчанию английские.
+const nameOf = (list, id) => list.find((s) => s.id === id)?.name || "Услуга";
+const position = (list, id) => list.findIndex((s) => s.id === id) + 1;
 
 /**
  * Только name/duration/price — так в макете. emoji/note/active из
@@ -17,17 +39,22 @@ import { Icon } from "./Icons.jsx";
  * Порядок массива — порядок услуг везде (services.sort = индекс + 1,
  * клиент читает order by sort). Стрелки и перетаскивание меняют только
  * черновик, как и правка полей: «Отменить» возвращает прежний порядок.
+ * Перетаскивание — @dnd-kit: один PointerSensor и для мыши, и для пальца
+ * (нативный HTML5 drag на телефоне не срабатывает). Тянет только ручка
+ * (touch-action: none в admin.css), поля ввода и выделение текста — как были.
  */
 export default function ServicesSection({ services, busy, busyThen, onToast, onError }) {
   const [draft, setDraft] = useState(null);
   const [fieldError, setFieldError] = useState("");
-  // Перетаскиваемая услуга — в ref, чтобы dragstart не перерисовывал
-  // список; в состоянии только подсвеченная строка.
-  const dragId = useRef(null);
-  const [overId, setOverId] = useState(null);
 
   const list = draft ?? services;
   const dirty = draft !== null;
+
+  const sensors = useSensors(
+    // 4 px — чтобы клик по ручке не считался перетаскиванием.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   const edit = (id, field, value) => {
     setDraft((d) => (d ?? services).map((s) => (s.id === id ? { ...s, [field]: value } : s)));
@@ -52,13 +79,25 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
       return next;
     });
   };
-  const endDrag = () => {
-    dragId.current = null;
-    setOverId(null);
+  const onDragEnd = ({ active, over }) => {
+    if (!over) return;
+    move(
+      list.findIndex((s) => s.id === active.id),
+      list.findIndex((s) => s.id === over.id)
+    );
   };
   const reset = () => {
     setDraft(null);
     setFieldError("");
+  };
+
+  const announcements = {
+    onDragStart: ({ active }) => `Взята «${nameOf(list, active.id)}»`,
+    onDragOver: ({ active, over }) =>
+      over ? `«${nameOf(list, active.id)}» — на место ${position(list, over.id)}` : undefined,
+    onDragEnd: ({ active, over }) =>
+      over ? `«${nameOf(list, active.id)}» перенесена на место ${position(list, over.id)}` : undefined,
+    onDragCancel: ({ active }) => `Перенос «${nameOf(list, active.id)}» отменён`,
   };
 
   const commitSvc = async (cleaned) => {
@@ -122,113 +161,34 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
     <div>
       <p className="eyebrow">Услуги и цены</p>
       <div className="services-panel">
-        {list.map((s, i) => (
-          <div
-            className={overId === s.id ? "service-row drop-target" : "service-row"}
-            key={s.id}
-            data-testid={`service-row-${s.id}`}
-            onDragOver={(e) => {
-              // Тащат не нашу ручку (например, выделенный текст из поля) — не цель.
-              if (!dragId.current) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              if (overId !== s.id) setOverId(s.id);
-            }}
-            onDrop={(e) => {
-              if (!dragId.current) return;
-              e.preventDefault();
-              move(
-                list.findIndex((x) => x.id === dragId.current),
-                i
-              );
-              endDrag();
-            }}
-          >
-            <span className="service-order">
-              <button
-                className="service-order-btn"
-                type="button"
-                aria-label="Выше"
-                disabled={i === 0}
-                onClick={() => move(i, i - 1)}
-              >
-                <Icon name="chevronUp" size={16} />
-              </button>
-              <span
-                className="service-grip"
-                draggable="true"
-                title="Перетащите, чтобы изменить порядок"
-                onDragStart={(e) => {
-                  dragId.current = s.id;
-                  e.dataTransfer.effectAllowed = "move";
-                  // Без setData Firefox не начинает перетаскивание.
-                  e.dataTransfer.setData("text/plain", s.id);
-                  const row = e.currentTarget.closest(".service-row");
-                  if (row) e.dataTransfer.setDragImage(row, 20, 20);
-                }}
-                onDragEnd={endDrag}
-              >
-                <Icon name="grip" size={16} />
-              </span>
-              <button
-                className="service-order-btn"
-                type="button"
-                aria-label="Ниже"
-                disabled={i === list.length - 1}
-                onClick={() => move(i, i + 1)}
-              >
-                <Icon name="chevronDown" size={16} />
-              </button>
-            </span>
-            <span className="service-fields">
-              <span className="service-name-row">
-                <input
-                  type="text"
-                  className="mini-field grow"
-                  placeholder="Название услуги"
-                  aria-label="Название услуги"
-                  value={s.name}
-                  onChange={(e) => edit(s.id, "name", e.target.value)}
-                />
-                <button
-                  className="remove-btn"
-                  type="button"
-                  aria-label="Удалить услугу"
-                  onClick={() => remove(s.id)}
-                >
-                  <Icon name="x" size={15} />
-                </button>
-              </span>
-              <span className="service-meta-row">
-                <span className="unit-group">
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    step="15"
-                    min="15"
-                    className="mini-field unit-input duration"
-                    aria-label="Длительность"
-                    value={s.duration}
-                    onChange={(e) => edit(s.id, "duration", e.target.value)}
-                  />
-                  <span className="unit-suffix">мин</span>
-                </span>
-                <span className="unit-group">
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min="0"
-                    className="mini-field unit-input price"
-                    aria-label="Цена"
-                    value={s.price}
-                    onChange={(e) => edit(s.id, "price", e.target.value)}
-                  />
-                  <span className="unit-suffix">{CURRENCY}</span>
-                </span>
-              </span>
-            </span>
-          </div>
-        ))}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          modifiers={[vertical]}
+          onDragEnd={onDragEnd}
+          accessibility={{
+            announcements,
+            screenReaderInstructions: {
+              draggable:
+                "Пробел — взять услугу, стрелки — переместить, пробел — поставить, Esc — отменить.",
+            },
+          }}
+        >
+          <SortableContext items={list.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+            {list.map((s, i) => (
+              <ServiceRow
+                key={s.id}
+                service={s}
+                first={i === 0}
+                last={i === list.length - 1}
+                onUp={() => move(i, i - 1)}
+                onDown={() => move(i, i + 1)}
+                onEdit={edit}
+                onRemove={remove}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
 
         <button className="add-service-btn" type="button" onClick={add}>
           <Icon name="plus" size={16} />
@@ -254,6 +214,110 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ServiceRow({ service: s, first, last, onUp, onDown, onEdit, onRemove }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+    isOver,
+  } = useSortable({ id: s.id });
+
+  let className = "service-row";
+  if (isDragging) className += " dragging";
+  else if (isOver) className += " drop-target";
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={className}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      data-testid={`service-row-${s.id}`}
+    >
+      <span className="service-order">
+        <button
+          className="service-order-btn"
+          type="button"
+          aria-label="Выше"
+          disabled={first}
+          onClick={onUp}
+        >
+          <Icon name="chevronUp" size={16} />
+        </button>
+        <span
+          ref={setActivatorNodeRef}
+          className="service-grip"
+          title="Перетащите, чтобы изменить порядок"
+          {...attributes}
+          aria-label={`Перетащить «${s.name || "услугу"}»`}
+          {...listeners}
+        >
+          <Icon name="grip" size={16} />
+        </span>
+        <button
+          className="service-order-btn"
+          type="button"
+          aria-label="Ниже"
+          disabled={last}
+          onClick={onDown}
+        >
+          <Icon name="chevronDown" size={16} />
+        </button>
+      </span>
+      <span className="service-fields">
+        <span className="service-name-row">
+          <input
+            type="text"
+            className="mini-field grow"
+            placeholder="Название услуги"
+            aria-label="Название услуги"
+            value={s.name}
+            onChange={(e) => onEdit(s.id, "name", e.target.value)}
+          />
+          <button
+            className="remove-btn"
+            type="button"
+            aria-label="Удалить услугу"
+            onClick={() => onRemove(s.id)}
+          >
+            <Icon name="x" size={15} />
+          </button>
+        </span>
+        <span className="service-meta-row">
+          <span className="unit-group">
+            <input
+              type="number"
+              inputMode="numeric"
+              step="15"
+              min="15"
+              className="mini-field unit-input duration"
+              aria-label="Длительность"
+              value={s.duration}
+              onChange={(e) => onEdit(s.id, "duration", e.target.value)}
+            />
+            <span className="unit-suffix">мин</span>
+          </span>
+          <span className="unit-group">
+            <input
+              type="number"
+              inputMode="numeric"
+              min="0"
+              className="mini-field unit-input price"
+              aria-label="Цена"
+              value={s.price}
+              onChange={(e) => onEdit(s.id, "price", e.target.value)}
+            />
+            <span className="unit-suffix">{CURRENCY}</span>
+          </span>
+        </span>
+      </span>
     </div>
   );
 }
