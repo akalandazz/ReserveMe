@@ -1,7 +1,7 @@
 import { expect, test } from "../support/fixtures.js";
 
 // «Настройки» → «Услуги и цены» (ServicesSection): порядок — тоже данные.
-// Стрелки и перетаскивание меняют черновик, «Сохранить» пишет sort = индекс + 1,
+// Перетаскивание за ручку меняет черновик, «Сохранить» пишет sort = индекс + 1,
 // клиент видит тот же порядок (order by sort, id).
 
 const SERVICES = [
@@ -24,25 +24,16 @@ test.beforeEach(async ({ cabinet }) => {
   await expect.poll(() => names(cabinet.page)).toEqual(["Маникюр", "Педикюр", "Брови"]);
 });
 
-test("стрелки меняют порядок, крайние выключены", async ({ cabinet }) => {
+test("у строки только ручка — стрелок нет", async ({ cabinet }) => {
   const { page } = cabinet;
-  await expect(row(page, "manicure").getByRole("button", { name: "Выше" })).toBeDisabled();
-  await expect(row(page, "brows").getByRole("button", { name: "Ниже" })).toBeDisabled();
-
-  await row(page, "manicure").getByRole("button", { name: "Ниже" }).click();
-  await expect.poll(() => names(page)).toEqual(["Педикюр", "Маникюр", "Брови"]);
-
-  await row(page, "brows").getByRole("button", { name: "Выше" }).click();
-  await expect.poll(() => names(page)).toEqual(["Педикюр", "Брови", "Маникюр"]);
-
-  await expect(row(page, "pedicure").getByRole("button", { name: "Выше" })).toBeDisabled();
-  await expect(row(page, "manicure").getByRole("button", { name: "Ниже" })).toBeDisabled();
-  await expect(row(page, "manicure").getByRole("button", { name: "Выше" })).toBeEnabled();
+  await expect(page.locator(".service-grip")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: /^(Выше|Ниже)$/ })).toHaveCount(0);
 });
 
 test("«Отменить» возвращает прежний порядок и ничего не пишет", async ({ cabinet }) => {
   const { page, backend } = cabinet;
-  await row(page, "brows").getByRole("button", { name: "Выше" }).click();
+  await touchDrag(page, "brows", "pedicure");
+  await expect.poll(() => names(page)).toEqual(["Маникюр", "Брови", "Педикюр"]);
   await expect(page.getByText("Есть несохранённые изменения.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Сохранить" }).first()).toBeEnabled();
 
@@ -54,8 +45,7 @@ test("«Отменить» возвращает прежний порядок и
 
 test("«Сохранить» пишет sort, порядок переживает перезагрузку", async ({ cabinet }) => {
   const { page, backend, openTab } = cabinet;
-  await row(page, "brows").getByRole("button", { name: "Выше" }).click();
-  await row(page, "brows").getByRole("button", { name: "Выше" }).click();
+  await touchDrag(page, "brows", "manicure");
   await expect.poll(() => names(page)).toEqual(["Брови", "Маникюр", "Педикюр"]);
 
   await page.getByRole("button", { name: "Сохранить" }).first().click();
