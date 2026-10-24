@@ -951,6 +951,17 @@ begin
     return new;
   end if;
 
+  -- Строка чужого салона от вошедшего (например, source = 'master' от
+  -- клиента — guard_client_booking её не чистит): не трогаем clients
+  -- того салона вовсе, пусть её отвергнет RLS. Иначе триггер успел бы
+  -- поработать с чужими клиентами до отказа, а 409 (внешний ключ) против
+  -- 403 выдавал бы, есть ли аккаунт с таким id в чужом салоне.
+  -- service role и SQL-редактор (без JWT) салон называют сами.
+  if coalesce(auth.jwt() ->> 'role', '') in ('anon', 'authenticated')
+     and new.salon_id is distinct from public.current_salon_id() then
+    return new;
+  end if;
+
   if new.user_id is not null then
     -- Только по аккаунту. НЕ по telegram_username: даже проверенный
     -- юзернейм владелец может сменить, а освободившийся займёт другой
@@ -1071,8 +1082,13 @@ grant execute on function public.is_telegram_user() to anon, authenticated;
 --  раз открывает кабинет из Telegram — так появляется её строка (с ролью
 --  'user', кабинет скажет «Нет доступа»), — затем:
 --    update public.profiles set role = 'master'
---     where telegram_id = <Telegram user id мастера>;
+--     where telegram_id = <Telegram user id мастера>
+--       and salon_id = <id салона мастера>;
 --  и открывает кабинет заново. Свой id мастер узнаёт у @userinfobot.
+--  salon_id — всегда, и для салона 1 тоже: если её аккаунт уже в чужом
+--  салоне (когда-то записывалась к другому мастеру клиенткой), запрос без
+--  него сделал бы её мастером ТОГО салона — со всеми его клиентами. С ним
+--  он не обновит ни строки (один аккаунт — один салон, см. «Салоны»).
 --  Никакой запрос из приложения роль не меняет: у authenticated нет
 --  политик записи в profiles, а функция входа роль не пишет.
 --

@@ -309,9 +309,12 @@ seed, kept in the repo because the content is no longer in git otherwise.
     only) — nobody can promote themselves, and the client never writes `profiles`.
   - **The master's role is granted by hand**: she opens the cabinet once from Telegram
     (gets her row as `'user'`, sees «Нет доступа»), then
-    `update profiles set role = 'master' where telegram_id = <id>` in the SQL editor
-    (snippet above `is_master()` in `schema.sql`; for a salon other than 1 add
-    `and salon_id = <id>`, see `supabase/add-salon.sql`). No Telegram id is in the code.
+    `update profiles set role = 'master' where telegram_id = <id> and salon_id = <salon>`
+    in the SQL editor (snippet above `is_master()` in `schema.sql`, or `npm run
+    add-master`, which checks the same). **Always** with `salon_id`, salon 1 included:
+    an account that already sits in another salon (she once booked with another master)
+    would otherwise become master of *that* salon, with all its clients. No Telegram id
+    is in the code.
   - Bookings belong to the account (`bookings.user_id`), not the device: signing out
     clears the client's in-memory store (`resetMyBookings()`), and the same Telegram
     account on another device shows the same «Мои записи».
