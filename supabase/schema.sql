@@ -423,6 +423,18 @@ alter table public.salon_bots drop constraint if exists salon_bots_webhook_secre
 alter table public.salon_bots add constraint salon_bots_webhook_secret_check
   check (length(webhook_secret) <= 256 and webhook_secret ~ '^[A-Za-z0-9_-]*$');
 
+-- Один бот — один салон: initData бота, подключённого к двум салонам,
+-- подошёл бы к обоим, и новый клиент выбрал бы салон адресом. Внутри салона
+-- тот же токен у client и cabinet — можно (один бот на всё).
+create extension if not exists btree_gist with schema extensions;
+do $$
+begin
+  alter table public.salon_bots add constraint salon_bots_one_salon_per_token
+    exclude using gist (token with =, salon_id with <>);
+exception when duplicate_object or duplicate_table then null;
+end
+$$;
+
 alter table public.salons     enable row level security;
 alter table public.salon_bots enable row level security;
 revoke all on public.salon_bots from anon, authenticated;

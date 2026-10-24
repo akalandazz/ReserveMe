@@ -237,8 +237,13 @@ as "not found" (`delete_client` → zeros), client RPCs → 403.
 - Reminders: `claim_due_reminders()` returns `salon_id`; `send-reminders` sends each
   salon's rows with that salon's client bot (429 on one bot doesn't stall another).
   `client-bot` webhooks are `…/client-bot?salon=<slug>` with that salon's secret.
-- A new salon: `supabase/add-salon.sql`, then the master's role grant with
-  `and salon_id = <id>`, then `CLIENT_BOT_SALON=<slug> node scripts/setup-client-bot.mjs`.
+- A new salon: `npm run add-master -- masters/<name>.json` (`scripts/add-master.mjs`;
+  config format in `masters/example.json`, parsing/validation in
+  `scripts/master-config.mjs`, unit-tested). Idempotent — re-run after the master's
+  first cabinet login to grant the role. Real configs hold bot tokens and are
+  gitignored. Manual alternative: `supabase/add-salon.sql` + role grant with
+  `and salon_id = <id>` + `CLIENT_BOT_SALON=<slug> node scripts/setup-client-bot.mjs`.
+  A bot token can't belong to two salons (`salon_bots_one_salon_per_token`).
 - Service-role inserts (tests, SQL editor) must pass `salon_id` explicitly — the
   default is `null` there.
 - `e2e/integration/tenancy.spec.js` is the proof: add a case there for every new table,
