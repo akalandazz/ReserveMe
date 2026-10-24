@@ -37,8 +37,8 @@ const position = (list, id) => list.findIndex((s) => s.id === id) + 1;
  * умолчанию (см. supabase/schema.sql).
  *
  * Порядок массива — порядок услуг везде (services.sort = индекс + 1,
- * клиент читает order by sort). Стрелки и перетаскивание меняют только
- * черновик, как и правка полей: «Отменить» возвращает прежний порядок.
+ * клиент читает order by sort). Перетаскивание меняет только черновик,
+ * как и правка полей: «Отменить» возвращает прежний порядок.
  * Перетаскивание — @dnd-kit: один PointerSensor и для мыши, и для пальца
  * (нативный HTML5 drag на телефоне не срабатывает). Тянет только ручка
  * (touch-action: none в admin.css), поля ввода и выделение текста — как были.
@@ -175,17 +175,8 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
           }}
         >
           <SortableContext items={list.map((s) => s.id)} strategy={verticalListSortingStrategy}>
-            {list.map((s, i) => (
-              <ServiceRow
-                key={s.id}
-                service={s}
-                first={i === 0}
-                last={i === list.length - 1}
-                onUp={() => move(i, i - 1)}
-                onDown={() => move(i, i + 1)}
-                onEdit={edit}
-                onRemove={remove}
-              />
+            {list.map((s) => (
+              <ServiceRow key={s.id} service={s} onEdit={edit} onRemove={remove} />
             ))}
           </SortableContext>
         </DndContext>
@@ -218,7 +209,7 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
   );
 }
 
-function ServiceRow({ service: s, first, last, onUp, onDown, onEdit, onRemove }) {
+function ServiceRow({ service: s, onEdit, onRemove }) {
   const {
     attributes,
     listeners,
@@ -241,35 +232,15 @@ function ServiceRow({ service: s, first, last, onUp, onDown, onEdit, onRemove })
       style={{ transform: CSS.Translate.toString(transform), transition }}
       data-testid={`service-row-${s.id}`}
     >
-      <span className="service-order">
-        <button
-          className="service-order-btn"
-          type="button"
-          aria-label="Выше"
-          disabled={first}
-          onClick={onUp}
-        >
-          <Icon name="chevronUp" size={16} />
-        </button>
-        <span
-          ref={setActivatorNodeRef}
-          className="service-grip"
-          title="Перетащите, чтобы изменить порядок"
-          {...attributes}
-          aria-label={`Перетащить «${s.name || "услугу"}»`}
-          {...listeners}
-        >
-          <Icon name="grip" size={16} />
-        </span>
-        <button
-          className="service-order-btn"
-          type="button"
-          aria-label="Ниже"
-          disabled={last}
-          onClick={onDown}
-        >
-          <Icon name="chevronDown" size={16} />
-        </button>
+      <span
+        ref={setActivatorNodeRef}
+        className="service-grip"
+        title="Перетащите, чтобы изменить порядок"
+        {...attributes}
+        aria-label={`Перетащить «${s.name || "услугу"}»`}
+        {...listeners}
+      >
+        <Icon name="grip" size={18} />
       </span>
       <span className="service-fields">
         <span className="service-name-row">
