@@ -538,7 +538,9 @@ editor deletes for real, unlike the old admin's `active = false` hide. The old
   non-breaking spaces), and the bare symbol through `CURRENCY` — never type `₽` by hand.
   The price limit (0–99 999) lives in three places that must agree:
   `services_price_check`, `bookings_price_check` (`schema.sql`) and
-  `validateServiceFields()` in `src/admin/api.js`.
+  `validateServiceFields()` in `src/admin/api.js`. The same goes for a service's
+  comment (`services.note`, ≤ 120 chars, shown to the client as «… · 90 мин»):
+  `services_note_check`, `validateServiceFields()` and `scripts/master-config.mjs`.
 - Both [src/index.css](src/index.css) and [src/admin/admin.css](src/admin/admin.css)
   define **their own** token layer at the top of the file: warm neutral surfaces plus a
   single `--accent`, written out **twice** — once for light, once for dark

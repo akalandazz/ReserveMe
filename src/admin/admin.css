@@ -1433,6 +1433,11 @@ input:focus {
   gap: 8px;
 }
 
+.service-note-input {
+  font-size: 14px;
+  padding: 8px 10px;
+}
+
 .unit-group {
   display: inline-flex;
   align-items: center;

@@ -104,6 +104,12 @@ alter table public.services drop constraint if exists services_duration_check;
 alter table public.services add constraint services_duration_check
   check (duration between 5 and 600 and duration % 5 = 0);
 
+-- Комментарий к услуге — подпись у клиента («Покрытие в один тон · 90 мин»),
+-- правится в кабинете. Та же граница — validateServiceFields() и master-config.mjs.
+alter table public.services drop constraint if exists services_note_check;
+alter table public.services add constraint services_note_check
+  check (length(note) <= 120);
+
 -- ─── Отдельные выходные и отпуск ───────────────────────────────
 create table if not exists public.days_off (
   day  date primary key,
