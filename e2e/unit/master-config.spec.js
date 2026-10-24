@@ -74,7 +74,7 @@ test("ошибки — все сразу, понятным текстом, и б
     booking: { slotStepMinutes: 25, reminderHours: 100 },
     services: [
       { id: "Manicure", name: "x", price: 100000, duration: 7 },
-      { id: "ok_id", name: "", price: 1, duration: 15 },
+      { id: "ok_id", name: "", price: 1, duration: 15, note: "x".repeat(121) },
       { id: "ok_id", name: "Дубль", price: 1, duration: 15 },
     ],
     telegram: { appUrl: "http://insecure" },
@@ -98,6 +98,7 @@ test("ошибки — все сразу, понятным текстом, и б
     "services[0].price",
     "services[0].duration",
     "services[1].name",
+    "services[1].note",
     "services[2].id «ok_id» повторяется",
     "telegram.appUrl",
   ]) {

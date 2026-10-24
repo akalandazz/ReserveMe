@@ -193,7 +193,12 @@ export function parseMasterConfig(cfg) {
           err(`${at}.duration — от 5 до 600 минут, кратно 5`);
         } else row.duration = s.duration;
         if (s.emoji !== undefined) row.emoji = String(s.emoji);
-        if (s.note !== undefined) row.note = String(s.note ?? "").trim();
+        if (s.note !== undefined) {
+          // Та же граница, что services_note_check и validateServiceFields() кабинета.
+          const note = String(s.note ?? "").trim();
+          if (note.length > 120) err(`${at}.note — до 120 символов`);
+          else row.note = note;
+        }
         row.sort = Number.isInteger(s.sort) ? s.sort : (i + 1) * 10;
         if (s.active !== undefined) row.active = s.active !== false;
         services.push(row);

@@ -31,8 +31,8 @@ const nameOf = (list, id) => list.find((s) => s.id === id)?.name || "Услуг�
 const position = (list, id) => list.findIndex((s) => s.id === id) + 1;
 
 /**
- * Только name/duration/price — так в макете. emoji/note/active из
- * прежней админки сюда не входят: правки этих трёх полей не трогают
+ * name/duration/price и note — комментарий, который клиент видит рядом
+ * с длительностью. emoji/active из прежней админки сюда не входят: правки не трогают
  * остальные колонки, а создание новой услуги берёт их значения по
  * умолчанию (см. supabase/schema.sql).
  *
@@ -65,7 +65,7 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
   const add = () => {
     setDraft((d) => [
       ...(d ?? services),
-      { id: `new${Date.now()}`, name: "", price: 0, duration: 60 },
+      { id: `new${Date.now()}`, name: "", price: 0, duration: 60, note: "" },
     ]);
   };
   // Вынуть услугу с места from и вставить на индекс to (индекс в списке до
@@ -108,7 +108,13 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
       if (!draftIds.has(s.id)) ops.push(deleteService(s.id));
     }
     cleaned.forEach((s, i) => {
-      const fields = { name: s.name, price: s.price, duration: s.duration, sort: i + 1 };
+      const fields = {
+        name: s.name,
+        price: s.price,
+        duration: s.duration,
+        note: s.note,
+        sort: i + 1,
+      };
       if (!originalIds.has(s.id)) {
         ops.push(createService(fields));
         return;
@@ -118,6 +124,7 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
         orig.name !== s.name ||
         orig.price !== s.price ||
         orig.duration !== s.duration ||
+        (orig.note ?? "") !== s.note ||
         orig.sort !== fields.sort
       ) {
         ops.push(updateService(s.id, fields));
@@ -142,6 +149,7 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
         name: String(s.name).trim(),
         price: Math.max(0, Math.round(Number(s.price) || 0)),
         duration: Math.max(5, Math.round(Number(s.duration) || 0)),
+        note: String(s.note ?? "").trim(),
       }))
       .filter((s) => s.name !== "");
 
@@ -288,6 +296,15 @@ function ServiceRow({ service: s, onEdit, onRemove }) {
             <span className="unit-suffix">{CURRENCY}</span>
           </span>
         </span>
+        <input
+          type="text"
+          className="mini-field service-note-input"
+          placeholder="Комментарий для клиента"
+          aria-label="Комментарий"
+          maxLength={120}
+          value={s.note ?? ""}
+          onChange={(e) => onEdit(s.id, "note", e.target.value)}
+        />
       </span>
     </div>
   );

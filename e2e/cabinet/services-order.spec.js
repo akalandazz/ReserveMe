@@ -7,7 +7,7 @@ import { expect, test } from "../support/fixtures.js";
 const SERVICES = [
   { id: "manicure", name: "Маникюр", price: 60, duration: 90, sort: 1, active: true },
   { id: "pedicure", name: "Педикюр", price: 80, duration: 90, sort: 2, active: true },
-  { id: "brows", name: "Брови", price: 40, duration: 30, sort: 3, active: true },
+  { id: "brows", name: "Брови", price: 40, duration: 30, note: "Коррекция", sort: 3, active: true },
 ];
 
 test.use({ services: [SERVICES, {}] });
@@ -57,11 +57,12 @@ test("«Сохранить» пишет sort, порядок переживае�
     ["manicure", 2],
     ["pedicure", 3],
   ]);
-  // Поля, которые не менялись, уходят как были — emoji/note/active не трогаем.
+  // Поля, которые не менялись, уходят как были — emoji/active не трогаем.
   expect(writes.find((w) => w.id === "brows").body).toEqual({
     name: "Брови",
     price: 40,
     duration: 30,
+    note: "Коррекция",
     sort: 1,
   });
 
@@ -70,6 +71,22 @@ test("«Сохранить» пишет sort, порядок переживае�
   await openTab("Настройки");
   await expect.poll(() => names(page)).toEqual(["Брови", "Маникюр", "Педикюр"]);
   await expect(page.getByText("Есть несохранённые изменения.")).toBeHidden();
+});
+
+test("комментарий правится и пишется только у изменённой услуги", async ({ cabinet }) => {
+  const { page, backend } = cabinet;
+  await expect(row(page, "brows").getByLabel("Комментарий")).toHaveValue("Коррекция");
+
+  await row(page, "manicure").getByLabel("Комментарий").fill("  Снятие и форма  ");
+  await row(page, "brows").getByLabel("Комментарий").fill("");
+  await page.getByRole("button", { name: "Сохранить" }).first().click();
+  await expect(page.getByText("Услуги сохранены")).toBeVisible();
+
+  const writes = serviceWrites(backend);
+  expect(writes.map((w) => [w.id, w.body.note]).sort()).toEqual([
+    ["brows", ""],
+    ["manicure", "Снятие и форма"],
+  ]);
 });
 
 test("поля по-прежнему правятся, перетаскивает только ручка", async ({ cabinet }) => {
