@@ -75,8 +75,8 @@ export function validateServiceFields(s) {
   if (!Number.isInteger(price) || price < 0 || price > 99999)
     return "Цена — целое число от 0 до 99 999 ₽";
   const duration = Number(s.duration);
-  if (!Number.isInteger(duration) || duration < 15 || duration > 600 || duration % 15 !== 0)
-    return "Длительность — от 15 до 600 минут, кратно 15";
+  if (!Number.isInteger(duration) || duration < 5 || duration > 600 || duration % 5 !== 0)
+    return "Длительность — от 5 до 600 минут, кратно 5";
   return null;
 }
 

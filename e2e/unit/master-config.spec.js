@@ -73,7 +73,7 @@ test("ошибки — все сразу, понятным текстом, и б
     workingHours: { mon: "19:00-10:00", funday: "10:00-11:00" },
     booking: { slotStepMinutes: 25, reminderHours: 100 },
     services: [
-      { id: "Manicure", name: "x", price: 100000, duration: 50 },
+      { id: "Manicure", name: "x", price: 100000, duration: 7 },
       { id: "ok_id", name: "", price: 1, duration: 15 },
       { id: "ok_id", name: "Дубль", price: 1, duration: 15 },
     ],

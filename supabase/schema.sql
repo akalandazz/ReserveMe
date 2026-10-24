@@ -80,7 +80,8 @@ create table if not exists public.services (
   -- и цена утекла бы в запись клиента как "70".
   -- Рубли. Граница переопределяется ниже (services_price_check).
   price      integer not null check (price between 0 and 99999),
-  duration   integer not null check (duration > 0 and duration <= 600 and duration % 15 = 0),
+  -- Граница переопределяется ниже (services_duration_check).
+  duration   integer not null check (duration > 0 and duration <= 600 and duration % 5 = 0),
   note       text    not null default '',
   sort       integer not null default 0,
   -- false — услуга скрыта от клиентов, но её название по-прежнему
@@ -96,6 +97,12 @@ create index if not exists services_sort_idx on public.services (sort, id);
 alter table public.services drop constraint if exists services_price_check;
 alter table public.services add constraint services_price_check
   check (price between 0 and 99999);
+
+-- Длительность кратна 5 (было 15) — так же, чтобы дошло до живой базы.
+-- Та же граница — validateServiceFields() кабинета и master-config.mjs.
+alter table public.services drop constraint if exists services_duration_check;
+alter table public.services add constraint services_duration_check
+  check (duration between 5 and 600 and duration % 5 = 0);
 
 -- ─── Отдельные выходные и отпуск ───────────────────────────────
 create table if not exists public.days_off (
