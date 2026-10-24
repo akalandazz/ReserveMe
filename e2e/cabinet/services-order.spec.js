@@ -92,10 +92,66 @@ test("поля по-прежнему правятся, перетаскивае�
     "Педикюр SPA"
   );
 
-  await expect(row(page, "pedicure")).not.toHaveAttribute("draggable", "true");
+  // Протянуть мышью по полю — выделение текста, а не перенос строки.
+  // Сначала снять выделение: тянуть уже выделенный текст — это перенос текста.
+  await name.press("End");
+  const box = await name.boundingBox();
+  await page.mouse.move(box.x + 4, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 4, box.y + box.height * 3, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => names(page)).toEqual(["Маникюр", "Педикюр SPA", "Брови"]);
+  expect(await name.evaluate((el) => el.selectionEnd - el.selectionStart)).toBeGreaterThan(0);
+  await expect(page.locator(".service-row.dragging")).toHaveCount(0);
+
   const grip = row(page, "pedicure").locator(".service-grip");
-  await expect(grip).toHaveAttribute("draggable", "true");
   await expect(grip).toHaveAttribute("title", "Перетащите, чтобы изменить порядок");
+});
+
+const center = async (locator) => {
+  const b = await locator.boundingBox();
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+};
+
+/** Мышью: ручка строки from → середина строки to, с промежуточными шагами. */
+async function mouseDrag(page, from, to) {
+  const a = await center(row(page, from).locator(".service-grip"));
+  const b = await center(row(page, to));
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 12 });
+  await expect(page.locator(".service-row.drop-target")).toHaveCount(1);
+  await page.mouse.up();
+}
+
+/** Пальцем — настоящие touch-события Chromium (CDP), как на телефоне. */
+async function touchDrag(page, from, to) {
+  const a = await center(row(page, from).locator(".service-grip"));
+  const b = await center(row(page, to));
+  const cdp = await page.context().newCDPSession(page);
+  const touch = (type, p) =>
+    cdp.send("Input.dispatchTouchEvent", {
+      type,
+      touchPoints: p ? [{ x: Math.round(p.x), y: Math.round(p.y) }] : [],
+    });
+  await touch("touchStart", a);
+  for (let i = 1; i <= 12; i++) {
+    await touch("touchMove", { x: a.x, y: a.y + ((b.y - a.y) * i) / 12 });
+  }
+  await expect(page.locator(".service-row.drop-target")).toHaveCount(1);
+  await touch("touchEnd");
+  await cdp.detach();
+}
+
+test("пальцем на телефоне — вниз и вверх на место целевой строки", async ({ cabinet }) => {
+  const { page } = cabinet;
+  await touchDrag(page, "manicure", "brows");
+  await expect.poll(() => names(page)).toEqual(["Педикюр", "Брови", "Маникюр"]);
+  await expect(page.getByText("Есть несохранённые изменения.")).toBeVisible();
+  await expect(page.locator(".service-row.drop-target, .service-row.dragging")).toHaveCount(0);
+
+  await touchDrag(page, "manicure", "pedicure");
+  await expect.poll(() => names(page)).toEqual(["Маникюр", "Педикюр", "Брови"]);
 });
 
 test.describe("перетаскивание (десктоп)", () => {
@@ -103,14 +159,13 @@ test.describe("перетаскивание (десктоп)", () => {
 
   test("вниз и вверх — на место целевой строки", async ({ cabinet }) => {
     const { page } = cabinet;
-    await row(page, "manicure").locator(".service-grip").dragTo(row(page, "brows"));
+    await mouseDrag(page, "manicure", "brows");
     await expect.poll(() => names(page)).toEqual(["Педикюр", "Брови", "Маникюр"]);
     await expect(page.getByText("Есть несохранённые изменения.")).toBeVisible();
-    // dragend снял подсветку.
-    await expect(page.locator(".service-row.drop-target")).toHaveCount(0);
+    // После отпускания подсветки нет.
+    await expect(page.locator(".service-row.drop-target, .service-row.dragging")).toHaveCount(0);
 
-    await row(page, "manicure").locator(".service-grip").dragTo(row(page, "pedicure"));
+    await mouseDrag(page, "manicure", "pedicure");
     await expect.poll(() => names(page)).toEqual(["Маникюр", "Педикюр", "Брови"]);
-    await expect(page.locator(".service-row.drop-target")).toHaveCount(0);
   });
 });
