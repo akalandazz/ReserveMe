@@ -5,6 +5,12 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  server: {
+    allowedHosts: true,
+  },
+  preview: {
+    allowedHosts: true,
+  },
   build: {
     rollupOptions: {
       // Две отдельные точки входа — клиент и кабинет мастера — так,
