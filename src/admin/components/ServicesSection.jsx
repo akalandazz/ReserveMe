@@ -141,7 +141,7 @@ export default function ServicesSection({ services, busy, busyThen, onToast, onE
         ...s,
         name: String(s.name).trim(),
         price: Math.max(0, Math.round(Number(s.price) || 0)),
-        duration: Math.max(15, Math.round(Number(s.duration) || 0)),
+        duration: Math.max(5, Math.round(Number(s.duration) || 0)),
       }))
       .filter((s) => s.name !== "");
 
@@ -266,8 +266,8 @@ function ServiceRow({ service: s, onEdit, onRemove }) {
             <input
               type="number"
               inputMode="numeric"
-              step="15"
-              min="15"
+              step="5"
+              min="5"
               className="mini-field unit-input duration"
               aria-label="Длительность"
               value={s.duration}

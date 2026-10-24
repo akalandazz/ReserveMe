@@ -189,8 +189,8 @@ export function parseMasterConfig(cfg) {
         // Та же граница, что services_price_check и validateServiceFields() кабинета.
         if (!isInt(s.price, 0, 99999)) err(`${at}.price — целые рубли, от 0 до 99 999`);
         else row.price = s.price;
-        if (!isInt(s.duration, 15, 600) || s.duration % 15 !== 0) {
-          err(`${at}.duration — от 15 до 600 минут, кратно 15`);
+        if (!isInt(s.duration, 5, 600) || s.duration % 5 !== 0) {
+          err(`${at}.duration — от 5 до 600 минут, кратно 5`);
         } else row.duration = s.duration;
         if (s.emoji !== undefined) row.emoji = String(s.emoji);
         if (s.note !== undefined) row.note = String(s.note ?? "").trim();
