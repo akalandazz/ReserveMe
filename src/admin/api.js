@@ -43,17 +43,21 @@ async function run(query, parts) {
    Кабинет правит только name/price/duration — макет не знает про
    emoji/note/active. Их не трогаем: при создании услуги эти колонки
    берут значение по умолчанию, при правке — остаются как были,
-   потому что не входят в отправляемый объект.                     */
+   потому что не входят в отправляемый объект. sort — порядок в списке
+   (кабинет и клиент читают order by sort, id).                     */
 
-export function createService({ name, price, duration }) {
+export function createService({ name, price, duration, sort }) {
   // Латиницей и цифрами — проходит check (id ~ '^[a-z][a-z0-9_]{1,31}$').
   const id = "svc" + Date.now().toString(36);
-  return run(() => supabase.from("services").insert({ id, name, price, duration }), ["services"]);
+  return run(
+    () => supabase.from("services").insert({ id, name, price, duration, sort }),
+    ["services"]
+  );
 }
 
-export function updateService(id, { name, price, duration }) {
+export function updateService(id, { name, price, duration, sort }) {
   return run(
-    () => supabase.from("services").update({ name, price, duration }).eq("id", id),
+    () => supabase.from("services").update({ name, price, duration, sort }).eq("id", id),
     SERVICES
   );
 }
