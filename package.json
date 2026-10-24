@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "add-master": "node scripts/add-master.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

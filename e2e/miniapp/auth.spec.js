@@ -17,14 +17,44 @@ test("в обычном браузере — «Откройте в Telegram», �
   expect(backend.rpcs).toEqual([]);
 });
 
-test("вход по initData: в функцию уходит только initData", async ({ page, backend }) => {
+test("вход по initData: в функцию уходит только initData (и салон)", async ({ page, backend }) => {
   await withTelegram(page, CLIENT);
   await page.goto("/");
 
   await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
   await expect(page.getByText(`Вы вошли как ${CLIENT.firstName}`)).toBeVisible();
   // Ни роли, ни id, ни имени из initDataUnsafe — только подписанная строка.
-  expect(backend.authCalls).toEqual([{ initData: initDataFor(CLIENT.telegramId) }]);
+  // Адрес без ?salon — салон 1.
+  expect(backend.authCalls).toEqual([{ initData: initDataFor(CLIENT.telegramId), salon: "" }]);
+});
+
+test("салон — из ?salon= в адресе мини-аппа; кривой slug не уходит", async ({ page, backend }) => {
+  await withTelegram(page, CLIENT);
+  await page.goto("/?salon=anna-nails");
+  await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+  expect(backend.authCalls).toEqual([{ initData: initDataFor(CLIENT.telegramId), salon: "anna-nails" }]);
+
+  await page.goto("/?salon=Not%20A%20Slug");
+  await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+  expect(backend.authCalls.at(-1)).toEqual({ initData: initDataFor(CLIENT.telegramId), salon: "" });
+});
+
+test("кэш контента — свой у каждого салона", async ({ page, backend: _backend }) => {
+  await withTelegram(page, CLIENT);
+  await page.goto("/?salon=anna-nails");
+  await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+  const keys = await page.evaluate(() => Object.keys(localStorage));
+  expect(keys).toContain("vs_content_v1:anna-nails");
+  expect(keys).not.toContain("vs_content_v1");
+});
+
+test("аккаунт другого салона — понятный отказ, без входа", async ({ page, backend }) => {
+  backend.otherSalon.add(CLIENT.telegramId);
+  await withTelegram(page, CLIENT);
+  await page.goto("/?salon=anna-nails");
+  await expect(page.getByRole("alert")).toContainText("уже записан к другому мастеру");
+  await expect(page.getByRole("button", { name: "Записаться" })).toHaveCount(0);
+  expect(backend.sessions.size).toBe(0);
 });
 
 test("первый вход нового пользователя — сначала согласие на ПДн, потом роль user", async ({
@@ -44,8 +74,8 @@ test("первый вход нового пользователя — снача
   await page.getByRole("button", { name: "Согласен" }).click();
   await expect(page.getByText("Привет, Новый!")).toBeVisible();
   expect(backend.authCalls).toEqual([
-    { initData: initDataFor(3003) },
-    { initData: initDataFor(3003), consent: POLICY_VERSION },
+    { initData: initDataFor(3003), salon: "" },
+    { initData: initDataFor(3003), salon: "", consent: POLICY_VERSION },
   ]);
   const created = backend.users.find((u) => u.telegramId === 3003);
   expect(backend.tables.profiles.find((p) => p.id === created.id)).toMatchObject({

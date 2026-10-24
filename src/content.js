@@ -15,10 +15,15 @@
 
 import { useSyncExternalStore } from "react";
 import { dateKey, toDaysOpen } from "./schedule.js";
-import { NOT_CONFIGURED, supabase } from "./supabase.js";
+import { NOT_CONFIGURED, salonSlug, supabase } from "./supabase.js";
 
-/** Ключ кэша. Менять при смене формы хранимого объекта. */
-const CACHE_KEY = "vs_content_v1";
+/**
+ * Ключ кэша. Менять при смене формы хранимого объекта. Свой у каждого
+ * салона: одно устройство может открыть мини-аппы двух мастеров (один
+ * адрес, разный ?salon=), и первый кадр не должен показать чужой прайс.
+ * Салон 1 (адрес без ?salon) — прежний ключ, без суффикса.
+ */
+const CACHE_KEY = salonSlug() ? `vs_content_v1:${salonSlug()}` : "vs_content_v1";
 
 const EMPTY = {
   status: "loading",
@@ -68,7 +73,6 @@ function toSettings(row) {
    считается здесь, при записи, а не в геттере.                   */
 
 let snapshot = EMPTY;
-let started = false;
 const listeners = new Set();
 
 function publish(next) {
@@ -113,8 +117,9 @@ export function findService(id) {
    тогда у вернувшегося клиента settings есть уже на первом кадре,
    и экран загрузки он не увидит вовсе.
 
-   Кэш — ТОЛЬКО для первого кадра: initContent() сразу же перечитывает
-   базу, а App.jsx — на каждой смене экрана. Если перечитать не вышло,
+   Кэш — ТОЛЬКО для первого кадра: App.jsx перечитывает базу сразу после
+   входа и на каждой смене экрана. До входа читать нечего — контент
+   салона анониму не отдаётся (RLS, «Салоны» в schema.sql). Если перечитать не вышло,
    stale = true, и <Screen> (src/ui.jsx) говорит клиенту, что данные
    могли устареть.                                                */
 
@@ -174,7 +179,8 @@ export async function refreshContent() {
   let result;
   try {
     result = await Promise.all([
-      supabase.from("settings").select("*").eq("id", 1).maybeSingle(),
+      // Строка настроек своего салона — RLS другую и не отдаст.
+      supabase.from("settings").select("*").maybeSingle(),
       supabase
         .from("services")
         .select("id,emoji,name,price,duration,note,sort,active")
@@ -309,12 +315,3 @@ export function refreshAll() {
   return allInflight;
 }
 
-/**
- * Вызывать один раз при старте. Флаг started — защита от двойного
- * вызова эффекта под React.StrictMode.
- */
-export function initContent() {
-  if (started) return;
-  started = true;
-  refreshAll();
-}

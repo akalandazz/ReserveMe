@@ -17,6 +17,10 @@ dist-ssr
 .env.*
 !.env.example
 
+# Конфиги мастеров (scripts/add-master.mjs) — в них токены ботов
+masters/*.json
+!masters/example.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

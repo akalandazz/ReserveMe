@@ -10,6 +10,11 @@
 //   CLIENT_BOT_WEBHOOK_URL=https://<проект>.supabase.co/functions/v1/client-bot \
 //   node scripts/setup-client-bot.mjs
 // CLIENT_BOT_WEBHOOK_SECRET — тот же, что в секретах функции client-bot.
+//
+// Бот другого салона (не салона 1): CLIENT_BOT_SALON=<slug> — вебхук получит
+// ?salon=<slug>, а токен и секрет должны совпадать с его строкой
+// public.salon_bots (kind = 'client', token / webhook_secret), см.
+// supabase/add-salon.sql.
 
 import {
   BOT_COMMANDS,
@@ -21,9 +26,14 @@ const env = (name) => process.env[name]?.trim() ?? "";
 
 const TOKEN = env("TELEGRAM_CLIENT_BOT_TOKEN");
 const SECRET = env("CLIENT_BOT_WEBHOOK_SECRET");
-const WEBHOOK_URL = env("CLIENT_BOT_WEBHOOK_URL");
+const SALON = env("CLIENT_BOT_SALON");
+const BASE_URL = env("CLIENT_BOT_WEBHOOK_URL");
 
-if (!TOKEN || !SECRET || !/^https:\/\//.test(WEBHOOK_URL)) {
+if (SALON && !/^[a-z0-9][a-z0-9-]{1,31}$/.test(SALON)) {
+  console.error("CLIENT_BOT_SALON: slug салона из public.salons (a–z 0–9 -).");
+  process.exit(1);
+}
+if (!TOKEN || !SECRET || !/^https:\/\//.test(BASE_URL)) {
   console.error(
     "Нужны TELEGRAM_CLIENT_BOT_TOKEN, CLIENT_BOT_WEBHOOK_SECRET и CLIENT_BOT_WEBHOOK_URL (https)."
   );
@@ -33,6 +43,10 @@ if (!/^[A-Za-z0-9_-]{1,256}$/.test(SECRET)) {
   console.error("CLIENT_BOT_WEBHOOK_SECRET: 1–256 символов A–Z a–z 0–9 _ - (так требует Telegram).");
   process.exit(1);
 }
+
+const webhook = new URL(BASE_URL);
+if (SALON) webhook.searchParams.set("salon", SALON);
+const WEBHOOK_URL = webhook.toString();
 
 async function call(method, body) {
   const res = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {

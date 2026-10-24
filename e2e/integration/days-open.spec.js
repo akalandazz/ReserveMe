@@ -101,7 +101,7 @@ test("воскресенье, открытое разово, принимает 
 });
 
 test("days_off сильнее days_open", async () => {
-  await admin("/rest/v1/days_off", { method: "POST", body: { day: SUN } });
+  await admin("/rest/v1/days_off", { method: "POST", body: { day: SUN, salon_id: 1 } });
   try {
     const res = await insertBooking(A.token, { day: SUN, start_min: 750 });
     expect(res.status).toBe(400);

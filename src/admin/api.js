@@ -78,11 +78,12 @@ export function validateServiceFields(s) {
 
 /* ─── График ────────────────────────────────────────────────────── */
 
+// Строка settings мастера — одна на салон, другую RLS не покажет и не даст
+// изменить. Фильтр — только потому, что update без фильтра PostgREST не шлёт.
+const ownSettings = (row) => supabase.from("settings").update(row).not("salon_id", "is", null);
+
 export function saveWorkingHours(workingHours) {
-  return run(
-    () => supabase.from("settings").update({ working_hours: workingHours }).eq("id", 1),
-    ["settings"]
-  );
+  return run(() => ownSettings({ working_hours: workingHours }), ["settings"]);
 }
 
 /** За сколько часов бот напоминает клиенту о записи; 0 — не напоминает. */
@@ -91,10 +92,7 @@ export function saveReminderHours(hours) {
   if (!Number.isInteger(h) || h < 0 || h > 72) {
     return Promise.resolve({ ok: false, error: "Напоминание — от 0 до 72 часов" });
   }
-  return run(
-    () => supabase.from("settings").update({ reminder_hours: h }).eq("id", 1),
-    ["settings"]
-  );
+  return run(() => ownSettings({ reminder_hours: h }), ["settings"]);
 }
 
 /* ─── Салон: профиль, адрес, правила записи ─────────────────────── */
@@ -164,7 +162,7 @@ export function saveSettings(patch) {
     Object.entries(fields).map(([key, value]) => [SETTINGS_COLUMNS[key], value])
   );
   if (Object.keys(row).length === 0) return Promise.resolve({ ok: true, error: null });
-  return run(() => supabase.from("settings").update(row).eq("id", 1), ["settings"]);
+  return run(() => ownSettings(row), ["settings"]);
 }
 
 /* ─── Дни без записи ────────────────────────────────────────────── */
@@ -189,7 +187,8 @@ export function openDayOnce(day, hours) {
     () =>
       supabase
         .from("days_open")
-        .upsert({ day, hours: { from: hours.from, to: hours.to } }, { onConflict: "day" }),
+        // salon_id не шлём — его ставит default (салон мастера).
+        .upsert({ day, hours: { from: hours.from, to: hours.to } }, { onConflict: "salon_id,day" }),
     ["daysOpen"]
   );
 }

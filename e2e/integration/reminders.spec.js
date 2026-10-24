@@ -67,6 +67,8 @@ async function booking(user, hoursAhead, fields = {}) {
       status: "ok",
       source: "master",
       user_id: user?.uid ?? null,
+      // у service role нет салона — default current_salon_id() пуст
+      salon_id: 1,
       ...fields,
     },
   });
@@ -78,7 +80,7 @@ const claim = (limit = 50) => rpc("claim_due_reminders", { p_limit: limit }, IT.
 const profileOf = async (user) =>
   (await admin(`/rest/v1/profiles?id=eq.${user.uid}&select=reminders,bot_unreachable_at`)).data[0];
 const setHours = (h) =>
-  admin("/rest/v1/settings?id=eq.1", { method: "PATCH", body: { reminder_hours: h } });
+  admin("/rest/v1/settings?salon_id=eq.1", { method: "PATCH", body: { reminder_hours: h } });
 
 test.beforeAll(async () => {
   if (!ENABLED || !LOCAL_ONLY) return;
@@ -278,8 +280,9 @@ test.describe("Edge Function send-reminders", () => {
     const toA = calls.find((c) => c.body.chat_id === A.tg.id).body;
     expect(toA.text).toContain("Rita, ждём вас");
     expect(toA.text).toContain("💅 Маникюр");
+    // Мини-апп салона этой записи.
     expect(toA.reply_markup.inline_keyboard[0][0].web_app.url).toBe(
-      "https://example.invalid/miniapp"
+      "https://example.invalid/miniapp?salon=main"
     );
     expect((await bookingAsAdmin(ok.id)).reminded_at).not.toBeNull();
     expect((await profileOf(B)).bot_unreachable_at).not.toBeNull();
