@@ -130,8 +130,7 @@ create table if not exists public.info_blocks (
   body  text    not null check (length(btrim(body)) between 1 and 600),
   sort  integer not null default 0
 );
-
-create index if not exists info_blocks_sort_idx on public.info_blocks (sort, id);
+-- Индекс по порядку — с salon_id, в блоке «Салоны» ниже.
 
 -- ─── Клиенты ───────────────────────────────────────────────────
 --  У заявки и раньше были client_name/client_username — но построчно,
@@ -145,11 +144,7 @@ create table if not exists public.clients (
   name               text    not null default '',
   telegram_username  text    not null default '',
   phone              text    not null default '',
-  -- Устарело: заметка переехала в client_comments (миграция ниже
-  -- переносит её первым комментарием и обнуляет). Колонка оставлена,
-  -- чтобы закэшированный старый бандл кабинета не падал на update.
-  note               text    not null default '',
-  created_at         timestamptz not null default now(),
+  created_at        timestamptz not null default now(),
   updated_at         timestamptz not null default now()
 );
 
@@ -192,7 +187,7 @@ create table if not exists public.profiles (
 
 -- Базы, где profiles завела ещё e-mail-версия. Строки без telegram_id —
 -- аккаунты с паролем, войти через Telegram они не могут; их надо
--- убрать (supabase/reset-dev.sql), а не тихо оставить.
+-- удалить из auth.users (profiles уйдут каскадом), а не тихо оставить.
 alter table public.profiles add column if not exists telegram_id       bigint;
 alter table public.profiles add column if not exists telegram_username text not null default '';
 alter table public.profiles add column if not exists first_name        text not null default '';
@@ -209,7 +204,7 @@ alter table public.profiles add column if not exists bot_unreachable_at timestam
 do $$
 begin
   if exists (select 1 from public.profiles where telegram_id is null) then
-    raise exception 'В profiles есть аккаунты без telegram_id (вход по e-mail). Сначала выполните supabase/reset-dev.sql.';
+    raise exception 'В profiles есть аккаунты без telegram_id (вход по e-mail). Сначала удалите их из auth.users.';
   end if;
   alter table public.profiles alter column telegram_id set not null;
 end
@@ -219,13 +214,11 @@ create unique index if not exists profiles_telegram_id_uq on public.profiles (te
 create index if not exists client_comments_client_idx
   on public.client_comments (client_id, created_at desc);
 
--- Перенос старой заметки первым комментарием. Идемпотентно: после
--- переноса note обнуляется, повторный прогон файла ничего не найдёт.
-insert into public.client_comments (client_id, body, created_at)
-  select id, left(btrim(note), 1000), updated_at
-  from public.clients
-  where btrim(note) <> '';
-update public.clients set note = '' where note <> '';
+-- Устарело: clients.note (заметки переехали в client_comments, перенос
+-- уже выполнен — на живой базе колонка пуста) и clients.email (больше не
+-- пишется: имя и логин приходят из проверенного профиля).
+alter table public.clients drop column if exists note;
+alter table public.clients drop column if exists email;
 
 -- Уникальность юзернейма клиента — в пределах салона: clients_salon_username_uq
 -- в блоке «Салоны» ниже (прежний clients_username_uq был на всю базу).
@@ -238,10 +231,8 @@ alter table public.clients add column if not exists channel text not null defaul
 
 -- Аккаунт мини-аппа, если клиент записывался сам: link_booking_client()
 -- находит клиента по нему раньше, чем по юзернейму и имени, — аккаунт
--- устойчивее и того, и другого. email — из того же аккаунта, чтобы
--- мастер знала, кто это, даже когда Telegram не отдал ни имени, ни логина.
+-- устойчивее и того, и другого.
 alter table public.clients add column if not exists user_id uuid references auth.users(id) on delete set null;
-alter table public.clients add column if not exists email text not null default '';
 create unique index if not exists clients_user_id_uq
   on public.clients (user_id)
   where user_id is not null;
@@ -296,12 +287,12 @@ alter table public.bookings add column if not exists client_id bigint references
 -- которые завела мастер (source = 'master').
 alter table public.bookings add column if not exists user_id uuid references auth.users(id) on delete set null;
 -- Устарело: client_token связывал заявку с копией на устройстве клиента
--- (CloudStorage) до того, как мини-апп стал требовать вход. Новый бандл его
--- не шлёт и не читает; колонка и индекс остаются, пока старые закэшированные
--- бандлы шлют её во вставке, — потом их можно удалить:
---   drop index if exists public.bookings_client_token_uq;
---   alter table public.bookings drop column if exists client_token;
-alter table public.bookings add column if not exists client_token uuid;
+-- (CloudStorage) до того, как мини-апп стал требовать вход. Бандл до входа
+-- вставить заявку уже не может (bookings_insert_client требует аккаунт
+-- Telegram), и на живой базе колонка ни разу не заполнялась.
+drop index if exists public.bookings_client_token_idx;
+drop index if exists public.bookings_client_token_uq;
+alter table public.bookings drop column if exists client_token;
 -- Кто отменил: 'client' (cancel_own_booking) или 'master' (кабинет).
 -- cancel_seen — мастер видела отмену клиента в «Заявках» («Понятно»).
 alter table public.bookings add column if not exists cancelled_by text not null default '';
@@ -335,12 +326,9 @@ alter table public.bookings add constraint bookings_price_check
 -- услуге — с salon_id, в блоке «Салоны» ниже (услуга — для on delete set
 -- null при её удалении, иначе полный проход по bookings).
 create index if not exists bookings_user_id_idx on public.bookings (user_id, day);
--- Устарело вместе с client_token (см. выше). Пока старые бандлы досылают
--- заявки повторно, уникальный индекс не даёт им задвоиться.
-drop index if exists public.bookings_client_token_idx;
-create unique index if not exists bookings_client_token_uq
-  on public.bookings (client_token)
-  where client_token is not null;
+-- Внешний ключ на auth.users: без индекса удаление аккаунта проходит
+-- bookings целиком (on delete set null).
+create index if not exists bookings_created_by_idx on public.bookings (created_by);
 
 -- Потолки длины текстов: вставлять в bookings может аноним, и без них
 -- одна строка могла бы нести мегабайты. not valid — старые строки не
@@ -608,7 +596,10 @@ create index if not exists bookings_salon_service_idx on public.bookings (salon_
 create index if not exists bookings_salon_user_idx   on public.bookings (salon_id, user_id);
 create index if not exists clients_salon_user_idx    on public.clients (salon_id, user_id);
 create index if not exists client_comments_salon_client_idx on public.client_comments (salon_id, client_id);
+-- Блоки салона по порядку — и индекс под внешний ключ info_blocks → salons.
+create index if not exists info_blocks_salon_sort_idx on public.info_blocks (salon_id, sort, id);
 -- Прежние, без салона (их создавал этот файл до салонов).
+drop index if exists public.info_blocks_sort_idx;
 drop index if exists public.bookings_day_idx;
 drop index if exists public.bookings_client_id_idx;
 drop index if exists public.bookings_service_id_idx;
@@ -2232,6 +2223,17 @@ select 1, * from (values
   ('🩺', 'Здоровье',      'Если есть грибок, порезы или воспаления — напишите мне заранее.', 50)
 ) as seed(emoji, title, body, sort)
 where not exists (select 1 from public.info_blocks where salon_id = 1);
+
+-- ─── Триггерные функции — не RPC ────────────────────────────────
+--  Supabase по умолчанию даёт anon/authenticated execute на всё в public,
+--  и триггерные функции видны как /rest/v1/rpc/…. Вызвать их так нельзя
+--  (Postgres отвечает ошибкой), а триггер право execute при срабатывании
+--  не проверяет — убираем, чтобы в API не торчали security definer.
+revoke all on function public.guard_client_booking()   from public, anon, authenticated;
+revoke all on function public.link_booking_client()    from public, anon, authenticated;
+revoke all on function public.reset_booking_reminder() from public, anon, authenticated;
+revoke all on function public.set_booking_created_by() from public, anon, authenticated;
+revoke all on function public.touch_updated_at()       from public, anon, authenticated;
 
 -- ─── Кэш схемы PostgREST ────────────────────────────────────────
 --  Новая функция (cancel_own_booking) и новая колонка не видны через REST,

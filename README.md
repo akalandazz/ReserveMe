@@ -43,13 +43,17 @@ Telegram Desktop. Вход — по вашему аккаунту Telegram, па
 ## Первая настройка Supabase
 
 1. Выполните [supabase/schema.sql](supabase/schema.sql) целиком в SQL Editor
-   проекта — таблицы, политики доступа и начальные данные. (База от старой
-   версии со входом по e-mail: сначала [supabase/reset-dev.sql](supabase/reset-dev.sql) —
-   он удаляет всех пользователей и записи.)
-2. Функция входа: `npx supabase secrets set TELEGRAM_CLIENT_BOT_TOKEN=<токен
-   бота клиента> TELEGRAM_CABINET_BOT_TOKEN=<токен бота кабинета>`, затем
+   проекта — таблицы, политики доступа и начальные данные. Файл можно
+   прогонять повторно на живой базе.
+2. Функция входа: токены ботов салона — строки в `salon_bots` (см.
+   [supabase/add-salon.sql](supabase/add-salon.sql)) или секреты
+   `TELEGRAM_CLIENT_BOT_TOKEN` / `TELEGRAM_CABINET_BOT_TOKEN` в дашборде
+   (**Edge Functions → Secrets**), затем
    `npx supabase functions deploy telegram-auth --no-verify-jwt`. Токены ботов
-   живут **только** в секретах функции — не в `.env` и не в коде.
+   живут **только** на сервере — не в `.env` и не в коде.
+   ⚠️ Не ставьте секреты командой `supabase secrets set` из этого репозитория:
+   она заодно зальёт фейковые тестовые токены из `supabase/config.toml`
+   поверх настоящих.
 3. **Authentication → Sign In / Providers**: выключите регистрацию, провайдер
    Email и Anonymous Sign-ins — вход только через Telegram.
    **Authentication → Rate Limits → token verifications** — поднимите (каждый
@@ -59,7 +63,10 @@ Telegram Desktop. Вход — по вашему аккаунту Telegram, па
    сборке, поэтому после правки `.env` нужен `npm run build`.
 5. Мастер один раз открывает кабинет из Telegram (увидит «Нет доступа»), затем
    в SQL Editor: `update public.profiles set role = 'master' where telegram_id =
-   <её Telegram id>;` (id подскажет @userinfobot).
+   <её Telegram id> and salon_id = <id салона>;` (id подскажет @userinfobot).
+   `salon_id` — обязательно, и для салона 1 тоже: иначе аккаунт, который уже
+   записывался к другому мастеру, станет мастером того салона. Проще —
+   `npm run add-master -- masters/<имя>.json`, он проверяет то же самое.
 
 Ключ `anon` — публичный, он и должен уезжать в бандл. Данные защищает RLS
 в базе. Ключ `service_role` и токены ботов в `.env` вписывать **нельзя**.
