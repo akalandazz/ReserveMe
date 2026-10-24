@@ -318,10 +318,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
   - Bookings belong to the account (`bookings.user_id`), not the device: signing out
     clears the client's in-memory store (`resetMyBookings()`), and the same Telegram
     account on another device shows the same «Мои записи».
-  - Old e-mail accounts are not migrated: `supabase/reset-dev.sql` wipes users and
-    bookings (dev only); `schema.sql` refuses to run while a `profiles` row lacks
-    `telegram_id`.
-  - **Deploying:** `reset-dev.sql` → `schema.sql` (on a live single-salon base it
+  - Old e-mail accounts are not migrated: `schema.sql` refuses to run while a
+    `profiles` row lacks `telegram_id` — delete those `auth.users` rows first (the
+    old `reset-dev.sql` that wiped everything was removed on purpose).
+  - **Deploying:** `schema.sql` (on a live single-salon base it
     migrates everything into salon 1, `slug = 'main'`; re-runnable) → salon 1's bots:
     secrets `TELEGRAM_CLIENT_BOT_TOKEN=… TELEGRAM_CABINET_BOT_TOKEN=…` (or rows in
     `salon_bots`) — every further salon via `supabase/add-salon.sql` → `supabase functions
@@ -330,7 +330,7 @@ seed, kept in the repo because the content is no longer in git otherwise.
     raise *Authentication → Rate Limits → token verifications*: every login is one OTP
     verification, and all of them come **from the function's IP** (default 30 per
     5 min) → master opens the cabinet once → grant the role by SQL → reminders:
-    `supabase secrets set REMINDERS_CRON_SECRET=… CLIENT_APP_URL=…` → `supabase
+    secrets `REMINDERS_CRON_SECRET=… CLIENT_APP_URL=…` → `supabase
     functions deploy send-reminders --no-verify-jwt` → the two `vault.create_secret`
     calls from the header of `supabase/reminders-cron.sql`, then that file → client bot
     info buttons: secrets `CLIENT_BOT_WEBHOOK_SECRET` (+ optional `CLIENT_PRIVACY_URL`)
@@ -392,13 +392,13 @@ seed, kept in the repo because the content is no longer in git otherwise.
   else, and claiming a client by it would hand the claimer every booking the master
   later adds for that client via `bookings_select_own`, plus `cancel_own_booking`/
   `reschedule_own_booking` on them. A new account whose username is taken gets a
-  client without it; name and username come from the verified profile;
-  `clients.email` is no longer written) and from the cabinet («Новый клиент», «Новая
+  client without it; name and username come from the verified profile) and from the cabinet («Новый клиент», «Новая
   запись»). Bookings link to clients by `client_id`, **never by name**: `store.js`
   (`withClientNames`) overwrites each booking's `client_name`/`client_username` from
   its client, so a rename in «Клиенты» shows everywhere. The trigger never overwrites
   a non-empty client name, so a later request can't undo the master's rename.
-  Comments live in `client_comments` (the old `clients.note` is migrated and unused).
+  Comments live in `client_comments` (the old `clients.note` and `clients.email`
+  columns are dropped).
   `client_stats` derives `visit_count`/`last_visit_at` from **past confirmed**
   bookings and `favorite_service_id` from all confirmed ones (`status = 'ok'` — an
   unhandled request is neither a visit nor a choice); it must stay
@@ -527,10 +527,8 @@ price, comment, status, cancelledBy }` — camelCase, normalized from the row in
 purpose: the master edits prices in the cabinet, and an old booking must keep showing
 what was agreed (`duration`, `price`, `service_name` columns), plus `service_id` can go
 `null` (`on delete set null`) if the service is deleted outright — the cabinet's service
-editor deletes for real, unlike the old admin's `active = false` hide. `bookings`
-still has a `client_token` column and its unique index for old cached bundles; nothing
-in the current code reads or writes it, and `schema.sql` carries the `drop` to run
-once those bundles are gone.
+editor deletes for real, unlike the old admin's `active = false` hide. The old
+`bookings.client_token` column is dropped by `schema.sql`.
 
 ## Conventions
 
