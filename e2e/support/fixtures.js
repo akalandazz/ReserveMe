@@ -33,9 +33,14 @@ export const test = base.extend({
   clients: [[], { option: true }],
   bookings: [[], { option: true }],
   fakeClock: [false, { option: true }],
+  // null — одна услуга по умолчанию (seed в fake-supabase.js). Список из
+  // нескольких строк Playwright принял бы за кортеж [значение, опции],
+  // поэтому передаётся как test.use({ services: [[...строки], {}] }).
+  services: [null, { option: true }],
 
-  backend: async ({ page, clients, bookings }, use) => {
+  backend: async ({ page, clients, bookings, services }, use) => {
     const state = await installFakeSupabase(page);
+    if (services) state.tables.services = services.map((s) => ({ ...s }));
     state.tables.client_stats.push(...clients);
     state.tables.bookings.push(...bookings);
     await use(state);

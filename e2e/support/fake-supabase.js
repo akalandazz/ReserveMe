@@ -337,6 +337,13 @@ async function handle(route, state) {
     return json(200, uid ? rows.filter((b) => b.user_id === uid) : []);
   }
 
+  // services — как order by sort, id в store.js и content.js: тест порядка
+  // после перезагрузки видит то, что сохранил кабинет.
+  if (table === "services" && method === "GET") {
+    const sorted = [...rows].sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0) || a.id.localeCompare(b.id));
+    return json(200, sorted, { "content-range": `0-${sorted.length - 1}/${sorted.length}` });
+  }
+
   if (rows && method === "GET") {
     const offset = Number(url.searchParams.get("offset") ?? 0);
     const limit = Number(url.searchParams.get("limit") ?? rows.length);
@@ -441,6 +448,27 @@ async function handle(route, state) {
     const body = req.postDataJSON();
     state.changes.push({ method, table, id: 1, body });
     Object.assign(rows[0], body);
+    return route.fulfill({ status: 204, headers: cors });
+  }
+
+  // services из кабинета (ServicesSection): insert, update и delete
+  // .eq("id", …); пишет только мастер.
+  if (table === "services" && ["POST", "PATCH", "DELETE"].includes(method)) {
+    if (requester(req) !== MASTER.id) return forbidden();
+    if (method === "POST") {
+      const body = req.postDataJSON();
+      state.inserts.push({ table, body, headers: req.headers() });
+      rows.push({ active: true, ...body });
+      return json(201, []);
+    }
+    const id = url.searchParams.get("id")?.replace(/^eq\./, "");
+    const body = method === "PATCH" ? req.postDataJSON() : null;
+    state.changes.push({ method, table, id, body });
+    const i = rows.findIndex((s) => s.id === id);
+    if (i >= 0) {
+      if (method === "PATCH") rows[i] = { ...rows[i], ...body };
+      else rows.splice(i, 1);
+    }
     return route.fulfill({ status: 204, headers: cors });
   }
 
