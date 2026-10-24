@@ -23,16 +23,20 @@
 --       раз из Telegram; если вход не проходит — включите провайдер обратно,
 --       оставив регистрацию выключенной.
 --    2. Authentication → Anonymous Sign-ins — выключить.
---    3. Edge Functions → telegram-auth: секреты TELEGRAM_CLIENT_BOT_TOKEN
---       и TELEGRAM_CABINET_BOT_TOKEN (см. supabase/functions/telegram-auth).
+--    3. Токены ботов салона — в public.salon_bots (supabase/add-salon.sql;
+--       для салона 1 пока работают и секреты TELEGRAM_CLIENT_BOT_TOKEN /
+--       TELEGRAM_CABINET_BOT_TOKEN, см. supabase/functions/telegram-auth).
 --    4. Мастер один раз открывает кабинет (увидит «Нет доступа»), затем
 --       роль выдаётся руками — сниппет над is_master() ниже.
+--  Салонов (мастеров) может быть несколько — каждый видит только своё,
+--  см. блок «Салоны».
 --  Даже при открытой регистрации чужой e-mail-аккаунт ничего не может:
 --  каждое право проверяет is_telegram_user() — telegram_id в app_metadata
 --  JWT (его пишет только service role) и в profiles.
 -- ═══════════════════════════════════════════════════════════════
 
--- ─── Настройки: ровно одна строка ──────────────────────────────
+-- ─── Настройки: ровно одна строка на салон ─────────────────────
+--  id = 1 — форма до салонов; блок «Салоны» ниже заменяет id на salon_id.
 create table if not exists public.settings (
   id                 smallint primary key default 1 check (id = 1),
   master_name        text    not null check (length(btrim(master_name)) between 1 and 40),
@@ -223,11 +227,8 @@ insert into public.client_comments (client_id, body, created_at)
   where btrim(note) <> '';
 update public.clients set note = '' where note <> '';
 
--- Пустая строка не участвует в уникальности — иначе все клиенты без
--- юзернейма схлопнулись бы в одну запись.
-create unique index if not exists clients_username_uq
-  on public.clients (telegram_username)
-  where telegram_username <> '';
+-- Уникальность юзернейма клиента — в пределах салона: clients_salon_username_uq
+-- в блоке «Салоны» ниже (прежний clients_username_uq был на всю базу).
 
 -- Откуда клиент пишет мастеру — для тех, кого она заводит сама
 -- («Новая запись» → «Новый клиент»): WhatsApp, Instagram, звонок,
@@ -330,12 +331,10 @@ alter table public.bookings drop constraint if exists bookings_price_check;
 alter table public.bookings add constraint bookings_price_check
   check (price between 0 and 99999);
 
-create index if not exists bookings_day_idx on public.bookings (day, start_min);
-create index if not exists bookings_client_id_idx on public.bookings (client_id);
--- «Мои записи»: select по user_id = auth.uid().
+-- «Мои записи»: select по user_id = auth.uid(). Индексы по дню, клиенту и
+-- услуге — с salon_id, в блоке «Салоны» ниже (услуга — для on delete set
+-- null при её удалении, иначе полный проход по bookings).
 create index if not exists bookings_user_id_idx on public.bookings (user_id, day);
--- Для on delete set null при удалении услуги — иначе полный проход по bookings.
-create index if not exists bookings_service_id_idx on public.bookings (service_id);
 -- Устарело вместе с client_token (см. выше). Пока старые бандлы досылают
 -- заявки повторно, уникальный индекс не даёт им задвоиться.
 drop index if exists public.bookings_client_token_idx;
@@ -358,28 +357,8 @@ exception when duplicate_object then null;
 end
 $$;
 
--- Две ПОДТВЕРЖДЁННЫЕ записи не могут пересекаться по времени — это
--- гарантия самой базы, поверх проверок в функциях ниже. Заявки ('new')
--- пересекаться могут: их мастер разбирает руками.
--- Если в базе уже лежат пересекающиеся подтверждённые записи, ограничение
--- не создастся (notice в выводе) — разведите их в кабинете и прогоните
--- файл ещё раз.
-create extension if not exists btree_gist with schema extensions;
-do $$
-begin
-  if exists (select 1 from pg_constraint where conname = 'bookings_no_overlap_ok') then
-    return;
-  end if;
-  alter table public.bookings add constraint bookings_no_overlap_ok
-    exclude using gist (
-      day with =,
-      int4range(start_min, start_min + duration) with &&
-    ) where (status = 'ok');
-exception
-  when exclusion_violation then
-    raise notice 'bookings_no_overlap_ok не создано: есть пересекающиеся подтверждённые записи';
-end
-$$;
+-- Запрет пересечения подтверждённых записей (bookings_no_overlap_ok) — в
+-- блоке «Салоны» ниже: он сравнивает записи одного салона.
 
 -- ─── Закрытые вручную окошки ─────────────────────────────────────
 --  «Закрыть» отдельный слот в панели дня кабинета мастера, не трогая
@@ -389,6 +368,278 @@ create table if not exists public.blocked_slots (
   start_min integer not null check (start_min between 0 and 1439),
   primary key (day, start_min)
 );
+
+-- ═══════════════════════════════════════════════════════════════
+--  Салоны (тенанты)
+--
+--  Один проект — несколько мастеров. Салон — это мастер, её клиенты и её
+--  контент. Каждая строка каждой таблицы салона несёт salon_id, и каждая
+--  политика сверяет его с current_salon_id() — салоном аккаунта, который
+--  вошёл. Чужой салон не виден ни мастеру, ни клиенту: чтение RLS
+--  фильтрует (200, []), функции отвечают 42501 (403).
+--
+--  Салон аккаунта — profiles.salon_id. Пишет его только telegram-auth,
+--  при первом входе: салон определяет бот, чей токен подошёл к подписи
+--  initData (salon_bots). Один аккаунт — один салон: клиент мастера A,
+--  открывший бота мастера B, получает 403 other_salon.
+--
+--  Ссылки между строками — составные внешние ключи с salon_id (запись →
+--  услуга, клиент, аккаунт; клиент → аккаунт; комментарий → клиент): строку,
+--  которая указывает в чужой салон, не примет сама база, что бы ни прислал
+--  кабинет. Без этого мастер могла бы вписать в свою запись user_id чужого
+--  клиента — и та появилась бы у него в «Мои записи».
+--
+--  Новый салон — supabase/add-salon.sql.
+-- ═══════════════════════════════════════════════════════════════
+
+create table if not exists public.salons (
+  id         smallint primary key check (id > 0),
+  -- ?salon=<slug> в адресе мини-аппа и кабинета у бота салона (BotFather).
+  slug       text not null unique check (slug ~ '^[a-z0-9][a-z0-9-]{1,31}$'),
+  created_at timestamptz not null default now()
+);
+
+-- Все данные, что были в базе до салонов, — салон 1.
+insert into public.salons (id, slug) values (1, 'main') on conflict (id) do nothing;
+
+-- Боты салона: бот мини-аппа клиента и бот кабинета (токены могут
+-- совпадать). Токены лежат здесь, а не в секретах функций: салонов
+-- сколько угодно, секретов на каждый не заведёшь. Читает таблицу только
+-- service role (telegram-auth, send-reminders, client-bot) — у anon и
+-- authenticated нет на неё никаких прав. webhook_secret — secret_token
+-- вебхука бота клиента (client-bot), у бота кабинета пусто.
+create table if not exists public.salon_bots (
+  salon_id       smallint not null references public.salons(id) on delete cascade,
+  kind           text not null check (kind in ('client', 'cabinet')),
+  token          text not null check (token ~ '^[0-9]+:[A-Za-z0-9_-]+$'),
+  webhook_secret text not null default '',
+  primary key (salon_id, kind)
+);
+
+-- Как требует Telegram у secret_token: A–Z a–z 0–9 _ -, до 256 символов.
+-- Длина — отдельно: повторение {0,256} регулярке Postgres не по силам
+-- (предел — 255), и такая проверка отвергала бы любую строку.
+alter table public.salon_bots drop constraint if exists salon_bots_webhook_secret_check;
+alter table public.salon_bots add constraint salon_bots_webhook_secret_check
+  check (length(webhook_secret) <= 256 and webhook_secret ~ '^[A-Za-z0-9_-]*$');
+
+-- Один бот — один салон: initData бота, подключённого к двум салонам,
+-- подошёл бы к обоим, и новый клиент выбрал бы салон адресом. Внутри салона
+-- тот же токен у client и cabinet — можно (один бот на всё).
+create extension if not exists btree_gist with schema extensions;
+do $$
+begin
+  alter table public.salon_bots add constraint salon_bots_one_salon_per_token
+    exclude using gist (token with =, salon_id with <>);
+exception when duplicate_object or duplicate_table then null;
+end
+$$;
+
+alter table public.salons     enable row level security;
+alter table public.salon_bots enable row level security;
+revoke all on public.salon_bots from anon, authenticated;
+revoke insert, update, delete, truncate on public.salons from anon, authenticated;
+
+-- ─── current_salon_id(): салон вошедшего ─────────────────────────
+--  null — аноним, анонимный вход Supabase или аккаунт не из Telegram
+--  (то же правило, что у is_telegram_user() ниже). null не равен ничему,
+--  так что такой вызывающий не видит ни одной строки ни одного салона.
+--  plpgsql, а не sql: тело разбирается при вызове, а не при создании, —
+--  jwt_telegram_id() объявлена ниже, а функция нужна уже здесь, как
+--  default колонок. В политиках — (select public.current_salon_id()):
+--  один раз на запрос. security invoker: свою строку profiles вызывающий
+--  читает сам (profiles_select_own).
+create or replace function public.current_salon_id()
+returns smallint
+language plpgsql
+stable
+security invoker
+set search_path = ''
+as $$
+declare
+  sid smallint;
+begin
+  if coalesce(auth.jwt() ->> 'role', '') <> 'authenticated'
+     or coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) then
+    return null;
+  end if;
+  select p.salon_id into sid
+    from public.profiles p
+   where p.id = auth.uid()
+     and p.telegram_id = public.jwt_telegram_id();
+  return sid;
+end
+$$;
+
+grant execute on function public.current_salon_id() to anon, authenticated;
+
+drop policy if exists salons_select_own on public.salons;
+create policy salons_select_own on public.salons
+  for select to authenticated using (id = (select public.current_salon_id()));
+
+-- salon_id в каждую таблицу салона. Прежние строки — салону 1. default —
+-- салон вошедшего: кабинет вставляет строки, не называя салона, а
+-- политики (with check) сверяют то, что получилось. У profiles default нет:
+-- салон аккаунта ставит только telegram-auth.
+do $$
+declare t text;
+begin
+  foreach t in array array['settings', 'services', 'days_off', 'days_open', 'info_blocks',
+                           'clients', 'client_comments', 'bookings', 'blocked_slots', 'profiles'] loop
+    execute format('alter table public.%I add column if not exists salon_id smallint references public.salons(id)', t);
+    execute format('update public.%I set salon_id = 1 where salon_id is null', t);
+    execute format('alter table public.%I alter column salon_id set not null', t);
+    if t <> 'profiles' then
+      execute format('alter table public.%I alter column salon_id set default public.current_salon_id()', t);
+    end if;
+  end loop;
+end
+$$;
+
+-- settings: была одна строка id = 1, теперь одна на салон.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'settings' and column_name = 'id') then
+    alter table public.settings drop constraint if exists settings_pkey;
+    alter table public.settings drop column id;
+    alter table public.settings add constraint settings_pkey primary key (salon_id);
+  end if;
+end
+$$;
+
+-- Ключи, которые были уникальны на всю базу, — теперь в пределах салона:
+-- у двух мастеров может быть услуга manicure и выходной 1 января.
+do $$
+declare r record;
+begin
+  for r in select * from (values
+      ('services', 'id'),
+      ('days_off', 'day'),
+      ('days_open', 'day'),
+      ('blocked_slots', 'day, start_min')
+    ) v(t, cols) loop
+    if not exists (select 1 from pg_constraint c
+                    where c.conname = r.t || '_pkey'
+                      and pg_get_constraintdef(c.oid) like '%salon_id%') then
+      -- На старый ключ services ссылается bookings — составной ключ ниже.
+      if r.t = 'services' then
+        alter table public.bookings drop constraint if exists bookings_service_id_fkey;
+      end if;
+      execute format('alter table public.%I drop constraint if exists %I', r.t, r.t || '_pkey');
+      execute format('alter table public.%I add constraint %I primary key (salon_id, %s)',
+                     r.t, r.t || '_pkey', r.cols);
+    end if;
+  end loop;
+end
+$$;
+
+-- Цели составных внешних ключей.
+do $$
+begin
+  alter table public.clients  add constraint clients_salon_id_uq  unique (salon_id, id);
+exception when duplicate_table or duplicate_object then null;
+end
+$$;
+do $$
+begin
+  alter table public.profiles add constraint profiles_salon_id_uq unique (salon_id, id);
+exception when duplicate_table or duplicate_object then null;
+end
+$$;
+
+-- Ссылки — только внутри салона. set null (колонка) — обнуляется ссылка,
+-- а не salon_id (Postgres 15+). Прежние односторонние ключи на clients
+-- заменяются; на auth.users (bookings.user_id, clients.user_id) остаются.
+alter table public.bookings        drop constraint if exists bookings_client_id_fkey;
+alter table public.client_comments drop constraint if exists client_comments_client_id_fkey;
+do $$
+begin
+  alter table public.bookings add constraint bookings_service_fkey
+    foreign key (salon_id, service_id) references public.services (salon_id, id)
+    on delete set null (service_id);
+exception when duplicate_object then null;
+end
+$$;
+do $$
+begin
+  alter table public.bookings add constraint bookings_client_fkey
+    foreign key (salon_id, client_id) references public.clients (salon_id, id)
+    on delete set null (client_id);
+exception when duplicate_object then null;
+end
+$$;
+do $$
+begin
+  alter table public.bookings add constraint bookings_user_fkey
+    foreign key (salon_id, user_id) references public.profiles (salon_id, id)
+    on delete set null (user_id);
+exception when duplicate_object then null;
+end
+$$;
+do $$
+begin
+  alter table public.clients add constraint clients_user_fkey
+    foreign key (salon_id, user_id) references public.profiles (salon_id, id)
+    on delete set null (user_id);
+exception when duplicate_object then null;
+end
+$$;
+do $$
+begin
+  alter table public.client_comments add constraint client_comments_client_fkey
+    foreign key (salon_id, client_id) references public.clients (salon_id, id)
+    on delete cascade;
+exception when duplicate_object then null;
+end
+$$;
+
+-- Пустая строка не участвует в уникальности — иначе все клиенты без
+-- юзернейма схлопнулись бы в одну запись. clients.user_id остаётся
+-- уникальным на всю базу: один аккаунт — один салон.
+drop index if exists public.clients_username_uq;
+create unique index if not exists clients_salon_username_uq
+  on public.clients (salon_id, telegram_username)
+  where telegram_username <> '';
+
+create index if not exists bookings_salon_day_idx    on public.bookings (salon_id, day, start_min);
+create index if not exists bookings_salon_client_idx on public.bookings (salon_id, client_id);
+create index if not exists bookings_salon_service_idx on public.bookings (salon_id, service_id);
+create index if not exists bookings_salon_user_idx   on public.bookings (salon_id, user_id);
+create index if not exists clients_salon_user_idx    on public.clients (salon_id, user_id);
+create index if not exists client_comments_salon_client_idx on public.client_comments (salon_id, client_id);
+-- Прежние, без салона (их создавал этот файл до салонов).
+drop index if exists public.bookings_day_idx;
+drop index if exists public.bookings_client_id_idx;
+drop index if exists public.bookings_service_id_idx;
+
+-- Две ПОДТВЕРЖДЁННЫЕ записи одного салона не могут пересекаться по
+-- времени — это гарантия самой базы, поверх проверок в функциях ниже.
+-- Заявки ('new') пересекаться могут: их мастер разбирает руками. У разных
+-- салонов в одно время — разные мастера.
+-- Если в базе уже лежат пересекающиеся подтверждённые записи, ограничение
+-- не создастся (notice в выводе; прежнее, без салона, остаётся) —
+-- разведите их в кабинете и прогоните файл ещё раз.
+create extension if not exists btree_gist with schema extensions;
+do $$
+begin
+  if exists (select 1 from pg_constraint
+              where conname = 'bookings_no_overlap_ok'
+                and pg_get_constraintdef(oid) like '%salon_id%') then
+    return;
+  end if;
+  alter table public.bookings drop constraint if exists bookings_no_overlap_ok;
+  alter table public.bookings add constraint bookings_no_overlap_ok
+    exclude using gist (
+      salon_id with =,
+      day with =,
+      int4range(start_min, start_min + duration) with &&
+    ) where (status = 'ok');
+exception
+  when exclusion_violation then
+    raise notice 'bookings_no_overlap_ok не создано: есть пересекающиеся подтверждённые записи';
+end
+$$;
 
 -- ─── updated_at ────────────────────────────────────────────────
 create or replace function public.touch_updated_at()
@@ -520,7 +771,8 @@ create index if not exists bookings_client_created_idx
 --  дня недели из settings.working_hours (там может лежать и JSON null).
 --  Вызывающие проверяют jsonb_typeof(...) = 'object'. Повторяет
 --  hoursForDay() в src/schedule.js — меняются вместе.
---  Читает только публичные таблицы, поэтому исполнять может кто угодно.
+--  Салон — вызывающего (current_salon_id()): фильтр явный, потому что
+--  функцию зовут и из security definer, где RLS не действует.
 create or replace function public.hours_for_day(p_day date)
 returns jsonb
 language sql
@@ -529,11 +781,13 @@ security invoker
 set search_path = ''
 as $$
   select case
-    when exists (select 1 from public.days_off d where d.day = p_day) then null
+    when exists (select 1 from public.days_off d
+                  where d.salon_id = public.current_salon_id() and d.day = p_day) then null
     else coalesce(
-      (select o.hours from public.days_open o where o.day = p_day),
+      (select o.hours from public.days_open o
+        where o.salon_id = public.current_salon_id() and o.day = p_day),
       (select s.working_hours -> extract(dow from p_day)::int::text
-         from public.settings s where s.id = 1)
+         from public.settings s where s.salon_id = public.current_salon_id())
     )
   end
 $$;
@@ -563,12 +817,14 @@ declare
   close_min integer;
   today     date := (now() at time zone 'Asia/Tbilisi')::date;
 begin
-  select * into svc from public.services s where s.id = p_service_id;
+  -- Салон — вызывающего: услуга и правила чужого салона не находятся.
+  select * into svc from public.services s
+   where s.salon_id = public.current_salon_id() and s.id = p_service_id;
   if not found then
     raise exception 'Услуга не найдена';
   end if;
 
-  select * into st from public.settings s where s.id = 1;
+  select * into st from public.settings s where s.salon_id = public.current_salon_id();
   if not found then
     raise exception 'Салон не настроен';
   end if;
@@ -621,13 +877,17 @@ begin
     raise exception 'Войдите через Telegram' using errcode = '42501';
   end if;
 
+  -- Салон заявки — салон аккаунта, а не то, что прислал клиент.
+  new.salon_id := prof.salon_id;
+
   svc := public.assert_client_slot(new.service_id, new.day, new.start_min);
 
   -- Лок — чтобы параллельные вставки не прошли потолок все разом,
-  -- посчитав одно и то же число.
-  perform pg_advisory_xact_lock(hashtext('bookings:client-rate'));
+  -- посчитав одно и то же число. Потолок — свой у каждого салона.
+  perform pg_advisory_xact_lock(hashtext('bookings:client-rate:' || prof.salon_id));
   if (select count(*) from public.bookings b
-       where b.source = 'client'
+       where b.salon_id = prof.salon_id
+         and b.source = 'client'
          and b.created_at > now() - interval '1 hour') >= max_per_hour then
     raise exception 'Слишком много заявок — попробуйте позже';
   end if;
@@ -698,17 +958,20 @@ begin
     -- через bookings_select_own все записи, которые мастер потом заведёт
     -- этому клиенту (create_master_booking копирует clients.user_id), и
     -- право отменять и переносить их.
-    select id into found_id from public.clients where user_id = new.user_id;
+    -- Клиенты — только салона этой записи (security definer: RLS здесь
+    -- не действует, фильтр явный).
+    select id into found_id from public.clients
+     where salon_id = new.salon_id and user_id = new.user_id;
     if found_id is null then
-      insert into public.clients (name, telegram_username, user_id)
-      values (new.client_name, new.client_username, new.user_id)
+      insert into public.clients (salon_id, name, telegram_username, user_id)
+      values (new.salon_id, new.client_name, new.client_username, new.user_id)
       -- юзернейм уже занят клиентом с другим аккаунтом — заводим без него
-      on conflict (telegram_username) where telegram_username <> ''
+      on conflict (salon_id, telegram_username) where telegram_username <> ''
       do nothing
       returning id into found_id;
       if found_id is null then
-        insert into public.clients (name, user_id)
-        values (new.client_name, new.user_id)
+        insert into public.clients (salon_id, name, user_id)
+        values (new.salon_id, new.client_name, new.user_id)
         returning id into found_id;
       end if;
     else
@@ -721,9 +984,9 @@ begin
   end if;
 
   if new.client_username <> '' then
-    insert into public.clients (name, telegram_username)
-    values (new.client_name, new.client_username)
-    on conflict (telegram_username) where telegram_username <> ''
+    insert into public.clients (salon_id, name, telegram_username)
+    values (new.salon_id, new.client_name, new.client_username)
+    on conflict (salon_id, telegram_username) where telegram_username <> ''
     do update set name = case
       when public.clients.name = '' then excluded.name
       else public.clients.name
@@ -731,10 +994,10 @@ begin
     returning id into found_id;
   elsif new.client_name <> '' then
     select id into found_id from public.clients
-      where telegram_username = '' and name = new.client_name
+      where salon_id = new.salon_id and telegram_username = '' and name = new.client_name
       limit 1;
     if found_id is null then
-      insert into public.clients (name) values (new.client_name)
+      insert into public.clients (salon_id, name) values (new.salon_id, new.client_name)
       returning id into found_id;
     end if;
   end if;
@@ -750,10 +1013,10 @@ create trigger bookings_link_client
   for each row execute function public.link_booking_client();
 
 -- ═══════════════════════════════════════════════════════════════
---  RLS: читают все (в том числе незалогиненные клиенты мини-аппа),
---  пишет только вошедший мастер.
+--  RLS: контент салона читают вошедшие этого салона, пишет только его
+--  мастер. Другой салон не виден никому (см. «Салоны» выше).
 --
---  Политика select — using (true), а не using (active): админка ходит
+--  Политика select — по салону, а не using (active): админка ходит
 --  через того же клиента, и скрытая услуга обязана оставаться видимой,
 --  иначе её название не найдётся для прошлой записи.
 -- ═══════════════════════════════════════════════════════════════
@@ -873,23 +1136,33 @@ alter table public.days_off    enable row level security;
 alter table public.days_open   enable row level security;
 alter table public.info_blocks enable row level security;
 
+-- Контент салона читают вошедшие этого салона (клиенты и мастер), пишет
+-- его мастер. Анониму — ничего: до салонов прайс был публичным, теперь
+-- анонимный запрос не знает, чей прайс ему нужен, и мини-апп читает
+-- контент только после входа.
 do $$
 declare t text;
 begin
   foreach t in array array['settings', 'services', 'days_off', 'days_open', 'info_blocks'] loop
     execute format('drop policy if exists %I_select_public on public.%I', t, t);
+    execute format('drop policy if exists %I_select_salon  on public.%I', t, t);
     execute format('drop policy if exists %I_insert_auth   on public.%I', t, t);
     execute format('drop policy if exists %I_update_auth   on public.%I', t, t);
     execute format('drop policy if exists %I_delete_auth   on public.%I', t, t);
 
     execute format(
-      'create policy %I_select_public on public.%I for select to anon, authenticated using (true)', t, t);
+      'create policy %I_select_salon on public.%I for select to authenticated '
+      'using (salon_id = (select public.current_salon_id()))', t, t);
     execute format(
-      'create policy %I_insert_auth on public.%I for insert to authenticated with check ((select public.is_master()))', t, t);
+      'create policy %I_insert_auth on public.%I for insert to authenticated '
+      'with check ((select public.is_master()) and salon_id = (select public.current_salon_id()))', t, t);
     execute format(
-      'create policy %I_update_auth on public.%I for update to authenticated using ((select public.is_master())) with check ((select public.is_master()))', t, t);
+      'create policy %I_update_auth on public.%I for update to authenticated '
+      'using ((select public.is_master()) and salon_id = (select public.current_salon_id())) '
+      'with check ((select public.is_master()) and salon_id = (select public.current_salon_id()))', t, t);
     execute format(
-      'create policy %I_delete_auth on public.%I for delete to authenticated using ((select public.is_master()))', t, t);
+      'create policy %I_delete_auth on public.%I for delete to authenticated '
+      'using ((select public.is_master()) and salon_id = (select public.current_salon_id()))', t, t);
   end loop;
 end
 $$;
@@ -910,8 +1183,10 @@ drop policy if exists bookings_insert_auth  on public.bookings;
 drop policy if exists bookings_update_auth  on public.bookings;
 drop policy if exists bookings_delete_auth  on public.bookings;
 
+-- Мастер — все записи СВОЕГО салона, и только их.
 create policy bookings_select_auth on public.bookings
-  for select to authenticated using ((select public.is_master()));
+  for select to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 -- Клиент видит только свои строки — те, что оставил со своего аккаунта.
 -- Это не «select для authenticated» целиком (тот отдал бы любому
@@ -920,8 +1195,11 @@ create policy bookings_select_auth on public.bookings
 -- кроме того, что клиент прислал сам, и решения мастера по ней;
 -- комментарии мастера о клиенте — в client_comments, туда доступа нет.
 drop policy if exists bookings_select_own on public.bookings;
+-- salon_id — с запасом: аккаунт и так в одном салоне, а запись с его
+-- user_id в другом салоне не примет bookings_user_fkey.
 create policy bookings_select_own on public.bookings
-  for select to authenticated using (user_id = (select auth.uid()));
+  for select to authenticated
+  using (user_id = (select auth.uid()) and salon_id = (select public.current_salon_id()));
 
 drop policy if exists bookings_insert_client on public.bookings;
 
@@ -941,18 +1219,23 @@ create policy bookings_insert_client on public.bookings
   with check (
     status = 'new' and source = 'client'
     and user_id = (select auth.uid())
+    and salon_id = (select public.current_salon_id())
     and day >= (now() at time zone 'Asia/Tbilisi')::date - 1
     and (select public.is_telegram_user())
   );
 
 create policy bookings_insert_auth on public.bookings
-  for insert to authenticated with check ((select public.is_master()));
+  for insert to authenticated
+  with check ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 create policy bookings_update_auth on public.bookings
-  for update to authenticated using ((select public.is_master())) with check ((select public.is_master()));
+  for update to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()))
+  with check ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 create policy bookings_delete_auth on public.bookings
-  for delete to authenticated using ((select public.is_master()));
+  for delete to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 -- ─── Устаревшие функции по client_token ──────────────────────────
 --  booking_status(uuid[]) и cancel_own_booking(uuid) связывали заявку с
@@ -986,7 +1269,8 @@ begin
   end if;
 
   select * into bk from public.bookings b where b.id = p_id for update;
-  if not found or bk.user_id is distinct from auth.uid() then
+  if not found or bk.user_id is distinct from auth.uid()
+     or bk.salon_id is distinct from public.current_salon_id() then
     raise exception 'Нет доступа к этой записи' using errcode = '42501';
   end if;
   -- today - 1 — то же правило, что у вставки (bookings_insert_client).
@@ -1040,7 +1324,8 @@ begin
   end if;
 
   select * into bk from public.bookings b where b.id = p_id for update;
-  if not found or bk.user_id is distinct from auth.uid() then
+  if not found or bk.user_id is distinct from auth.uid()
+     or bk.salon_id is distinct from public.current_salon_id() then
     raise exception 'Нет доступа к этой записи' using errcode = '42501';
   end if;
   if bk.status not in ('new', 'ok')
@@ -1115,6 +1400,13 @@ create index if not exists bookings_reminder_due_idx
 --
 --  Только service role (Edge Function): клиенту и мастеру не нужно, а
 --  ответ несёт telegram_id.
+--
+--  Все салоны за один вызов, у каждого своё reminder_hours; salon_id в
+--  ответе — чтобы функция отправила напоминание ботом этого салона
+--  (salon_bots), а не чужим.
+--  drop: у функции сменился состав колонок ответа (salon_id), а create or
+--  replace тип ответа не меняет.
+drop function if exists public.claim_due_reminders(integer);
 create or replace function public.claim_due_reminders(p_limit integer default 50)
 returns table (
   booking_id   bigint,
@@ -1125,7 +1417,8 @@ returns table (
   service_name text,
   master_name  text,
   address      text,
-  landmark     text
+  landmark     text,
+  salon_id     smallint
 )
 language plpgsql
 volatile
@@ -1134,27 +1427,23 @@ set search_path = ''
 as $$
 #variable_conflict use_column
 declare
-  hrs   integer;
   today date := (now() at time zone 'Asia/Tbilisi')::date;
 begin
-  select s.reminder_hours into hrs from public.settings s where s.id = 1;
-  if coalesce(hrs, 0) <= 0 then
-    return;
-  end if;
-
   return query
   with due as (
     select b.id
       from public.bookings b
       join public.profiles p on p.id = b.user_id
+      join public.settings st on st.salon_id = b.salon_id
      where b.status = 'ok'
        and b.reminded_at is null
+       and st.reminder_hours > 0
        and p.reminders
        and p.bot_unreachable_at is null
        -- day — для индекса; точная граница — по моменту начала ниже.
        and b.day between today and today + 4
        and public.booking_starts_at(b.day, b.start_min) > now() + interval '30 minutes'
-       and public.booking_starts_at(b.day, b.start_min) <= now() + make_interval(hours => hrs)
+       and public.booking_starts_at(b.day, b.start_min) <= now() + make_interval(hours => st.reminder_hours)
      order by b.day, b.start_min, b.id
      limit greatest(1, least(p_limit, 200))
      for update of b skip locked
@@ -1163,14 +1452,13 @@ begin
        set reminded_at = now()
       from due
      where b.id = due.id
-    returning b.id, b.user_id, b.day, b.start_min, b.service_name
+    returning b.id, b.salon_id, b.user_id, b.day, b.start_min, b.service_name
   )
   select c.id, p.telegram_id, p.first_name, c.day, c.start_min, c.service_name,
-         st.master_name, st.address, st.landmark
+         st.master_name, st.address, st.landmark, c.salon_id
     from claimed c
     join public.profiles p on p.id = c.user_id
-    cross join public.settings st
-   where st.id = 1
+    join public.settings st on st.salon_id = c.salon_id
    order by c.day, c.start_min, c.id;
 end
 $$;
@@ -1253,13 +1541,17 @@ drop policy if exists clients_insert_auth on public.clients;
 drop policy if exists clients_update_auth on public.clients;
 
 create policy clients_select_auth on public.clients
-  for select to authenticated using ((select public.is_master()));
+  for select to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 create policy clients_insert_auth on public.clients
-  for insert to authenticated with check ((select public.is_master()));
+  for insert to authenticated
+  with check ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 create policy clients_update_auth on public.clients
-  for update to authenticated using ((select public.is_master())) with check ((select public.is_master()));
+  for update to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()))
+  with check ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 -- ─── client_comments: только мастер ─────────────────────────────
 
@@ -1269,22 +1561,26 @@ drop policy if exists client_comments_select_auth on public.client_comments;
 drop policy if exists client_comments_insert_auth on public.client_comments;
 drop policy if exists client_comments_delete_auth on public.client_comments;
 
+-- Комментарий к клиенту чужого салона не примет client_comments_client_fkey.
 create policy client_comments_select_auth on public.client_comments
-  for select to authenticated using ((select public.is_master()));
+  for select to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 create policy client_comments_insert_auth on public.client_comments
-  for insert to authenticated with check ((select public.is_master()));
+  for insert to authenticated
+  with check ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 create policy client_comments_delete_auth on public.client_comments
-  for delete to authenticated using ((select public.is_master()));
+  for delete to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 -- ─── client_stats: клиенты + производные показатели для «Клиенты» ─
 --  security_invoker = on — задан ЯВНО: по умолчанию вьюха в Postgres
 --  исполняется от владельца и обходит RLS, а Supabase по default
 --  privileges выдаёт anon select на каждую новую вьюху в public —
 --  вместе это отдало бы телефоны всех клиентов по публичному ключу.
---  С invoker вьюха наследует RLS clients/bookings: authenticated видит
---  всё, anon — ничего.
+--  С invoker вьюха наследует RLS clients/bookings: мастер видит клиентов
+--  своего салона, все остальные — ничего.
 --
 --  visit_count / last_visit_at — только ПРОШЕДШИЕ записи (визит, а не
 --  заявка), по местному времени салона: day/start_min хранятся как
@@ -1328,7 +1624,7 @@ create view public.client_stats
     order by count(*) desc, max(b2.day) desc
     limit 1
   ) fav on true
-  left join public.services s on s.id = fav.service_id;
+  left join public.services s on s.salon_id = c.salon_id and s.id = fav.service_id;
 
 revoke all on public.client_stats from anon;
 grant select on public.client_stats to authenticated;
@@ -1366,6 +1662,7 @@ set search_path = ''
 as $$
 declare
   local_now timestamp := now() at time zone 'Asia/Tbilisi';
+  sid       smallint := public.current_salon_id();
   wh        jsonb;
   hours     jsonb;
   dur       integer;
@@ -1380,9 +1677,12 @@ begin
     raise exception 'Нет доступа' using errcode = '42501';
   end if;
 
+  -- RLS и так оставит мастеру только её салон; фильтр явный — так
+  -- функция не зависит от политик каждой таблицы.
   select st.working_hours, st.slot_step_minutes into wh, step
-    from public.settings st where st.id = 1;
-  select sv.duration into dur from public.services sv where sv.id = p_service_id;
+    from public.settings st where st.salon_id = sid;
+  select sv.duration into dur from public.services sv
+   where sv.salon_id = sid and sv.id = p_service_id;
   if wh is null or dur is null or p_day < local_now::date then
     return;
   end if;
@@ -1403,7 +1703,8 @@ begin
     where g.m > now_min
       and not exists (
         select 1 from public.bookings b
-        where b.day = p_day
+        where b.salon_id = sid
+          and b.day = p_day
           and b.status <> 'cancelled'
           and b.id is distinct from p_exclude_id
           and b.start_min < g.m + dur
@@ -1411,7 +1712,8 @@ begin
       )
       and not exists (
         select 1 from public.blocked_slots x
-        where x.day = p_day
+        where x.salon_id = sid
+          and x.day = p_day
           and x.start_min < g.m + dur
           and g.m < x.start_min + step
       )
@@ -1483,6 +1785,7 @@ security invoker
 set search_path = ''
 as $$
 declare
+  sid    smallint := public.current_salon_id();
   svc    public.services;
   cl     public.clients;
   new_id bigint;
@@ -1494,12 +1797,13 @@ begin
     raise exception 'Нет доступа' using errcode = '42501';
   end if;
 
-  select * into svc from public.services sv where sv.id = p_service_id;
+  select * into svc from public.services sv where sv.salon_id = sid and sv.id = p_service_id;
   if not found then
     raise exception 'Услуга не найдена — обновите страницу';
   end if;
 
-  perform pg_advisory_xact_lock(hashtext('bookings:' || p_day::text));
+  -- Лок дня — свой у каждого салона: у разных мастеров разные окна.
+  perform pg_advisory_xact_lock(hashtext('bookings:' || sid || ':' || p_day::text));
   if not exists (
     select 1 from public.free_slots(p_day, p_service_id) f
     where f.start_min = p_start_min
@@ -1508,7 +1812,7 @@ begin
   end if;
 
   if p_client_id is not null then
-    select * into cl from public.clients c where c.id = p_client_id;
+    select * into cl from public.clients c where c.salon_id = sid and c.id = p_client_id;
     if not found then
       raise exception 'Клиент не найден — обновите страницу';
     end if;
@@ -1516,8 +1820,9 @@ begin
     if coalesce(btrim(p_new_name), '') = '' then
       raise exception 'Укажите имя клиента.';
     end if;
-    insert into public.clients (name, phone, telegram_username, channel)
+    insert into public.clients (salon_id, name, phone, telegram_username, channel)
       values (
+        sid,
         btrim(p_new_name),
         coalesce(btrim(p_new_phone), ''),
         regexp_replace(coalesce(btrim(p_new_telegram), ''), '^@+', ''),
@@ -1530,10 +1835,10 @@ begin
   -- в «Мои записи» (bookings_select_own). Без него запись, которую мастер
   -- добавила клиенту из мини-аппа, ему не видна.
   insert into public.bookings (
-    day, start_min, duration, price, service_id, service_name,
+    salon_id, day, start_min, duration, price, service_id, service_name,
     client_name, client_username, comment, status, source, client_id, user_id
   ) values (
-    p_day, p_start_min, svc.duration, svc.price, svc.id, svc.name,
+    sid, p_day, p_start_min, svc.duration, svc.price, svc.id, svc.name,
     cl.name, cl.telegram_username, left(coalesce(btrim(p_comment), ''), 1000),
     'ok', 'master', cl.id, cl.user_id
   )
@@ -1581,6 +1886,7 @@ security invoker
 set search_path = ''
 as $$
 declare
+  sid   smallint := public.current_salon_id();
   bk    public.bookings;
   svc   public.services;
   cl    public.clients;
@@ -1596,13 +1902,13 @@ begin
     raise exception 'Укажите имя клиента.';
   end if;
 
-  select * into svc from public.services sv where sv.id = p_service_id;
+  select * into svc from public.services sv where sv.salon_id = sid and sv.id = p_service_id;
   if not found then
     raise exception 'Услуга не найдена — обновите страницу';
   end if;
 
-  perform pg_advisory_xact_lock(hashtext('bookings:' || p_day::text));
-  select * into bk from public.bookings b where b.id = p_id for update;
+  perform pg_advisory_xact_lock(hashtext('bookings:' || sid || ':' || p_day::text));
+  select * into bk from public.bookings b where b.salon_id = sid and b.id = p_id for update;
   if not found then
     raise exception 'Запись не найдена — обновите страницу';
   end if;
@@ -1626,7 +1932,8 @@ begin
   -- окно — обычное дело, см. CLAUDE.md).
   if not moved and bk.status <> 'ok' and exists (
     select 1 from public.bookings o
-    where o.day = bk.day
+    where o.salon_id = bk.salon_id
+      and o.day = bk.day
       and o.id <> bk.id
       and o.status = 'ok'
       and o.start_min < bk.start_min + bk.duration
@@ -1636,8 +1943,8 @@ begin
   end if;
 
   if p_client_id is null then
-    insert into public.clients (name, phone, telegram_username, channel)
-      values (nm, coalesce(btrim(p_client_phone), ''), tgu, coalesce(p_client_channel, ''))
+    insert into public.clients (salon_id, name, phone, telegram_username, channel)
+      values (sid, nm, coalesce(btrim(p_client_phone), ''), tgu, coalesce(p_client_channel, ''))
       returning * into cl;
   else
     update public.clients c
@@ -1645,7 +1952,7 @@ begin
            phone = coalesce(btrim(p_client_phone), ''),
            telegram_username = tgu,
            channel = coalesce(p_client_channel, c.channel)
-     where c.id = p_client_id
+     where c.salon_id = sid and c.id = p_client_id
      returning * into cl;
     if not found then
       raise exception 'Клиент не найден — обновите страницу';
@@ -1706,13 +2013,14 @@ begin
     raise exception 'Нет доступа' using errcode = '42501';
   end if;
 
-  select * into bk from public.bookings b where b.id = p_id;
+  select * into bk from public.bookings b
+   where b.salon_id = public.current_salon_id() and b.id = p_id;
   if not found then
     raise exception 'Заявка не найдена — обновите страницу';
   end if;
 
-  perform pg_advisory_xact_lock(hashtext('bookings:' || bk.day::text));
-  select * into bk from public.bookings b where b.id = p_id for update;
+  perform pg_advisory_xact_lock(hashtext('bookings:' || bk.salon_id || ':' || bk.day::text));
+  select * into bk from public.bookings b where b.salon_id = bk.salon_id and b.id = p_id for update;
   if not found then
     raise exception 'Заявка не найдена — обновите страницу';
   end if;
@@ -1725,7 +2033,8 @@ begin
 
   if exists (
     select 1 from public.bookings o
-    where o.day = bk.day
+    where o.salon_id = bk.salon_id
+      and o.day = bk.day
       and o.id <> bk.id
       and o.status = 'ok'
       and o.start_min < bk.start_min + bk.duration
@@ -1766,10 +2075,13 @@ security definer
 set search_path = ''
 as $$
 declare
-  nb integer := 0;
-  nc integer := 0;
+  sid smallint := public.current_salon_id();
+  nb  integer := 0;
+  nc  integer := 0;
 begin
-  -- security definer обходит RLS — право проверяем сами, как политики.
+  -- security definer обходит RLS — право проверяем сами, как политики:
+  -- мастер, и клиент — её салона. Клиент чужого салона — как несуществующий
+  -- (нули): по ответу не узнать, есть ли такой id у другого мастера.
   if not public.is_master() then
     raise exception 'Нет доступа' using errcode = '42501';
   end if;
@@ -1777,17 +2089,17 @@ begin
   -- Блокировка строки: заявка, которую link_booking_client() сейчас
   -- привязывает к этому клиенту, дождётся конца транзакции и не
   -- проскочит мимо удаления.
-  perform 1 from public.clients c where c.id = p_id for update;
+  perform 1 from public.clients c where c.salon_id = sid and c.id = p_id for update;
   if not found then
     return query select 0, 0;
     return;
   end if;
 
-  delete from public.bookings b where b.client_id = p_id;
+  delete from public.bookings b where b.salon_id = sid and b.client_id = p_id;
   get diagnostics nb = row_count;
-  delete from public.client_comments cm where cm.client_id = p_id;
+  delete from public.client_comments cm where cm.salon_id = sid and cm.client_id = p_id;
   get diagnostics nc = row_count;
-  delete from public.clients c where c.id = p_id;
+  delete from public.clients c where c.salon_id = sid and c.id = p_id;
 
   return query select nb, nc;
 end
@@ -1796,22 +2108,25 @@ $$;
 revoke all on function public.delete_client(bigint) from public, anon;
 grant execute on function public.delete_client(bigint) to authenticated;
 
--- ─── blocked_slots: читают все (это часть доступности), пишет мастер ──
+-- ─── blocked_slots: читает салон (это часть доступности), пишет мастер ──
 
 alter table public.blocked_slots enable row level security;
 
 drop policy if exists blocked_slots_select_public on public.blocked_slots;
+drop policy if exists blocked_slots_select_salon  on public.blocked_slots;
 drop policy if exists blocked_slots_insert_auth   on public.blocked_slots;
 drop policy if exists blocked_slots_delete_auth   on public.blocked_slots;
 
-create policy blocked_slots_select_public on public.blocked_slots
-  for select to anon, authenticated using (true);
+create policy blocked_slots_select_salon on public.blocked_slots
+  for select to authenticated using (salon_id = (select public.current_salon_id()));
 
 create policy blocked_slots_insert_auth on public.blocked_slots
-  for insert to authenticated with check ((select public.is_master()));
+  for insert to authenticated
+  with check ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 create policy blocked_slots_delete_auth on public.blocked_slots
-  for delete to authenticated using ((select public.is_master()));
+  for delete to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
 -- ─── busy_slots: занятость без персональных данных ───────────────
 --  Вьюха отдаёт только day/start_min/duration — ни имён, ни цены,
@@ -1828,25 +2143,30 @@ create policy blocked_slots_delete_auth on public.blocked_slots
 --  Прошлое отрезано в самой вьюхе: клиенту оно не нужно, а без фильтра
 --  анонимный ключ читал бы всю историю занятости салона.
 --  Отменённые записи окно не занимают.
+--  Только салон вызывающего: RLS bookings вьюха обходит, поэтому фильтр
+--  по current_salon_id() — здесь, в ней самой. Аноним видит пустоту.
 create or replace view public.busy_slots
   with (security_invoker = off) as
   select day, start_min, duration from public.bookings
-    where day >= (now() at time zone 'Asia/Tbilisi')::date
+    where salon_id = public.current_salon_id()
+      and day >= (now() at time zone 'Asia/Tbilisi')::date
       and status <> 'cancelled'
   union all
   select day, start_min, 0 as duration from public.blocked_slots
-    where day >= (now() at time zone 'Asia/Tbilisi')::date;
+    where salon_id = public.current_salon_id()
+      and day >= (now() at time zone 'Asia/Tbilisi')::date;
 
 grant select on public.busy_slots to anon, authenticated;
 
 -- ═══════════════════════════════════════════════════════════════
 --  Сид — значения из прежнего src/data.js дословно, чтобы после
 --  миграции приложение выглядело ровно так же, как до неё.
---  on conflict do nothing: файл можно выполнять повторно.
+--  on conflict do nothing: файл можно выполнять повторно. Всё — салону 1
+--  (salons выше); новые салоны заводит supabase/add-salon.sql.
 -- ═══════════════════════════════════════════════════════════════
 
 insert into public.settings (
-  id, master_name, master_username, master_phone,
+  salon_id, master_name, master_username, master_phone,
   slot_step_minutes, booking_days_ahead, min_lead_minutes,
   working_hours_text, address, landmark, transport, map_url,
   working_hours, time_of_day
@@ -1873,29 +2193,29 @@ insert into public.settings (
     {"id": "evening",   "label": "Вечер (17:00–20:00)"},
     {"id": "any",       "label": "Любое время"}]'::jsonb
 )
-on conflict (id) do nothing;
+on conflict (salon_id) do nothing;
 
-insert into public.services (id, emoji, name, price, duration, note, sort) values
-  ('manicure',     '💅', 'Маникюр комбинированный', 1500,  90, 'Снятие, форма, уход за кутикулой', 10),
-  ('manicure_gel', '✨', 'Маникюр + гель-лак',      2200, 120, 'Покрытие в один тон',              20),
-  ('pedicure',     '🦶', 'Педикюр',                 2500, 120, '',                                 30),
-  ('design',       '🎨', 'Дизайн (за 1 ноготь)',     150,  15, 'Добавляется к основной услуге',    40)
-on conflict (id) do nothing;
+insert into public.services (salon_id, id, emoji, name, price, duration, note, sort) values
+  (1, 'manicure',     '💅', 'Маникюр комбинированный', 1500,  90, 'Снятие, форма, уход за кутикулой', 10),
+  (1, 'manicure_gel', '✨', 'Маникюр + гель-лак',      2200, 120, 'Покрытие в один тон',              20),
+  (1, 'pedicure',     '🦶', 'Педикюр',                 2500, 120, '',                                 30),
+  (1, 'design',       '🎨', 'Дизайн (за 1 ноготь)',     150,  15, 'Добавляется к основной услуге',    40)
+on conflict (salon_id, id) do nothing;
 
-insert into public.days_off (day) values
-  ('2026-01-01'),
-  ('2026-01-07')
-on conflict (day) do nothing;
+insert into public.days_off (salon_id, day) values
+  (1, '2026-01-01'),
+  (1, '2026-01-07')
+on conflict (salon_id, day) do nothing;
 
-insert into public.info_blocks (emoji, title, body, sort)
-select * from (values
+insert into public.info_blocks (salon_id, emoji, title, body, sort)
+select 1, * from (values
   ('⏰', 'Опоздания',     'Пожалуйста, предупредите, если опаздываете. При опоздании больше чем на 15 минут запись может быть отменена.', 10),
   ('❌', 'Отмена записи', 'Отменяйте запись не позднее чем за 3 часа — иначе время пропадает.', 20),
   ('💳', 'Оплата',        'Наличными или переводом на карту.', 30),
   ('🧒', 'Дети и гости',  'К сожалению, кабинет маленький — приходите, пожалуйста, одни.', 40),
   ('🩺', 'Здоровье',      'Если есть грибок, порезы или воспаления — напишите мне заранее.', 50)
 ) as seed(emoji, title, body, sort)
-where not exists (select 1 from public.info_blocks);
+where not exists (select 1 from public.info_blocks where salon_id = 1);
 
 -- ─── Кэш схемы PostgREST ────────────────────────────────────────
 --  Новая функция (cancel_own_booking) и новая колонка не видны через REST,

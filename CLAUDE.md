@@ -155,7 +155,7 @@ Consequences that constrain every change here:
 | | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
 |---|---|---|
 | Auth | Telegram `initData` → `telegram-auth` → Supabase session, **in memory only**; role `user` | the same, through the cabinet bot; data only for role `master` |
-| Reads | `settings`, `services`, `days_off`, `days_open`, `info_blocks`, `busy_slots` (public), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only) |
+| Reads | `settings`, `services`, `days_off`, `days_open`, `info_blocks`, `busy_slots` (own salon, signed in), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only, own salon) |
 | Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)`, `set_reminders(enabled)` (its own `profiles.reminders` only) — never `profiles` directly | everything, incl. its own confirmed bookings via `create_master_booking()` — never `profiles` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
@@ -194,11 +194,64 @@ booking flow, not the cabinet's day/week/month calendar
   with the bot token and `auth_date` freshness
   ([supabase/functions/_shared/telegram-init-data.js](supabase/functions/_shared/telegram-init-data.js)).
   A booking's name/username come from `profiles` (written by that function from verified
-  data), never from the request body. Bot tokens live only in the function's secrets.
+  data), never from the request body. Bot tokens live in `public.salon_bots`
+  (service role only; salon 1 may still use the function secrets), never in the client.
+
+### Salons (tenants) — the boundary above every other rule
+
+One deployment serves several masters. A **salon** is a master, her clients and her
+content (`public.salons`: `id`, `slug`). **Every** salon table — `settings`,
+`services`, `days_off`, `days_open`, `info_blocks`, `clients`, `client_comments`,
+`bookings`, `blocked_slots`, `profiles` — has `salon_id not null`, and every policy,
+view and function filters by `current_salon_id()` (the caller's `profiles.salon_id`;
+`null` for anon/non-Telegram, which matches nothing). A master and her clients never
+see another salon: reads are filtered (200 `[]`), master RPCs on a foreign id behave
+as "not found" (`delete_client` → zeros), client RPCs → 403.
+
+- **The bot decides the salon.** Each salon has its own client (and cabinet) bot in
+  `public.salon_bots` (`salon_id`, `kind 'client'|'cabinet'`, `token`,
+  `webhook_secret`; service role only). The bot's Mini App URL in BotFather carries
+  `?salon=<slug>`; `salonSlug()` (`src/supabase.js`) sends it to `telegram-auth`,
+  which validates `initData` **only** against that salon's tokens — the slug is a hint,
+  a wrong one is just a failed HMAC (401). No slug → salon 1 (plus the
+  `TELEGRAM_*_BOT_TOKEN` secrets as a transitional fallback for salon 1 only).
+- **One account, one salon.** `telegram-auth` writes `profiles.salon_id` on first
+  login; an account of another salon gets **403 `other_salon`** («уже записан к другому
+  мастеру») and nothing is written. Never let the client or the cabinet write
+  `salon_id`: it comes from the column default `current_salon_id()`, the policies'
+  `with check` verify it, and `guard_client_booking()` overwrites it for client requests.
+- **Cross-row references are composite FKs with `salon_id`**: booking → service,
+  client, account (`profiles(salon_id, id)`); client → account; comment → client. That's
+  what stops a master from writing another salon's `user_id` into her booking (it would
+  appear in that client's «Мои записи»). Keys that used to be global are per salon:
+  `services (salon_id, id)`, `days_off`/`days_open (salon_id, day)`,
+  `blocked_slots (salon_id, day, start_min)`, `settings (salon_id)`,
+  `clients_salon_username_uq`, `bookings_no_overlap_ok` (two salons can confirm the
+  same hour). `clients.user_id` stays globally unique. Advisory locks are keyed
+  `bookings:<salon>:<day>`; the client rate cap is per salon.
+- `security definer` code bypasses RLS, so it filters by salon **explicitly**
+  (`link_booking_client`, `delete_client`, `busy_slots`, `hours_for_day`,
+  `assert_client_slot`). Any new definer function or view must do the same.
+- Content is **no longer public**: anon reads nothing, `content.js` loads only after
+  sign-in, and its cache key is per salon (`vs_content_v1:<slug>`).
+- Reminders: `claim_due_reminders()` returns `salon_id`; `send-reminders` sends each
+  salon's rows with that salon's client bot (429 on one bot doesn't stall another).
+  `client-bot` webhooks are `…/client-bot?salon=<slug>` with that salon's secret.
+- A new salon: `npm run add-master -- masters/<name>.json` (`scripts/add-master.mjs`;
+  config format in `masters/example.json`, parsing/validation in
+  `scripts/master-config.mjs`, unit-tested). Idempotent — re-run after the master's
+  first cabinet login to grant the role. Real configs hold bot tokens and are
+  gitignored. Manual alternative: `supabase/add-salon.sql` + role grant with
+  `and salon_id = <id>` + `CLIENT_BOT_SALON=<slug> node scripts/setup-client-bot.mjs`.
+  A bot token can't belong to two salons (`salon_bots_one_salon_per_token`).
+- Service-role inserts (tests, SQL editor) must pass `salon_id` explicitly — the
+  default is `null` there.
+- `e2e/integration/tenancy.spec.js` is the proof: add a case there for every new table,
+  view or RPC.
 
 ### Content, bookings and RLS
 
-Salon content lives in five Supabase tables (`settings` — a single row, `services`,
+Salon content lives in five Supabase tables (`settings` — one row per salon, `services`,
 `days_off`, `days_open`, `info_blocks`), plus two tables that exist only for the cabinet
 (`bookings`, `blocked_slots`) and a view (`busy_slots`) that exposes availability
 without personal data — the client reads that view, never `bookings` itself.
@@ -249,21 +302,26 @@ seed, kept in the repo because the content is no longer in git otherwise.
     only by the service role). Every client write checks it, so an e-mail/password or
     anonymous account — even one with a `'master'` profile row — can do nothing.
   - **Authorization in SQL:** `is_master()` = `is_telegram_user()` and `role = 'master'`,
-    read from `profiles` on every request (revoking the role works immediately).
+    read from `profiles` on every request (revoking the role works immediately). It
+    says nothing about **which** salon: every policy and function pairs it with
+    `salon_id = current_salon_id()` (see «Salons» above) — never use it alone.
     `authenticated` has **no** write privilege on `profiles` at all (revoked; select own
     only) — nobody can promote themselves, and the client never writes `profiles`.
   - **The master's role is granted by hand**: she opens the cabinet once from Telegram
     (gets her row as `'user'`, sees «Нет доступа»), then
     `update profiles set role = 'master' where telegram_id = <id>` in the SQL editor
-    (snippet above `is_master()` in `schema.sql`). No Telegram id is in the code.
+    (snippet above `is_master()` in `schema.sql`; for a salon other than 1 add
+    `and salon_id = <id>`, see `supabase/add-salon.sql`). No Telegram id is in the code.
   - Bookings belong to the account (`bookings.user_id`), not the device: signing out
     clears the client's in-memory store (`resetMyBookings()`), and the same Telegram
     account on another device shows the same «Мои записи».
   - Old e-mail accounts are not migrated: `supabase/reset-dev.sql` wipes users and
     bookings (dev only); `schema.sql` refuses to run while a `profiles` row lacks
     `telegram_id`.
-  - **Deploying:** `reset-dev.sql` → `schema.sql` → `supabase secrets set
-    TELEGRAM_CLIENT_BOT_TOKEN=… TELEGRAM_CABINET_BOT_TOKEN=…` → `supabase functions
+  - **Deploying:** `reset-dev.sql` → `schema.sql` (on a live single-salon base it
+    migrates everything into salon 1, `slug = 'main'`; re-runnable) → salon 1's bots:
+    secrets `TELEGRAM_CLIENT_BOT_TOKEN=… TELEGRAM_CABINET_BOT_TOKEN=…` (or rows in
+    `salon_bots`) — every further salon via `supabase/add-salon.sql` → `supabase functions
     deploy telegram-auth --no-verify-jwt` → in the dashboard turn off sign-ups, the
     Email provider and Anonymous sign-ins (the function doesn't need any of them) →
     raise *Authentication → Rate Limits → token verifications*: every login is one OTP
@@ -391,7 +449,8 @@ seed, kept in the repo because the content is no longer in git otherwise.
 - [src/content.js](src/content.js) is the client's read-only store — fetch,
   `localStorage` cache, `useContent()`. It has **no mutation functions anymore**; all
   writes to salon content happen through [src/admin/api.js](src/admin/api.js) instead.
-  It caches to `localStorage` (`vs_content_v1`), read **synchronously at module load**,
+  It caches to `localStorage` (`vs_content_v1`, `vs_content_v1:<slug>` for salons other
+  than 1), read **synchronously at module load**,
   so a returning client never sees the boot screen.
 - Availability (`refreshBusy()`, the `busy` field) loads **separately** from the four
   content tables and is deliberately **not cached**: stale busyness is worse than none,

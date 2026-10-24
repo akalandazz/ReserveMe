@@ -1,0 +1,43 @@
+{
+  "slug": "anna-nails",
+  "master": {
+    "name": "Анна",
+    "username": "anna_nails",
+    "phone": "+7 900 000-00-00",
+    "telegramId": 123456789
+  },
+  "bots": {
+    "clientToken": "1111111111:CLIENT-BOT-TOKEN-FROM-BOTFATHER",
+    "cabinetToken": "2222222222:CABINET-BOT-TOKEN-FROM-BOTFATHER"
+  },
+  "address": {
+    "address": "Москва, ул. Примерная, 1",
+    "landmark": "Вход со двора, домофон 12",
+    "transport": "5 минут от метро",
+    "mapUrl": "https://yandex.ru/maps/?text=Москва"
+  },
+  "workingHours": {
+    "mon": "10:00-19:00",
+    "tue": "10:00-19:00",
+    "wed": "10:00-19:00",
+    "thu": "10:00-20:00",
+    "fri": "10:00-20:00",
+    "sat": "11:00-17:00",
+    "sun": null
+  },
+  "workingHoursText": "Пн–Ср 10–19, Чт–Пт 10–20, Сб 11–17",
+  "booking": {
+    "slotStepMinutes": 30,
+    "bookingDaysAhead": 14,
+    "minLeadMinutes": 120,
+    "reminderHours": 24
+  },
+  "services": [
+    { "id": "manicure", "emoji": "💅", "name": "Маникюр", "price": 1500, "duration": 90 },
+    { "id": "pedicure", "emoji": "🦶", "name": "Педикюр", "price": 2500, "duration": 120, "note": "С покрытием" }
+  ],
+  "telegram": {
+    "appUrl": "https://your-hosting.example/",
+    "webhookUrl": "https://your-project.supabase.co/functions/v1/client-bot"
+  }
+}

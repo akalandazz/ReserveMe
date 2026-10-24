@@ -11,13 +11,20 @@
 // помечается reminded_at ДО отправки, так что наложившиеся запуски не
 // напомнят дважды; временная ошибка Telegram возвращает её в очередь.
 //
-// Секреты (`supabase secrets set`):
-//   TELEGRAM_CLIENT_BOT_TOKEN — тот же, что у telegram-auth: пишет бот,
-//                               в котором клиент открывает мини-апп;
+// Салоны: claim_due_reminders() отдаёт записи всех салонов с salon_id, и
+// каждый салон пишет СВОИМ ботом клиента (salon_bots, kind = 'client') —
+// в том, где клиент открывает мини-апп; другому боту Telegram и не дал бы
+// писать. Отправка — по салонам, отдельно: 429 одного бота не задерживает
+// напоминания другого. Салон без бота клиента — его записи в очередь.
+//
+// Секреты (Dashboard → Edge Functions → Secrets):
+//   TELEGRAM_CLIENT_BOT_TOKEN — необязательно: бот клиента салона 1, пока
+//                               его токен не перенесён в salon_bots;
 //   REMINDERS_CRON_SECRET     — общий с cron-задачей (Vault), длинная
 //                               случайная строка;
 //   CLIENT_APP_URL            — необязательно: https-адрес мини-аппа, тогда
-//                               под сообщением кнопка «Мои записи»;
+//                               под сообщением кнопка «Мои записи» (с
+//                               ?salon=<slug> салона);
 //   TELEGRAM_API_URL          — необязательно, по умолчанию
 //                               https://api.telegram.org (подмена для тестов).
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY Supabase подставляет сам.
@@ -36,7 +43,9 @@ const env = (name: string) => Deno.env.get(name)?.trim() ?? "";
 
 const SUPABASE_URL = env("SUPABASE_URL");
 const SERVICE_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
-const BOT_TOKEN = env("TELEGRAM_CLIENT_BOT_TOKEN");
+// Бот клиента салона 1 из секретов — до переноса токена в salon_bots.
+const DEFAULT_SALON = 1;
+const ENV_TOKEN = env("TELEGRAM_CLIENT_BOT_TOKEN");
 const CRON_SECRET = env("REMINDERS_CRON_SECRET");
 const APP_URL = env("CLIENT_APP_URL");
 const API_URL = (env("TELEGRAM_API_URL") || "https://api.telegram.org").replace(/\/$/, "");
@@ -69,8 +78,8 @@ async function sameSecret(got: string, want: string) {
   return diff === 0;
 }
 
-async function send(body: unknown): Promise<number> {
-  const res = await fetch(`${API_URL}/bot${BOT_TOKEN}/sendMessage`, {
+async function send(token: string, body: unknown): Promise<number> {
+  const res = await fetch(`${API_URL}/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -86,9 +95,35 @@ async function rpc(name: string, args: Record<string, unknown>) {
   if (error) throw new Error(`${name}: ${error.code ?? "error"}`);
 }
 
+type Salon = { token: string; slug: string };
+
+/** Бот клиента и slug каждого салона из ids; салона без бота в ответе нет. */
+async function loadSalons(ids: number[]): Promise<Map<number, Salon>> {
+  const out = new Map<number, Salon>();
+  const { data, error } = await admin
+    .from("salons")
+    .select("id, slug, salon_bots(kind, token)")
+    .in("id", ids);
+  if (error) throw new Error(`salons: ${error.code ?? "error"}`);
+  for (const s of data ?? []) {
+    const bot = (s.salon_bots ?? []).find((b: { kind: string }) => b.kind === "client");
+    const token = bot?.token || (s.id === DEFAULT_SALON ? ENV_TOKEN : "");
+    if (token) out.set(s.id, { token, slug: s.slug });
+  }
+  return out;
+}
+
+/** Кнопка «Мои записи» открывает мини-апп этого салона. */
+function appUrlFor(slug: string) {
+  if (!/^https:\/\//.test(APP_URL)) return "";
+  const url = new URL(APP_URL);
+  url.searchParams.set("salon", slug);
+  return url.toString();
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
-  if (!SERVICE_KEY || !BOT_TOKEN || !CRON_SECRET) {
+  if (!SERVICE_KEY || !CRON_SECRET) {
     console.error("send-reminders: not configured");
     return json(500, { error: "not_configured" });
   }
@@ -102,13 +137,39 @@ Deno.serve(async (req) => {
     return json(500, { error: "server_error" });
   }
 
-  const counts = await deliverReminders(claimed.data ?? [], {
-    send,
-    release: (id: number) => rpc("release_reminder", { p_id: id }),
-    markUnreachable: (tgId: number) => rpc("mark_bot_unreachable", { p_telegram_id: tgId }),
-    now: new Date(),
-    appUrl: APP_URL,
-  });
+  const rows = claimed.data ?? [];
+  const bySalon = new Map<number, typeof rows>();
+  for (const r of rows) bySalon.set(r.salon_id, [...(bySalon.get(r.salon_id) ?? []), r]);
+
+  let salons: Map<number, Salon>;
+  try {
+    salons = bySalon.size ? await loadSalons([...bySalon.keys()]) : new Map();
+  } catch (e) {
+    // Без токенов не шлём ничего — всё взятое обратно в очередь.
+    console.error("send-reminders:", e instanceof Error ? e.message : "salons");
+    for (const r of rows) await rpc("release_reminder", { p_id: r.booking_id }).catch(() => {});
+    return json(500, { error: "server_error" });
+  }
+
+  const release = (id: number) => rpc("release_reminder", { p_id: id });
+  const counts = { claimed: rows.length, sent: 0, unreachable: 0, retry: 0, drop: 0 };
+  for (const [salonId, salonRows] of bySalon) {
+    const salon = salons.get(salonId);
+    if (!salon) {
+      console.error("send-reminders: salon without client bot");
+      for (const r of salonRows) await release(r.booking_id).catch(() => {});
+      counts.retry += salonRows.length;
+      continue;
+    }
+    const part = await deliverReminders(salonRows, {
+      send: (body: unknown) => send(salon.token, body),
+      release,
+      markUnreachable: (tgId: number) => rpc("mark_bot_unreachable", { p_telegram_id: tgId }),
+      now: new Date(),
+      appUrl: appUrlFor(salon.slug),
+    });
+    for (const k of ["sent", "unreachable", "retry", "drop"] as const) counts[k] += part[k];
+  }
   if (counts.claimed) console.log("send-reminders:", JSON.stringify(counts));
   return json(200, counts);
 });
