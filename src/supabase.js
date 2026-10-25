@@ -7,7 +7,7 @@
 // в собранный бандл и виден любому.
 //
 // Вход: подписанная Telegram строка initData уходит в Edge Function
-// telegram-auth (supabase/functions/telegram-auth), та проверяет подпись
+// api/auth (supabase/functions/api/auth.ts), та проверяет подпись
 // токеном бота и отдаёт обычную сессию Supabase аккаунта, привязанного к
 // Telegram user id. Паролей и e-mail нет. Один Telegram-аккаунт — один
 // пользователь на всех устройствах; у каждого устройства своя сессия.
@@ -67,7 +67,7 @@ export const NOT_CONFIGURED =
 /* ─── Салон ──────────────────────────────────────────────────────
    ?salon=<slug> в адресе, который задан боту салона в BotFather;
    Telegram оставляет query как есть и дописывает только хеш. Значение не
-   проверенное: telegram-auth лишь выбирает по нему, какими токенами
+   проверенное: api/auth лишь выбирает по нему, какими токенами
    сверять подпись initData, — какой салон увидит вошедший, решает база
    (profiles.salon_id). "" — салон 1 (адрес без параметра).
    Здесь, а не в telegram.js: content.js берёт его при загрузке модуля
@@ -218,7 +218,7 @@ export function useSession() {
 
 const SIGN_IN_TIMEOUT_MS = 15_000;
 
-// Коды из тела ответа telegram-auth (401, 500 not_configured) и "not_deployed" —
+// Коды из тела ответа api/auth (401, 500 not_configured) и "not_deployed" —
 // 404 шлюза, когда функции нет в проекте. Последние два «Повторить» не лечит.
 const NOT_SET_UP = "Вход не настроен на сервере. Сообщите мастеру.";
 const SIGN_IN_ERRORS = {
@@ -226,7 +226,7 @@ const SIGN_IN_ERRORS = {
   invalid_init_data: "Telegram не подтвердил вход. Откройте приложение заново из Telegram.",
   not_configured: NOT_SET_UP,
   not_deployed: NOT_SET_UP,
-  // Один аккаунт — один салон (telegram-auth, 403 other_salon).
+  // Один аккаунт — один салон (api/auth, 403 other_salon).
   other_salon:
     "Ваш Telegram уже записан к другому мастеру. Записаться сюда с этого аккаунта нельзя.",
 };
@@ -255,7 +255,7 @@ export function signInWithTelegram() {
 
 /**
  * «Согласен» на экране согласия: тот же вход, но с редакцией политики,
- * которую клиент только что видел, — telegram-auth запишет согласие до
+ * которую клиент только что видел, — api/auth запишет согласие до
  * того, как заведёт аккаунт.
  */
 export function acceptConsent() {
@@ -278,7 +278,7 @@ async function signIn(consent) {
   const body = { initData: data, salon: SALON_SLUG };
   if (consent) body.consent = POLICY_VERSION;
   const res = await withTimeout(
-    supabase.functions.invoke("telegram-auth", { body }),
+    supabase.functions.invoke("api/auth", { body }),
     SIGN_IN_TIMEOUT_MS
   );
   if (mine !== signInSeq) return;

@@ -1,5 +1,5 @@
 // Интеграционные тесты входа и прав — против ЛОКАЛЬНОГО Supabase в Docker:
-// настоящая Edge Function telegram-auth, настоящий PostgREST и RLS из
+// настоящая Edge Function api/auth, настоящий PostgREST и RLS из
 // supabase/schema.sql. Ничего из проверяемого не подделано: initData
 // подписывается здесь тем же токеном, что лежит у функции в
 // supabase/config.toml ([edge_runtime.secrets], ненастоящие токены).
@@ -88,7 +88,7 @@ export const admin = (path, opts = {}) => api(path, { ...opts, key: IT.service, 
  * игнорировать); { consent: undefined } — вход без согласия.
  */
 export const login = (initData, body = {}) =>
-  api("/functions/v1/telegram-auth", {
+  api("/functions/v1/api/auth", {
     method: "POST",
     body: { initData, consent: POLICY_VERSION, ...body },
   });

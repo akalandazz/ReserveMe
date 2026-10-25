@@ -14,7 +14,7 @@ export const tgUser = () => window.Telegram?.WebApp?.initDataUnsafe?.user ?? nul
 
 /**
  * Подписанная Telegram строка initData — как есть, для входа (src/supabase.js
- * → Edge Function telegram-auth, которая проверяет подпись). "" в обычном
+ * → Edge Function api/auth, которая проверяет подпись). "" в обычном
  * браузере и в Telegram, открывшем страницу не как мини-апп.
  */
 export const initData = () => {

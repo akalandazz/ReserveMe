@@ -3,11 +3,11 @@
 //   • описание в пустом чате и строка профиля (setMyDescription,
 //     setMyShortDescription);
 //   • меню команд /start, /book, /contacts, /privacy (setMyCommands);
-//   • вебхук на Edge Function client-bot с секретом (setWebhook).
+//   • вебхук на Edge Function api/bot с секретом (setWebhook).
 //
 // Токен и секрет — только из переменных окружения, в репозиторий не пишутся:
 //   TELEGRAM_CLIENT_BOT_TOKEN=… CLIENT_BOT_WEBHOOK_SECRET=… \
-//   CLIENT_BOT_WEBHOOK_URL=https://<проект>.supabase.co/functions/v1/client-bot \
+//   CLIENT_BOT_WEBHOOK_URL=https://<проект>.supabase.co/functions/v1/api/bot \
 //   node scripts/setup-client-bot.mjs
 // CLIENT_BOT_WEBHOOK_SECRET — тот же, что в секретах функции client-bot.
 //

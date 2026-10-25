@@ -35,7 +35,7 @@ export default defineConfig({
       testDir: "./e2e/unit",
     },
     {
-      // Edge Function telegram-auth + PostgREST + RLS на ЛОКАЛЬНОМ Supabase
+      // Edge Function api/auth + PostgREST + RLS на ЛОКАЛЬНОМ Supabase
       // (Docker). Без SUPABASE_IT_URL тесты пропускаются — как поднять стек,
       // см. шапку e2e/integration/support.js.
       name: "integration",

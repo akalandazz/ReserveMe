@@ -811,6 +811,15 @@ export default function BookingSheet({
           {isEdit && st.s === "" && (
             <p className="sheet-hint">Этой услуги больше нет в списке — выберите другую.</p>
           )}
+          {/* Запись карточки без аккаунта клиент в «Мои записи» не увидит
+              (client_stats.in_app; привязка — в «Клиенты»). */}
+          {client && client.in_app === false && (
+            <p className="sheet-hint">
+              {client.app_match
+                ? "Клиент есть в приложении, но карточка не привязана — эту запись он не увидит. Пригласите его в «Клиенты»."
+                : "Клиента нет в приложении — эту запись он у себя не увидит. Пригласите его в «Клиенты»."}
+            </p>
+          )}
           <div className="bk-summary">
             {summary().map((r) => (
               <div className="bk-sum-row" key={r.k}>

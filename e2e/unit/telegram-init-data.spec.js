@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { validateInitData } from "../../supabase/functions/_shared/telegram-init-data.js";
 
 // Проверка подписи initData (supabase/functions/_shared/telegram-init-data.js)
-// — та же функция, что исполняет Edge Function telegram-auth. Без браузера.
+// — та же функция, что исполняет Edge Function api/auth. Без браузера.
 //
 // Подписываем здесь СВОИМ кодом (node:crypto), по документации Telegram, а
 // не через проверяемый модуль: иначе ошибка в алгоритме подписала бы и

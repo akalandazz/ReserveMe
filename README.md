@@ -45,11 +45,13 @@ Telegram Desktop. Вход — по вашему аккаунту Telegram, па
 1. Выполните [supabase/schema.sql](supabase/schema.sql) целиком в SQL Editor
    проекта — таблицы, политики доступа и начальные данные. Файл можно
    прогонять повторно на живой базе.
-2. Функция входа: токены ботов салона — строки в `salon_bots` (см.
+2. Сервер — Edge Function `api` (вход, бот клиента, приглашения; напоминания —
+   отдельная функция `send-reminders`, см. `supabase/reminders-cron.sql`):
+   токены ботов салона — строки в `salon_bots` (см.
    [supabase/add-salon.sql](supabase/add-salon.sql)) или секреты
    `TELEGRAM_CLIENT_BOT_TOKEN` / `TELEGRAM_CABINET_BOT_TOKEN` в дашборде
    (**Edge Functions → Secrets**), затем
-   `npx supabase functions deploy telegram-auth --no-verify-jwt`. Токены ботов
+   `npx supabase functions deploy api --no-verify-jwt`. Токены ботов
    живут **только** на сервере — не в `.env` и не в коде.
    ⚠️ Не ставьте секреты командой `supabase secrets set` из этого репозитория:
    она заодно зальёт фейковые тестовые токены из `supabase/config.toml`

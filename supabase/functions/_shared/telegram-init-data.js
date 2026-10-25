@@ -1,7 +1,7 @@
 // Проверка Telegram.WebApp.initData — подписи и свежести.
 //
 // Обычный ESM на Web Crypto, без зависимостей: тот же файл исполняет
-// Edge Function telegram-auth (Deno) и юнит-тест e2e/unit (Node).
+// Edge Function api/auth (Deno) и юнит-тест e2e/unit (Node).
 //
 // Алгоритм — из документации Telegram («Validating data received via the
 // Mini App»):

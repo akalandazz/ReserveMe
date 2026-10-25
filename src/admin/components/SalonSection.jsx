@@ -36,6 +36,15 @@ const GROUPS = [
           v.trim().replace(/^@+/, "") ? null : "Без логина клиенты не смогут отправить вам заявку.",
       },
       { key: "masterPhone", label: "Телефон", type: "tel", placeholder: "+7 …" },
+      {
+        key: "clientBotUsername",
+        label: "Бот для клиентов",
+        placeholder: "логин бота, без @",
+        hint: (v) =>
+          v.trim().replace(/^@+/, "")
+            ? null
+            : "Без него не пригласить в приложение клиента, которого вы записали сами.",
+      },
     ],
   },
   {

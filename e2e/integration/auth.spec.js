@@ -16,7 +16,7 @@ import {
   workdays,
 } from "./support.js";
 
-// Аутентификация: Edge Function telegram-auth на локальном Supabase.
+// Аутентификация: Edge Function api/auth на локальном Supabase.
 // Подпись проверяет настоящая функция; ответы — настоящие коды HTTP.
 
 test.skip(!ENABLED, "нет SUPABASE_IT_* — локальный Supabase не поднят (см. support.js)");
@@ -25,7 +25,7 @@ test.skip(ENABLED && !LOCAL_ONLY, "SUPABASE_IT_URL должен указыват
 const profileOf = async (telegramId) =>
   (await admin(`/rest/v1/profiles?telegram_id=eq.${telegramId}&select=*`)).data;
 
-test.describe("telegram-auth: вход", () => {
+test.describe("api/auth: вход", () => {
   test("верный initData — 200, только поля сессии; JWT привязан к Telegram id", async () => {
     const user = tgUser("Anna");
     const res = await login(signInitData(user));
@@ -134,7 +134,7 @@ test.describe("telegram-auth: вход", () => {
   });
 });
 
-test.describe("telegram-auth: согласие на обработку ПДн (152-ФЗ)", () => {
+test.describe("api/auth: согласие на обработку ПДн (152-ФЗ)", () => {
   const consentsOf = async (telegramId) =>
     (await admin(`/rest/v1/consents?telegram_id=eq.${telegramId}&select=*`)).data;
 
@@ -184,7 +184,7 @@ test.describe("telegram-auth: согласие на обработку ПДн (1
   });
 });
 
-test.describe("telegram-auth: отказы — 401", () => {
+test.describe("api/auth: отказы — 401", () => {
   test("чужая подпись (другой бот)", async () => {
     const res = await login(signInitData(tgUser("X"), { token: "999:not-our-bot" }));
     expect(res).toEqual({ status: 401, data: { error: "invalid_init_data" } });
@@ -204,7 +204,7 @@ test.describe("telegram-auth: отказы — 401", () => {
       const res = await login(initData);
       expect(res.status, String(initData)).toBe(401);
     }
-    const raw = await fetch(`${IT.url}/functions/v1/telegram-auth`, {
+    const raw = await fetch(`${IT.url}/functions/v1/api/auth`, {
       method: "POST",
       headers: { "content-type": "application/json", apikey: IT.anon },
       body: "{not json",
@@ -219,7 +219,7 @@ test.describe("telegram-auth: отказы — 401", () => {
   });
 
   test("только id пользователя, без initData — 401", async () => {
-    const res = await api("/functions/v1/telegram-auth", {
+    const res = await api("/functions/v1/api/auth", {
       method: "POST",
       body: { user: { id: 123 }, telegram_id: 123, username: "someone" },
     });
@@ -227,7 +227,7 @@ test.describe("telegram-auth: отказы — 401", () => {
   });
 
   test("GET — 405", async () => {
-    expect((await api("/functions/v1/telegram-auth")).status).toBe(405);
+    expect((await api("/functions/v1/api/auth")).status).toBe(405);
   });
 });
 

@@ -1,4 +1,6 @@
 // Edge Function send-reminders — бот клиента напоминает о записи.
+// Отдельно от функции api: её зовёт только pg_cron, и деплой api её не
+// задевает. Общее с api — _shared/server.ts.
 //
 // POST без тела, с заголовком x-cron-secret → claim_due_reminders()
 // (supabase/schema.sql: подтверждённые записи клиентов мини-аппа, до
@@ -7,7 +9,7 @@
 // retry, drop }. Что писать и как разбирать ответ Telegram — в
 // _shared/reminders.js (его же гоняет e2e/unit).
 //
-// Зовёт её pg_cron раз в 10 минут (supabase/reminders-cron.sql). Запись
+// Зовёт pg_cron раз в 10 минут (supabase/reminders-cron.sql). Запись
 // помечается reminded_at ДО отправки, так что наложившиеся запуски не
 // напомнят дважды; временная ошибка Telegram возвращает её в очередь.
 //
@@ -17,18 +19,6 @@
 // писать. Отправка — по салонам, отдельно: 429 одного бота не задерживает
 // напоминания другого. Салон без бота клиента — его записи в очередь.
 //
-// Секреты (Dashboard → Edge Functions → Secrets):
-//   TELEGRAM_CLIENT_BOT_TOKEN — необязательно: бот клиента салона 1, пока
-//                               его токен не перенесён в salon_bots;
-//   REMINDERS_CRON_SECRET     — общий с cron-задачей (Vault), длинная
-//                               случайная строка;
-//   CLIENT_APP_URL            — необязательно: https-адрес мини-аппа, тогда
-//                               под сообщением кнопка «Мои записи» (с
-//                               ?salon=<slug> салона);
-//   TELEGRAM_API_URL          — необязательно, по умолчанию
-//                               https://api.telegram.org (подмена для тестов).
-// SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY Supabase подставляет сам.
-//
 // В логи не пишется ни токен, ни telegram_id, ни текст — только счётчики
 // и коды ошибок.
 //
@@ -36,47 +26,16 @@
 // в базу класть незачем):
 //   supabase functions deploy send-reminders --no-verify-jwt
 
-import { createClient } from "npm:@supabase/supabase-js@2";
 import { deliverReminders } from "../_shared/reminders.js";
+import { API_URL, SERVICE_KEY, admin, appUrlFor, clientBotToken, env, json, sameSecret } from "../_shared/server.ts";
 
-const env = (name: string) => Deno.env.get(name)?.trim() ?? "";
-
-const SUPABASE_URL = env("SUPABASE_URL");
-const SERVICE_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
-// Бот клиента салона 1 из секретов — до переноса токена в salon_bots.
-const DEFAULT_SALON = 1;
-const ENV_TOKEN = env("TELEGRAM_CLIENT_BOT_TOKEN");
 const CRON_SECRET = env("REMINDERS_CRON_SECRET");
-const APP_URL = env("CLIENT_APP_URL");
-const API_URL = (env("TELEGRAM_API_URL") || "https://api.telegram.org").replace(/\/$/, "");
 
 /** Сколько записей за запуск — с запасом до лимита времени функции. */
 const BATCH = 50;
 const SEND_TIMEOUT_MS = 10_000;
 /** Telegram — до ~30 сообщений в секунду на бота. */
 const PAUSE_MS = 50;
-
-const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-});
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
-}
-
-/** Сравнение секрета без раннего выхода: сравниваем хеши одинаковой длины. */
-async function sameSecret(got: string, want: string) {
-  const enc = new TextEncoder();
-  const [a, b] = await Promise.all(
-    [got, want].map(async (s) => new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s))))
-  );
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
-}
 
 async function send(token: string, body: unknown): Promise<number> {
   const res = await fetch(`${API_URL}/bot${token}/sendMessage`, {
@@ -106,19 +65,10 @@ async function loadSalons(ids: number[]): Promise<Map<number, Salon>> {
     .in("id", ids);
   if (error) throw new Error(`salons: ${error.code ?? "error"}`);
   for (const s of data ?? []) {
-    const bot = (s.salon_bots ?? []).find((b: { kind: string }) => b.kind === "client");
-    const token = bot?.token || (s.id === DEFAULT_SALON ? ENV_TOKEN : "");
+    const token = clientBotToken(s);
     if (token) out.set(s.id, { token, slug: s.slug });
   }
   return out;
-}
-
-/** Кнопка «Мои записи» открывает мини-апп этого салона. */
-function appUrlFor(slug: string) {
-  if (!/^https:\/\//.test(APP_URL)) return "";
-  const url = new URL(APP_URL);
-  url.searchParams.set("salon", slug);
-  return url.toString();
 }
 
 Deno.serve(async (req) => {

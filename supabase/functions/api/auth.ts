@@ -1,17 +1,17 @@
-// Edge Function telegram-auth — вход через Telegram Mini App.
+// POST /api/auth — вход через Telegram Mini App (бывшая функция telegram-auth).
 //
-// POST { initData } → проверка подписи токеном бота (_shared/telegram-init-data.js)
+// { initData } → проверка подписи токеном бота (_shared/telegram-init-data.js)
 // → аккаунт по Telegram user id (найти или завести) → обычная сессия
 // Supabase { access_token, refresh_token, … }. Дальше всё как раньше:
-// PostgREST, RLS и auth.uid() — граница безопасности; функция только
+// PostgREST, RLS и auth.uid() — граница безопасности; маршрут только
 // решает, КТО вошёл.
 //
-// Что функция НЕ принимает: роль, id пользователя, имя — из тела берутся
-// ровно initData, consent (редакция политики ПДн, с которой клиент
-// согласился; без согласия — 403 consent_required, см. public.consents)
-// и salon, остальное игнорируется. Роль не пишет никогда: строку
-// profiles заводит с 'user' по умолчанию, а существующую не трогает
-// (мастера назначают руками, см. is_master() в schema.sql).
+// Что НЕ принимается: роль, id пользователя, имя — из тела берутся ровно
+// initData, consent (редакция политики ПДн, с которой клиент согласился;
+// без согласия — 403 consent_required, см. public.consents) и salon,
+// остальное игнорируется. Роль не пишется никогда: строку profiles заводим
+// с 'user' по умолчанию, а существующую не трогаем (мастера назначают
+// руками, см. is_master() в schema.sql).
 //
 // Салон (тенант, см. «Салоны» в schema.sql). salon — slug из адреса
 // мини-аппа (?salon=… у бота салона в BotFather) — только подсказка, КАКИМИ
@@ -24,51 +24,29 @@
 // Сессия выпускается штатным механизмом Auth, без своего JWT: admin
 // generateLink (magic link, письмо не уходит) → verifyOtp по hashed_token.
 // Аккаунты — с синтетическим e-mail tg<id>@<AUTH_EMAIL_DOMAIN> и без
-// пароля: войти иначе, чем через эту функцию, нельзя.
-//
-// Токены ботов — в public.salon_bots (service role). Секреты
-// (Dashboard → Edge Functions → Secrets):
-//   TELEGRAM_CLIENT_BOT_TOKEN   — необязательно: бот клиента салона 1, пока
-//                                 его токен не перенесён в salon_bots;
-//   TELEGRAM_CABINET_BOT_TOKEN  — то же для бота кабинета салона 1;
-//   INITDATA_MAX_AGE_SECONDS    — необязательно, по умолчанию 3600;
-//   AUTH_EMAIL_DOMAIN           — необязательно, по умолчанию telegram.local.
-// SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY Supabase
-// подставляет сам. Ни один из них не попадает в ответ.
+// пароля: войти иначе, чем здесь, нельзя.
 //
 // В логи не пишется ни initData, ни токены, ни e-mail — только коды ошибок.
-//
-// Деплой — без проверки JWT (вызывается ДО появления сессии):
-//   supabase functions deploy telegram-auth --no-verify-jwt
-// (локально то же задаёт supabase/config.toml).
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { POLICY_VERSION } from "../_shared/consent.js";
 import { validateInitData } from "../_shared/telegram-init-data.js";
+import {
+  ANON_KEY,
+  CORS,
+  DEFAULT_SALON,
+  NO_SESSION,
+  SERVICE_KEY,
+  SLUG,
+  SUPABASE_URL,
+  admin,
+  env,
+  json,
+} from "../_shared/server.ts";
 
-const env = (name: string) => Deno.env.get(name)?.trim() ?? "";
-
-const SUPABASE_URL = env("SUPABASE_URL");
-const ANON_KEY = env("SUPABASE_ANON_KEY");
-const SERVICE_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
-// Боты салона 1 из секретов — до переноса их токенов в salon_bots.
-const DEFAULT_SALON = 1;
 const ENV_TOKENS = [env("TELEGRAM_CLIENT_BOT_TOKEN"), env("TELEGRAM_CABINET_BOT_TOKEN")].filter(Boolean);
-const SLUG = /^[a-z0-9][a-z0-9-]{1,31}$/;
 const MAX_AGE = Number(env("INITDATA_MAX_AGE_SECONDS")) || 3600;
 const EMAIL_DOMAIN = env("AUTH_EMAIL_DOMAIN") || "telegram.local";
-
-// Ответ несёт токены, но не по cookie: ни один «чужой» сайт не получит
-// их, не имея initData, а с initData он обошёлся бы и без браузера.
-// Поэтому CORS открыт — как у остальных эндпоинтов Supabase.
-const CORS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "POST, OPTIONS",
-  "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-};
-
-const NO_SESSION = { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false };
-const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: NO_SESSION });
 
 type TgUser = {
   id: number;
@@ -77,13 +55,6 @@ type TgUser = {
   lastName: string;
   allowsWriteToPm: boolean;
 };
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...CORS, "content-type": "application/json", "cache-control": "no-store" },
-  });
-}
 
 class Failure extends Error {}
 /** Аккаунт уже принадлежит другому салону — 403 other_salon. */
@@ -152,7 +123,7 @@ async function findOrCreateUser(tg: TgUser, salonId: number): Promise<string> {
     const link = await admin.auth.admin.generateLink({ type: "magiclink", email });
     must("generateLink", link.error);
     // Чужого пользователя с этим e-mail не подхватываем: только того, кого
-    // завела сама функция (telegram_id в app_metadata пишет только service
+    // завёл сам вход (telegram_id в app_metadata пишет только service
     // role). Иначе аккаунт, заведённый заранее с адресом tg<id>@… (открытая
     // регистрация, ручная ошибка), получил бы чужой Telegram id.
     if (link.data.user.app_metadata?.telegram_id !== tg.id) {
@@ -183,8 +154,8 @@ async function findOrCreateUser(tg: TgUser, salonId: number): Promise<string> {
 
 /**
  * Согласие на обработку ПДн (152-ФЗ): есть ли строка на текущую редакцию
- * политики. Без неё функция не заводит аккаунт и не пишет ничего —
- * клиент показывает экран согласия и повторяет вход с { consent }.
+ * политики. Без неё аккаунт не заводится и ничего не пишется — клиент
+ * показывает экран согласия и повторяет вход с { consent }.
  */
 async function hasConsent(telegramId: number): Promise<boolean> {
   const got = await admin
@@ -246,11 +217,11 @@ async function mintSession(userId: string, tg: TgUser) {
   };
 }
 
-Deno.serve(async (req) => {
+export async function handleAuth(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   if (!SERVICE_KEY || !ANON_KEY) {
-    console.error("telegram-auth: not configured");
+    console.error("auth: not configured");
     return json(500, { error: "not_configured" });
   }
 
@@ -273,12 +244,12 @@ Deno.serve(async (req) => {
   try {
     salon = await findSalon(slug);
   } catch (e) {
-    console.error("telegram-auth:", e instanceof Failure ? e.message : "unexpected error");
+    console.error("auth:", e instanceof Failure ? e.message : "unexpected error");
     return json(500, { error: "server_error" });
   }
   if (!salon) return json(401, { error: "invalid_init_data" });
   if (salon.tokens.length === 0) {
-    console.error("telegram-auth: salon without bots");
+    console.error("auth: salon without bots");
     return json(500, { error: "not_configured" });
   }
 
@@ -306,8 +277,8 @@ Deno.serve(async (req) => {
     const session = await mintSession(userId, user);
     // Имя и юзернейм — из проверенного initData; роль не трогаем.
     // Разрешение боту писать (allows_write_to_pm) снимает отметку «бот
-    // недоступен» — напоминания (send-reminders) пойдут снова. Без него
-    // отметку не ставим: поле есть не в каждом initData.
+    // недоступен» — напоминания пойдут снова. Без него отметку не ставим:
+    // поле есть не в каждом initData.
     const upd = await admin
       .from("profiles")
       .update({
@@ -322,7 +293,7 @@ Deno.serve(async (req) => {
     return json(200, session);
   } catch (e) {
     if (e instanceof OtherSalon) return json(403, { error: "other_salon" });
-    console.error("telegram-auth:", e instanceof Failure ? e.message : "unexpected error");
+    console.error("auth:", e instanceof Failure ? e.message : "unexpected error");
     return json(500, { error: "server_error" });
   }
-});
+}

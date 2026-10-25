@@ -1,5 +1,5 @@
 // Поддельный Supabase для e2e: вход через Telegram (Edge Function
-// telegram-auth), Auth (getUser, refresh, logout) и PostgREST — ровно
+// api/auth), Auth (getUser, refresh, logout) и PostgREST — ровно
 // столько, сколько читают и пишут кабинет и мини-апп клиента (контент,
 // заявка, свои записи клиента, cancel_own_booking, reschedule_own_booking,
 // set_reminders, настройки из кабинета).
@@ -84,7 +84,7 @@ function authUser(user) {
   };
 }
 
-/** Сессия, как её отдают telegram-auth и /auth/v1/token?grant_type=refresh_token. */
+/** Сессия, как её отдают api/auth и /auth/v1/token?grant_type=refresh_token. */
 function sessionFor(user, sid) {
   const expiresAt = Math.floor(Date.now() / 1000) + 3600;
   return {
@@ -118,6 +118,7 @@ function seed() {
         slot_step_minutes: 30,
         booking_days_ahead: 14,
         working_hours: { 0: null, 1: HOURS, 2: HOURS, 3: HOURS, 4: HOURS, 5: HOURS, 6: HOURS },
+        client_bot_username: "vseees_bot",
       },
     ],
     services: [
@@ -130,10 +131,12 @@ function seed() {
     bookings: [],
     client_stats: [],
     client_comments: [],
+    // Приглашения в приложение (Edge Function api/invite): { code, client_id, sent }.
+    client_invites: [],
     // Только для мини-аппа клиента (content.js).
     info_blocks: [],
     busy_slots: [],
-    // Роль мастера выдана руками (schema.sql); строки заводит telegram-auth
+    // Роль мастера выдана руками (schema.sql); строки заводит api/auth
     // при первом входе, приложение их только читает.
     profiles: [profileRow(MASTER, "master"), profileRow(CLIENT, "user")],
   };
@@ -149,7 +152,7 @@ export function bookingRow(id, fields) {
     price: fields.price ?? 60,
     service_id: fields.service_id ?? "manicure",
     service_name: fields.service_name || "Маникюр",
-    client_id: null,
+    client_id: fields.client_id ?? null,
     client_name: fields.client_name ?? "Анна",
     client_username: fields.client_username ?? "",
     comment: "",
@@ -172,6 +175,10 @@ export function clientRow(id, fields) {
     phone: fields.phone ?? "",
     channel: fields.channel ?? "",
     created_at: new Date().toISOString(),
+    // Привязка к аккаунту мини-аппа (см. client_stats в schema.sql).
+    in_app: fields.in_app ?? false,
+    app_match: fields.app_match ?? false,
+    invite_status: fields.invite_status ?? null,
     visit_count: 0,
     last_visit_at: null,
     favorite_service_id: null,
@@ -186,8 +193,8 @@ export function clientRow(id, fields) {
  *  - changes   — каждый PATCH/DELETE ({ method, table, id, body });
  *  - rpcs      — каждый вызов /rest/v1/rpc ({ name, body });
  *  - users     — аккаунты ({ id, telegramId, firstName, username }), сюда же
- *    telegram-auth дописывает новых;
- *  - authCalls — тела каждого вызова telegram-auth;
+ *    api/auth дописывает новых;
+ *  - authCalls — тела каждого вызова api/auth;
  *  - consents  — согласия на обработку ПДн ("<telegram id>:<редакция>"), как
  *    public.consents; MASTER и CLIENT уже согласились, новые — нет;
  *  - logouts   — каждый /auth/v1/logout ({ scope, sid });
@@ -195,7 +202,7 @@ export function clientRow(id, fields) {
  *  - failBookingInsert — текст отказа guard_client_booking для вставки заявки
  *    (null — вставка проходит);
  *  - otherSalon — Telegram id, чей аккаунт принадлежит другому салону:
- *    telegram-auth отвечает 403 other_salon, как настоящая;
+ *    api/auth отвечает 403 other_salon, как настоящая;
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
  */
 export async function installFakeSupabase(page) {
@@ -263,12 +270,12 @@ async function handle(route, state) {
   const forbidden = () =>
     json(403, { code: "42501", message: "Нет доступа к этой записи", details: null, hint: null });
 
-  // ─── Вход через Telegram (supabase/functions/telegram-auth) ─────
+  // ─── Вход через Telegram (supabase/functions/api/auth.ts) ─────
   //  Как настоящая функция: из тела берутся initData, consent и salon (slug
   //  салона, салоны здесь не различаются), аккаунт ищется по telegram id,
   //  новому — роль 'user'. "e2e:expired" — подпись верна, но данные
   //  устарели; любое другое — неверные данные.
-  if (url.pathname === "/functions/v1/telegram-auth" && method === "POST") {
+  if (url.pathname === "/functions/v1/api/auth" && method === "POST") {
     const body = req.postDataJSON() ?? {};
     state.authCalls.push(body);
     if (body.initData === "e2e:expired") return json(401, { error: "expired" });
@@ -489,6 +496,27 @@ async function handle(route, state) {
     const i = rows.findIndex((r) => r.day === day);
     if (i >= 0) rows.splice(i, 1);
     return route.fulfill({ status: 204, headers: cors });
+  }
+
+  // ─── «Пригласить в приложение» (Edge Function api/invite) ────
+  //  Как настоящая: код в базу (create_client_invite), и если клиент уже в
+  //  приложении (app_match) — «бот написал ему сам», sent: true; иначе
+  //  sent: false, кабинет откроет чат со ссылкой на бота. Кнопки в боте —
+  //  e2e/integration/client-invites.spec.js.
+  if (url.pathname === "/functions/v1/api/invite" && method === "POST") {
+    if (requester(req) !== MASTER.id) return json(403, { error: "Нет доступа" });
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: "api/invite", body });
+    const card = state.tables.client_stats.find((c) => c.id === body.client_id);
+    if (card.in_app) return json(400, { error: "Клиент уже в приложении" });
+    if (!card.telegram_username) {
+      return json(400, { error: "Укажите Telegram клиента — приглашение уходит ему в чат" });
+    }
+    const code = String(state.nextId++).padStart(32, "0");
+    const sent = card.app_match === true;
+    state.tables.client_invites.push({ code, client_id: card.id, sent });
+    card.invite_status = "pending";
+    return json(200, { code, sent });
   }
 
   // ─── RPC кабинета (schema.sql) — без перепроверок времени ───────

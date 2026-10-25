@@ -50,7 +50,8 @@ export function useAdminData() {
   return useSyncExternalStore(subscribeAdmin, adminSnapshot, adminSnapshot);
 }
 
-/** Из настроек кабинету нужны имя (шапка), шаг сетки, график и напоминания. */
+/** Из настроек кабинету нужны имя (шапка), шаг сетки, график, напоминания
+ *  и логин бота клиента (ссылка-приглашение). */
 function toAdminSettings(row) {
   if (!row) return null;
   return {
@@ -67,6 +68,7 @@ function toAdminSettings(row) {
     minLeadMinutes: Number.isInteger(row.min_lead_minutes) ? row.min_lead_minutes : 120,
     workingHours: row.working_hours ?? {},
     reminderHours: Number.isInteger(row.reminder_hours) ? row.reminder_hours : 24,
+    clientBotUsername: row.client_bot_username ?? "",
   };
 }
 
@@ -114,7 +116,7 @@ const LOADERS = {
       .select(
         "master_name,master_username,master_phone,address,landmark,transport,map_url," +
           "working_hours_text,slot_step_minutes,booking_days_ahead,min_lead_minutes," +
-          "working_hours,reminder_hours"
+          "working_hours,reminder_hours,client_bot_username"
       )
       // Своего салона — RLS другую строку не отдаст.
       .maybeSingle(),

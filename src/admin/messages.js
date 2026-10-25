@@ -55,6 +55,26 @@ export function clientMessage({ kind, clientName, masterName, was, ...booking })
   return `${hi}Напоминаю о записи:\n\n${body}\n\nДо встречи!${sign}`;
 }
 
+/**
+ * Приглашение в приложение для клиента, которому бот ещё не может писать:
+ * ссылка на бота с кодом (botInviteLink в api.js) и предстоящие записи
+ * карточки ([{ day, start_min, service_name }]). По «Запустить» бот сам
+ * пришлёт приглашение с кнопками «Принять» / «Отклонить».
+ */
+export function inviteMessage({ clientName, masterName, link, bookings = [] }) {
+  const hi = clientName ? `Здравствуйте, ${clientName}! 🌸\n` : "Здравствуйте! 🌸\n";
+  const sign = masterName ? `\n\n${masterName}` : "";
+  const list = bookings
+    .map((b) => `📅 ${labelForKey(b.day)}, ${toHHMM(b.start_min)} — ${b.service_name}`)
+    .join("\n");
+  return (
+    `${hi}Ваши записи ко мне теперь можно смотреть в приложении — там же их легко ` +
+    `перенести или отменить, а бот напомнит о визите.` +
+    (list ? `\n\n${list}` : "") +
+    `\n\nОткройте ссылку и нажмите «Запустить» — бот пришлёт приглашение:\n${link}${sign}`
+  );
+}
+
 /** Отказ или отмена — по тому, была ли запись уже подтверждена. */
 export const dropKind = (row) => (row.status === "new" ? "declined" : "cancelled");
 

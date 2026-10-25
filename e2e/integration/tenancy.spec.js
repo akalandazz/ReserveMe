@@ -452,6 +452,62 @@ test.describe("контент и комментарии чужого салон�
   });
 });
 
+test.describe("приглашения и привязка клиента к аккаунту", () => {
+  test("аккаунт другого салона не привязывается и приглашение не принимает", async () => {
+    // Мастер салона 1 заводит клиента с юзернеймом клиента беты — привязки
+    // нет: аккаунты ищутся только в своём салоне.
+    const created = await rpc(
+      "create_master_booking",
+      {
+        p_client_id: null,
+        p_new_name: "Однофамилица",
+        p_new_phone: "",
+        p_new_telegram: C2.tg.username,
+        p_new_channel: "tg",
+        p_service_id: "manicure",
+        p_day: DAY_X,
+        p_start_min: 900,
+        p_comment: "",
+      },
+      M1.token
+    );
+    expect(created.status, JSON.stringify(created.data)).toBe(200);
+    const booking = await bookingAsAdmin(created.data);
+    expect(booking.user_id).toBeNull();
+    const card = (await api(`/rest/v1/client_stats?id=eq.${booking.client_id}&select=*`, { token: M1.token }))
+      .data[0];
+    expect(card).toMatchObject({ in_app: false, app_match: false });
+
+    // Код салона 1: бот беты его не знает, а клиент беты, нажавший
+    // «Принять» в боте салона 1, — уже у другого мастера.
+    const code = (await rpc("create_client_invite", { p_client_id: booking.client_id }, M1.token)).data;
+    const answer = (salon, accept) =>
+      rpc(
+        "bot_answer_client_invite",
+        { p_salon: salon, p_code: code, p_telegram_id: C2.tg.id, p_accept: accept },
+        IT.service
+      );
+    const view = await rpc(
+      "bot_client_invite",
+      { p_salon: BETA.id, p_code: code, p_telegram_id: C2.tg.id },
+      IT.service
+    );
+    expect(view.data).toEqual([{ status: "invalid", master_name: null, client_name: null, bookings: null }]);
+    expect((await answer(BETA.id, true)).data).toBe("invalid");
+    expect((await answer(1, true)).data).toBe("other_salon");
+    expect((await bookingAsAdmin(created.data)).user_id).toBeNull();
+    const stats = await api(`/rest/v1/client_stats?id=eq.${booking.client_id}&select=invite_status`, {
+      token: M1.token,
+    });
+    expect(stats.data).toEqual([{ invite_status: "pending" }]);
+
+    // Мастер беты не видит приглашений салона 1 и не приглашает его клиентов.
+    expect((await api("/rest/v1/client_invites?select=code", { token: M2.token })).data).toEqual([]);
+    const res = await rpc("create_client_invite", { p_client_id: booking.client_id }, M2.token);
+    expect(res.data?.message).toBe("Клиент не найден — обновите страницу");
+  });
+});
+
 test.describe("напоминания", () => {
   test("claim_due_reminders отдаёт салон записи и его настройки", async () => {
     const row = asRow(

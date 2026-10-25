@@ -38,6 +38,6 @@
   ],
   "telegram": {
     "appUrl": "https://your-hosting.example/",
-    "webhookUrl": "https://your-project.supabase.co/functions/v1/client-bot"
+    "webhookUrl": "https://your-project.supabase.co/functions/v1/api/bot"
   }
 }
