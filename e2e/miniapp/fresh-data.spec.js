@@ -30,6 +30,7 @@ function occupy(backend, hhmm) {
 async function reachConfirm(page) {
   await page.getByRole("button", { name: "Записаться" }).click();
   await page.getByRole("button", { name: /Маникюр/ }).click();
+  await page.getByRole("button", { name: /^Далее/ }).click();
   await page.locator(".day-row:not([disabled])").first().click();
   const slot = page.locator(".slot").first();
   const time = (await slot.textContent()).trim();
@@ -120,6 +121,7 @@ test.describe("Мини-апп: свежие данные", () => {
       const { page, backend } = miniapp;
       await page.getByRole("button", { name: "Записаться" }).click();
       await page.getByRole("button", { name: /Маникюр/ }).click();
+      await page.getByRole("button", { name: /^Далее/ }).click();
       await page.locator(".day-row:not([disabled])").first().click();
 
       const first = page.locator(".slot").first();

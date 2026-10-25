@@ -7,11 +7,14 @@ import {
 import { createBooking, rescheduleMyBooking } from "../bookings.js";
 import { formatPrice } from "../money.js";
 import {
+  MAX_SERVICES,
   buildDays,
   buildSlots,
+  combineServices,
   dayLabel,
   findDay,
   labelForKey,
+  pickServices,
   serverBusyFor,
   toMinutes,
 } from "../schedule.js";
@@ -58,6 +61,15 @@ function withoutOwn(busy, was) {
 // а саму заявку — да: без строки в базе её нет, см. submit()).
 const FRESH_CHECK_MS = 2_000;
 
+/** 1 → "услуга", 2 → "услуги", 5 → "услуг". */
+function servicesWord(n) {
+  const n10 = n % 10;
+  const n100 = n % 100;
+  if (n10 === 1 && n100 !== 11) return "услуга";
+  if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return "услуги";
+  return "услуг";
+}
+
 /** Резолвится null, если promise не успел за ms. */
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -80,6 +92,8 @@ export default function BookingScreen({
   const [copied, setCopied] = useState(false);
   // Сверка перед отправкой нашла, что данные на экране устарели.
   const [outdated, setOutdated] = useState(false);
+  // Клиент пытался отметить услугу сверх MAX_SERVICES.
+  const [tooMany, setTooMany] = useState(false);
   const { settings, services, activeServices, daysOff, daysOpen, busy: allBusy } = useContent();
   // Перенос своей записи («Перенести» в «Мои записи»): { id, day, time,
   // duration } — какая запись и где она сейчас. null — новая заявка.
@@ -93,12 +107,16 @@ export default function BookingScreen({
   // это экран) и опросом, пока клиент на нём задержался: мастер могла
   // закрыть окошко в кабинете или принять чужую заявку на то же время.
 
-  // Живая версия услуги: мастер мог поменять цену, пока клиент шёл по шагам.
-  // Фолбэк на draft.service — если услугу удалили, флоу всё равно завершается.
-  const service = useMemo(
-    () => services.find((s) => s.id === draft.service?.id) ?? draft.service,
-    [services, draft.service]
+  // Живые версии услуг: мастер мог поменять цену, пока клиент шёл по шагам.
+  // Фолбэк на draft.services — если услугу удалили, флоу всё равно завершается.
+  // draft.services — в порядке прайса (pickServices), одна или несколько.
+  const picked = useMemo(
+    () => draft.services.map((p) => services.find((s) => s.id === p.id) ?? p),
+    [services, draft.services]
   );
+  // Несколько услуг — одно окно подряд: { ids, name, duration, price } —
+  // buildSlots и сообщению этого хватает, как одной услуги.
+  const service = useMemo(() => combineServices(picked), [picked]);
 
   const days = useMemo(
     () => buildDays(settings, daysOff, daysOpen),
@@ -131,17 +149,18 @@ export default function BookingScreen({
     }
     return bookingMessage({
       serviceName: service.name,
+      services: picked,
       dateLabel: dayLabel(day),
       time: draft.time,
       duration: service.duration,
       price: service.price,
       comment: draft.comment.trim(),
     });
-  }, [service, day, draft.time, draft.comment, moving]);
+  }, [service, picked, day, draft.time, draft.comment, moving]);
 
   // Предупреждения шага подтверждения. Считаются здесь, а не в его
   // ветке рендера: submit() сравнивает с ними свежий ответ базы.
-  const gone = Boolean(draft.service) && !services.some((s) => s.id === draft.service.id);
+  const gone = draft.services.some((p) => !services.some((s) => s.id === p.id));
   // Дата вышла из окна записи, пока клиент был на этом экране (полночь).
   const expired = Boolean(draft.dateKey) && !day;
   // Время разобрали, пока клиент дописывал комментарий. Не блокируем
@@ -157,7 +176,8 @@ export default function BookingScreen({
    */
   const differsFromServer = (fresh) => {
     const snap = contentSnapshot();
-    const now = snap.services.find((s) => s.id === draft.service?.id);
+    const nowList = draft.services.map((p) => snap.services.find((s) => s.id === p.id));
+    const now = nowList.every(Boolean) ? combineServices(nowList) : null;
 
     if (fresh.content) {
       if (!now && !gone) return true;
@@ -177,11 +197,22 @@ export default function BookingScreen({
     return !taken && !freshSlots.includes(draft.time);
   };
 
-  const pickService = (s) => {
+  // Услуги отмечаются, а не выбираются одна: дальше — кнопкой внизу.
+  const toggleService = (s) => {
+    const on = draft.services.some((x) => x.id === s.id);
+    if (!on && draft.services.length >= MAX_SERVICES) {
+      haptic("warning");
+      setTooMany(true);
+      return;
+    }
     haptic("select");
+    setTooMany(false);
     // время обнуляем: слот, валидный для 90 мин, может не существовать для 120
-    setDraft((d) => ({ ...d, service: s, time: null }));
-    push("book:date");
+    setDraft((d) => {
+      const ids = d.services.map((x) => x.id);
+      const next = on ? ids.filter((id) => id !== s.id) : [...ids, s.id];
+      return { ...d, services: pickServices(activeServices, next), time: null };
+    });
   };
 
   const pickDay = (d) => {
@@ -231,7 +262,7 @@ export default function BookingScreen({
     const res = moving
       ? await rescheduleMyBooking({ id: moving.id, day: day.key, time: draft.time })
       : await createBooking({
-          service,
+          services: picked,
           day: day.key,
           time: draft.time,
           comment: draft.comment.trim(),
@@ -250,11 +281,23 @@ export default function BookingScreen({
   };
 
   if (step === "book:service") {
+    const n = draft.services.length;
     return (
-      <Screen crumb={CRUMB} onBack={back}>
+      <Screen
+        crumb={CRUMB}
+        onBack={back}
+        footer={
+          <PrimaryButton onClick={() => push("book:date")} disabled={n === 0}>
+            {n === 0
+              ? "Выберите услугу"
+              : `Далее · ${n} ${servicesWord(n)} · ${service.duration} мин · ${formatPrice(service.price)}`}
+          </PrimaryButton>
+        }
+      >
         <Steps total={3} current={1} />
         <p className="eyebrow step">Шаг 1 из 3</p>
-        <Title>Выберите услугу</Title>
+        <Title>Выберите услуги</Title>
+        <p className="sub">Можно несколько — мастер сделает их подряд.</p>
         <div className="stack spaced">
           {activeServices.map((s) => (
             <OptionRow
@@ -262,11 +305,16 @@ export default function BookingScreen({
               title={s.name}
               meta={[s.note, `${s.duration} мин`].filter(Boolean).join(" · ")}
               price={formatPrice(s.price)}
-              selected={draft.service?.id === s.id}
-              onClick={() => pickService(s)}
+              selected={draft.services.some((x) => x.id === s.id)}
+              onClick={() => toggleService(s)}
             />
           ))}
         </div>
+        {tooMany && (
+          <p className="notice" role="alert">
+            В одну запись — не больше {MAX_SERVICES} услуг.
+          </p>
+        )}
         {activeServices.length === 0 && (
           <div className="blank tall">Услуги пока не добавлены</div>
         )}
@@ -432,10 +480,21 @@ export default function BookingScreen({
       )}
 
       <dl className="summary">
-        <div className="summary-row">
-          <dt>Услуга</dt>
-          <dd>{service?.name}</dd>
-        </div>
+        {picked.length > 1 ? (
+          picked.map((s, i) => (
+            <div key={s.id} className="summary-row">
+              <dt>{i === 0 ? "Услуги" : ""}</dt>
+              <dd>
+                {s.name} · {s.duration} мин
+              </dd>
+            </div>
+          ))
+        ) : (
+          <div className="summary-row">
+            <dt>Услуга</dt>
+            <dd>{service?.name}</dd>
+          </div>
+        )}
         {moving && (
           <div className="summary-row">
             <dt>Было</dt>
@@ -487,7 +546,7 @@ export default function BookingScreen({
 
       <p className="eyebrow">Какие данные мы передаём</p>
       <p className="note">
-        Ваши имя и логин из Telegram, выбранные услугу, дату и время,
+        Ваши имя и логин из Telegram, выбранные услуги, дату и время,
         стоимость и комментарий (если вы его укажете) — мы отправим{" "}
         {settings.masterName} в Telegram и сохраним в базе заявок, чтобы она
         могла увидеть и подтвердить запись в своём кабинете.

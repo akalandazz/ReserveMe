@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { formatPrice } from "../../money.js";
-import { dateKey, labelForKey, toHHMM } from "../../schedule.js";
+import {
+  MAX_SERVICES,
+  combineServices,
+  dateKey,
+  labelForKey,
+  pickServices,
+  toHHMM,
+} from "../../schedule.js";
 import { copyText, openChatWith } from "../../telegram.js";
 import {
   CHANNELS,
@@ -40,6 +47,20 @@ function cfOf(c) {
 
 function sameCf(a, b) {
   return CF_FIELDS.every((f) => String(a[f] ?? "").trim() === String(b[f] ?? "").trim());
+}
+
+// Услуги записи в состоянии листа — одной строкой: id через запятую в
+// порядке прайса ("manicure,pedicure"), "" — не выбраны. Строкой, а не
+// массивом, — чтобы сравнения с исходной записью и ключи запросов
+// оставались простым ===.
+const splitIds = (s) => (s ? s.split(",") : []);
+const joinIds = (services, ids) => pickServices(services, ids).map((x) => x.id).join(",");
+
+/** Услуги записи из её снимка; какой-то уже нет в прайсе — "". */
+function bookingServiceIds(services, bk) {
+  const ids = (bk.services?.length ? bk.services.map((x) => x.id) : [bk.service_id]).filter(Boolean);
+  const s = joinIds(services, ids);
+  return ids.length > 0 && splitIds(s).length === ids.length ? s : "";
 }
 
 /**
@@ -109,7 +130,7 @@ export default function BookingSheet({
         : { name: bk.client_name ?? "", phone: "", telegram_username: bk.client_username ?? "" };
       const orig = {
         c: c ? c.id : NEW,
-        s: bk.service_id ?? "",
+        s: bookingServiceIds(services, bk),
         d: bk.day,
         t: bk.start_min,
         cm: bk.comment ?? "",
@@ -142,7 +163,9 @@ export default function BookingSheet({
   const patch = (p) => setSt((prev) => ({ ...prev, ...p }));
   const go = (step, p = {}) => {
     setError("");
-    setSt((prev) => ({ ...prev, ...p, step, hist: [...prev.hist, prev.step], copied: false }));
+    // sp — отметки на шаге «Услуга», пока не нажали «Дальше»: на каждом
+    // входе в шаг — заново от st.s.
+    setSt((prev) => ({ ...prev, sp: null, ...p, step, hist: [...prev.hist, prev.step], copied: false }));
   };
   const back = () => {
     setError("");
@@ -157,9 +180,10 @@ export default function BookingSheet({
     }));
   };
 
-  // Услуга, как её видит клиент: у записи с той же услугой — то, что уже
+  // Услуги, как их видит клиент: у записи с теми же услугами — то, что уже
   // согласовано (цена и длительность на строке), а не текущий прайс.
-  const svc = services.find((s) => s.id === st.s) ?? null;
+  // Несколько — одно окно подряд (combineServices).
+  const svc = combineServices(pickServices(services, splitIds(st.s)));
   const origView = bk ? { name: bk.service_name, duration: bk.duration, price: bk.price } : null;
   const sv = isEdit && st.s === st.orig.s ? origView : svc;
 
@@ -172,7 +196,7 @@ export default function BookingSheet({
     if (!slotsKey) return;
     let cancelled = false;
     const [d, s] = slotsKey.split("|");
-    fetchFreeSlots(d, s, editId).then((res) => {
+    fetchFreeSlots(d, splitIds(s), editId).then((res) => {
       if (cancelled) return;
       if (!res.ok) setError(res.error);
       setSlots({ key: slotsKey, list: res.slots });
@@ -186,7 +210,7 @@ export default function BookingSheet({
     if (!countsKey) return;
     let cancelled = false;
     const [from, s] = countsKey.split("|");
-    fetchFreeSlotCounts(from, DAYS_AHEAD, s, editId).then((res) => {
+    fetchFreeSlotCounts(from, DAYS_AHEAD, splitIds(s), editId).then((res) => {
       if (cancelled) return;
       if (!res.ok) setError(res.error);
       setCounts({ key: countsKey, map: res.counts });
@@ -268,15 +292,25 @@ export default function BookingSheet({
     go("service", { c: NEW });
   };
 
-  const pickService = async (sid) => {
-    if (checking) return;
+  // Отметки шага «Услуга» — st.sp, пока не нажали «Дальше».
+  const spIds = splitIds(st.sp ?? st.s);
+  const tooMany = spIds.length >= MAX_SERVICES;
+
+  const toggleService = (id) => {
+    const next = spIds.includes(id) ? spIds.filter((x) => x !== id) : [...spIds, id];
+    patch({ sp: joinIds(active, next) });
+  };
+
+  const pickService = async () => {
+    const sid = st.sp ?? st.s;
+    if (checking || !sid) return;
     if (!(st.d && st.t != null)) {
       go("day", { s: sid });
       return;
     }
-    // Время уже выбрано — проверяем, влезает ли в него новая услуга.
+    // Время уже выбрано — проверяем, влезают ли в него новые услуги.
     setChecking(true);
-    const res = await fetchFreeSlots(st.d, sid, editId);
+    const res = await fetchFreeSlots(st.d, splitIds(sid), editId);
     setChecking(false);
     setSlots({ key: `${st.d}|${sid}|${editId ?? ""}`, list: res.slots });
     if (res.slots.includes(st.t)) go("confirm", { s: sid });
@@ -328,7 +362,7 @@ export default function BookingSheet({
                 channel: st.newCh,
               }
             : undefined,
-        serviceId: st.s,
+        serviceIds: splitIds(st.s),
         day: st.d,
         startMin: st.t,
         comment: st.cm,
@@ -346,7 +380,7 @@ export default function BookingSheet({
     const res = await updateMasterBooking(editId, {
       clientId: st.c === NEW ? null : st.c,
       client: st.c === NEW ? { ...st.cf, channel: st.newCh } : st.cf,
-      serviceId: st.s,
+      serviceIds: splitIds(st.s),
       day: st.d,
       startMin: st.t,
       comment: st.cm,
@@ -402,7 +436,7 @@ export default function BookingSheet({
       : `Шаг ${idx + 1} из 4`;
   const title = {
     client: isEdit ? "Другой клиент" : "Кого записываем?",
-    service: "Выберите услугу",
+    service: "Выберите услуги",
     day: isEdit ? "Перенос: день" : "Выберите день",
     time: isEdit ? "Перенос: время" : "Выберите время",
     confirm: clientOnly ? name || "Новый клиент" : isEdit ? name || "Клиент" : "Проверьте запись",
@@ -602,26 +636,42 @@ export default function BookingSheet({
 
   /* ─── Шаги «Услуга», «День», «Время» ────────────────────────── */
 
-  const renderServiceStep = () => (
-    <div className="bk-step bk-services">
-      {active.map((s) => (
+  const renderServiceStep = () => {
+    const total = combineServices(pickServices(active, spIds));
+    return (
+      <div className="bk-step bk-services">
+        {active.map((s) => {
+          const on = spIds.includes(s.id);
+          return (
+            <button
+              key={s.id}
+              type="button"
+              className="bk-service"
+              aria-pressed={on ? "true" : "false"}
+              disabled={checking || (!on && tooMany)}
+              onClick={() => toggleService(s.id)}
+            >
+              <span className="bk-service-main">
+                <span className="bk-service-name">{s.name}</span>
+                <span className="bk-service-meta">{s.duration} мин</span>
+              </span>
+              <span className="bk-service-price">{formatPrice(s.price)}</span>
+            </button>
+          );
+        })}
+        {tooMany && <p className="sheet-hint">В одну запись — не больше {MAX_SERVICES} услуг.</p>}
         <button
-          key={s.id}
+          className="bk-save"
           type="button"
-          className="bk-service"
-          aria-pressed={st.s === s.id ? "true" : "false"}
-          disabled={checking}
-          onClick={() => pickService(s.id)}
+          data-ready={total ? "true" : "false"}
+          disabled={checking || !total}
+          onClick={pickService}
         >
-          <span className="bk-service-main">
-            <span className="bk-service-name">{s.name}</span>
-            <span className="bk-service-meta">{s.duration} мин</span>
-          </span>
-          <span className="bk-service-price">{formatPrice(s.price)}</span>
+          {total ? `Дальше · ${total.duration} мин · ${formatPrice(total.price)}` : "Выберите услугу"}
         </button>
-      ))}
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderDayStep = () => {
     const days = [];
@@ -726,7 +776,7 @@ export default function BookingSheet({
     if (isEdit) {
       return [
         {
-          k: "Услуга",
+          k: splitIds(st.s).length > 1 ? "Услуги" : "Услуга",
           v: sv.name,
           old: origView.name,
           changed: st.s !== st.orig.s,
@@ -751,7 +801,7 @@ export default function BookingSheet({
     }
     return [
       { k: "Клиент", v: name + (st.c === NEW ? " (новый)" : ""), to: () => go("client") },
-      { k: "Услуга", v: sv.name, to: () => go("service") },
+      { k: splitIds(st.s).length > 1 ? "Услуги" : "Услуга", v: sv.name, to: () => go("service") },
       { k: "Дата", v: labelForKey(st.d), to: () => go("day") },
       { k: "Время", v: `${toHHMM(st.t)}–${toHHMM(st.t + sv.duration)}`, to: () => go("time") },
       { k: "Стоимость", v: formatPrice(sv.price), to: () => go("service") },

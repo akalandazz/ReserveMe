@@ -7,7 +7,7 @@ import {
 } from "../bookings.js";
 import { useContent } from "../content.js";
 import { formatPrice } from "../money.js";
-import { isPast, labelForKey } from "../schedule.js";
+import { isPast, labelForKey, pickServices } from "../schedule.js";
 import { setReminders, useSession } from "../supabase.js";
 import {
   botCanWrite,
@@ -28,16 +28,20 @@ import {
 const CRUMB = "Мои записи";
 
 // Название — из прайса, если услуга ещё есть, иначе то, что сохранено в
-// самой записи. Цену и длительность берём из записи — они денормализованы,
-// чтобы правка прайса не переписывала историю.
+// самой записи (снимок b.services). Несколько услуг — через « + », как
+// их подписывает сервер. Цену и длительность берём из записи — они
+// денормализованы, чтобы правка прайса не переписывала историю.
 function serviceName(services, b) {
-  return services.find((s) => s.id === b.serviceId)?.name || b.serviceName || "Услуга";
+  const names = b.services
+    .map((x) => services.find((s) => s.id === x.id)?.name || x.name)
+    .filter(Boolean);
+  return names.join(" + ") || b.serviceName || "Услуга";
 }
 
 /** Эмодзи живут только в сообщениях мастеру, не в интерфейсе. */
 function serviceLabelForMessage(services, b) {
-  const s = services.find((x) => x.id === b.serviceId);
-  return s ? `${s.emoji} ${s.name}` : `💅 ${b.serviceName || "Услуга"}`;
+  const s = b.services.length === 1 ? services.find((x) => x.id === b.services[0].id) : null;
+  return s ? `${s.emoji} ${s.name}` : `💅 ${serviceName(services, b)}`;
 }
 
 const STATUS = {
@@ -192,16 +196,17 @@ export default function MyBookingsScreen({ onBack, onBook, onReschedule }) {
     });
   };
 
-  // Перенос — в шаги записи (App.jsx), с той же услугой. Если услуги в
-  // прайсе больше нет, переносить не на что: сервер тоже откажет.
+  // Перенос — в шаги записи (App.jsx), с теми же услугами. Если какой-то
+  // услуги в прайсе больше нет, переносить не на что: сервер тоже откажет.
   const reschedule = (booking) => {
-    const service = activeServices.find((s) => s.id === booking.serviceId);
-    if (!service) {
+    const ids = booking.services.map((x) => x.id);
+    const list = pickServices(activeServices, ids);
+    if (list.length !== ids.length) {
       setToast("Этой услуги больше нет в прайсе — отмените запись и запишитесь заново.");
       return;
     }
     haptic("select");
-    onReschedule(booking, service);
+    onReschedule(booking, list);
   };
 
   const upcoming = bookings.filter((b) => !isPast(b));

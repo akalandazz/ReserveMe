@@ -157,6 +157,19 @@ test.describe("клиент видит только свой салон", () => 
     expect(asRow(forged).salon_id).toBe(BETA.id);
   });
 
+  test("несколько услуг — услуга чужого салона в списке не находится", async () => {
+    // pedicure есть только у салона 1, manicure — у обоих.
+    const res = await insertBooking(C2.token, {
+      day: DAY,
+      start_min: 840,
+      services: [{ id: "manicure" }, { id: "pedicure" }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.data.message).toBe("Услуга не найдена");
+    const free = await rpc("free_slots", { p_day: DAY, p_service_ids: ["manicure", "pedicure"] }, M2.token);
+    expect(free.data).toEqual([]);
+  });
+
   test("занятость — только своего салона", async () => {
     const busy = async (token) =>
       (await api(`/rest/v1/busy_slots?day=eq.${DAY}&select=start_min,duration`, { token })).data;
@@ -256,7 +269,7 @@ test.describe("мастер видит и правит только свой с�
           p_client_phone: "",
           p_client_telegram: "",
           p_client_channel: null,
-          p_service_id: "manicure",
+          p_service_ids: ["manicure"],
           p_day: DAY_X,
           p_start_min: 600,
           p_comment: "",
@@ -270,7 +283,7 @@ test.describe("мастер видит и правит только свой с�
           p_new_phone: null,
           p_new_telegram: null,
           p_new_channel: null,
-          p_service_id: "manicure",
+          p_service_ids: ["manicure"],
           p_day: DAY_X,
           p_start_min: 600,
           p_comment: "",
@@ -373,7 +386,7 @@ test.describe("мастер видит и правит только свой с�
 
   test("free_slots — по своему салону", async () => {
     const free = async (token) =>
-      (await rpc("free_slots", { p_day: DAY, p_service_id: "manicure" }, token)).data.map(
+      (await rpc("free_slots", { p_day: DAY, p_service_ids: ["manicure"] }, token)).data.map(
         (r) => r.start_min
       );
     // Бета: услуга 60 минут, 10:00–11:00 занято её записью — 11:00 свободно.
@@ -464,7 +477,7 @@ test.describe("приглашения и привязка клиента к ак
         p_new_phone: "",
         p_new_telegram: C2.tg.username,
         p_new_channel: "tg",
-        p_service_id: "manicure",
+        p_service_ids: ["manicure"],
         p_day: DAY_X,
         p_start_min: 900,
         p_comment: "",

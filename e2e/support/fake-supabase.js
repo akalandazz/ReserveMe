@@ -152,6 +152,15 @@ export function bookingRow(id, fields) {
     price: fields.price ?? 60,
     service_id: fields.service_id ?? "manicure",
     service_name: fields.service_name || "Маникюр",
+    // Снимок услуг записи (bookings.services); по умолчанию — её одна услуга.
+    services: fields.services ?? [
+      {
+        id: fields.service_id ?? "manicure",
+        name: fields.service_name || "Маникюр",
+        duration: fields.duration ?? 90,
+        price: fields.price ?? 60,
+      },
+    ],
     client_id: fields.client_id ?? null,
     client_name: fields.client_name ?? "Анна",
     client_username: fields.client_username ?? "",
@@ -389,12 +398,25 @@ async function handle(route, state) {
     if (state.failBookingInsert) {
       return json(400, { code: "P0001", message: state.failBookingInsert, details: null, hint: null });
     }
-    // Как guard_client_booking(): длительность и цена — из services, имя
-    // и юзернейм — из профиля, не от клиента; user_id — вошедший.
-    const svc = state.tables.services?.find((s) => s.id === body.service_id);
+    // Как guard_client_booking(): услуги — по присланным id (services, или
+    // один service_id), длительность, цена и подпись — их сумма из
+    // services, в порядке прайса; имя и юзернейм — из профиля, не от
+    // клиента; user_id — вошедший.
+    const ids = body.services?.length ? body.services.map((s) => s.id) : [body.service_id];
+    const picked = (state.tables.services ?? [])
+      .filter((s) => ids.includes(s.id))
+      .sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
     const prof = state.tables.profiles.find((p) => p.id === requester(req));
     const guarded = {
-      ...(svc ? { duration: svc.duration, price: svc.price, service_name: svc.name } : {}),
+      ...(picked.length
+        ? {
+            services: picked.map((s) => ({ id: s.id, name: s.name, duration: s.duration, price: s.price })),
+            service_id: picked[0].id,
+            duration: picked.reduce((n, s) => n + s.duration, 0),
+            price: picked.reduce((n, s) => n + s.price, 0),
+            service_name: picked.map((s) => s.name).join(" + "),
+          }
+        : {}),
       client_name: prof?.first_name ?? "",
       client_username: prof?.telegram_username ?? "",
     };
@@ -526,6 +548,20 @@ async function handle(route, state) {
     const b = bookings.find((x) => x.id === body.p_id);
     if (b) b.status = "ok";
     return json(200, null);
+  }
+  // Свободные старты — грубее настоящей free_slots(): вся сетка рабочих
+  // часов (HOURS) под сумму длительностей, без учёта занятости. Не все
+  // услуги нашлись — пусто, как у сервера.
+  if (rpc === "free_slots" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    const found = (state.tables.services ?? []).filter((s) => body.p_service_ids.includes(s.id));
+    if (found.length !== body.p_service_ids.length) return json(200, []);
+    const dur = found.reduce((n, s) => n + s.duration, 0);
+    const [open, close] = [HOURS.from, HOURS.to].map((t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3)));
+    const out = [];
+    for (let m = open; m + dur <= close; m += 30) out.push({ start_min: m });
+    return json(200, out);
   }
   if (rpc === "update_master_booking" && method === "POST") {
     const body = req.postDataJSON();

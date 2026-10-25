@@ -84,7 +84,7 @@ test("воскресенье, открытое разово, принимает 
   expect(open.status).toBe(201);
 
   // 12:00–15:00, маникюр 90 мин, шаг 30.
-  const slots = await rpc("free_slots", { p_day: SUN, p_service_id: "manicure" }, M.token);
+  const slots = await rpc("free_slots", { p_day: SUN, p_service_ids: ["manicure"] }, M.token);
   expect(slots.status).toBe(200);
   expect(slots.data.map((r) => r.start_min)).toEqual([720, 750, 780, 810]);
 

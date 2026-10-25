@@ -110,8 +110,34 @@ export function findDay(days, key) {
   return days.find((d) => d.key === key) || null;
 }
 
+/** Сколько услуг можно взять в одну запись — max_services в services_total() (schema.sql). */
+export const MAX_SERVICES = 4;
+
 /**
- * Свободные слоты дня для услуги.
+ * Выбранные услуги в порядке прайса (services уже отсортирован по sort, id),
+ * а не в порядке, в котором их отметили, — так же их складывает сервер.
+ */
+export function pickServices(services = [], ids = []) {
+  return services.filter((s) => ids.includes(s.id));
+}
+
+/**
+ * Несколько услуг — одна запись подряд: { ids, name, duration, price }.
+ * Подпись — та же, что services_total() в schema.sql («Маникюр + Педикюр»):
+ * её сервер пишет в bookings.service_name. Пустой список — null.
+ */
+export function combineServices(list = []) {
+  if (list.length === 0) return null;
+  return {
+    ids: list.map((s) => s.id),
+    name: list.map((s) => s.name).join(" + "),
+    duration: list.reduce((sum, s) => sum + (Number(s.duration) || 0), 0),
+    price: list.reduce((sum, s) => sum + (Number(s.price) || 0), 0),
+  };
+}
+
+/**
+ * Свободные слоты дня для услуги (или combineServices() нескольких).
  * busy — [{ start, end }] в минутах от полуночи (свои же записи на эту дату).
  * Сетка идёт с шагом slotStepMinutes, но услуга должна успеть
  * закончиться до конца рабочего дня.

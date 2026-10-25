@@ -186,11 +186,20 @@ function signature() {
   return `\n\n👤 ${name}${uname}`;
 }
 
+/** b.services — [{ name, duration, price }]: при нескольких услугах каждая
+ *  своей строкой, а длительность и стоимость ниже — общие. */
 export function bookingMessage(b) {
+  const several = (b.services?.length ?? 0) > 1;
   return (
     `Здравствуйте, ${masterName()}! 🌸\n` +
     `Хочу записаться:\n\n` +
-    `💅 Услуга: ${b.serviceName}\n` +
+    (several
+      ? `💅 Услуги:\n` +
+        b.services
+          .map((s) => `• ${s.name} — ${s.duration} мин, ${formatPrice(s.price)}`)
+          .join("\n") +
+        "\n"
+      : `💅 Услуга: ${b.serviceName}\n`) +
     `📅 Дата: ${b.dateLabel}\n` +
     `🕒 Время: ${b.time}\n` +
     `⏳ Длительность: ${b.duration} мин\n` +
