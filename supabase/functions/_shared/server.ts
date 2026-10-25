@@ -5,11 +5,9 @@
 //
 // Секреты (Dashboard → Edge Functions → Secrets — никогда не через
 // `supabase secrets set` из репозитория, см. CLAUDE.md):
-//   TELEGRAM_CLIENT_BOT_TOKEN  — необязательно: бот клиента салона 1, пока
-//                                его токен не перенесён в salon_bots;
-//   TELEGRAM_CABINET_BOT_TOKEN — то же для бота кабинета салона 1 (auth);
-//   CLIENT_BOT_WEBHOOK_SECRET  — secret_token вебхука бота клиента салона 1,
-//                                пока его нет в salon_bots (bot);
+//   SALON_BOTS                 — боты всех салонов: JSON по slug с токенами
+//                                ботов клиента и кабинета и secret_token
+//                                вебхука (формат — _shared/salon-bots.js);
 //   REMINDERS_CRON_SECRET      — общий с cron-задачей (send-reminders);
 //   CLIENT_APP_URL             — необязательно: https-адрес мини-аппа, тогда
 //                                у сообщений бота кнопка в приложение;
@@ -21,6 +19,9 @@
 // подставляет сам.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseSalonBots } from "./salon-bots.js";
+
+export { SLUG, signInTokens } from "./salon-bots.js";
 
 export const env = (name: string) => Deno.env.get(name)?.trim() ?? "";
 
@@ -29,10 +30,22 @@ export const ANON_KEY = env("SUPABASE_ANON_KEY");
 export const SERVICE_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
 export const API_URL = (env("TELEGRAM_API_URL") || "https://api.telegram.org").replace(/\/$/, "");
 
-// Боты салона 1 из секретов — до переноса их токенов в salon_bots.
+// Без ?salon в адресе — салон 1 (до салонов был только он).
 export const DEFAULT_SALON = 1;
-export const ENV_CLIENT_BOT_TOKEN = env("TELEGRAM_CLIENT_BOT_TOKEN");
-export const SLUG = /^[a-z0-9][a-z0-9-]{1,31}$/;
+
+type SalonBot = { client: string; cabinet: string; webhookSecret: string };
+
+// Разбирается один раз на экземпляр функции. Кривая запись выпадает одна
+// (её салон не войдёт и не получит апдейтов); в лог — только тексты
+// ошибок, в них нет токенов.
+const parsed = parseSalonBots(env("SALON_BOTS"));
+for (const e of parsed.errors) console.error("SALON_BOTS:", e);
+const SALON_BOTS: Map<string, SalonBot> = parsed.bots;
+
+/** Боты салона из секрета SALON_BOTS или undefined — их там нет. */
+export function salonBots(slug: string): SalonBot | undefined {
+  return SALON_BOTS.get(slug);
+}
 
 export const NO_SESSION = { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false };
 /** Клиент service role — RLS не действует, салон каждый маршрут фильтрует сам. */
@@ -64,10 +77,9 @@ export async function sameSecret(got: string, want: string) {
   return diff === 0;
 }
 
-/** Токен бота клиента из строки салона с salon_bots(kind, token, …), или "". */
-export function clientBotToken(salon: { id: number; salon_bots?: { kind: string; token: string }[] | null }) {
-  const bot = (salon.salon_bots ?? []).find((b) => b.kind === "client");
-  return bot?.token || (salon.id === DEFAULT_SALON ? ENV_CLIENT_BOT_TOKEN : "");
+/** Токен бота клиента салона по slug, или "". */
+export function clientBotToken(slug: string) {
+  return salonBots(slug)?.client ?? "";
 }
 
 const APP_URL = env("CLIENT_APP_URL");

@@ -11,10 +11,9 @@
 // всегда 200 (кроме чужого секрета): иначе Telegram будет повторять апдейт.
 //
 // Салоны: у каждого салона свой бот клиента и свой вебхук —
-// …/api/bot?salon=<slug>. Токен бота и secret_token вебхука — из
-// salon_bots этого салона (kind = 'client'), настройки — его строка
-// settings. Без ?salon — салон 1, и для него пока работают секреты
-// TELEGRAM_CLIENT_BOT_TOKEN / CLIENT_BOT_WEBHOOK_SECRET (_shared/server.ts).
+// …/api/bot?salon=<slug>. Токен бота и secret_token вебхука — из секрета
+// SALON_BOTS (client, webhook_secret этого салона; _shared/server.ts),
+// настройки — его строка settings. Без ?salon — салон 1.
 //
 // Приглашение — через bot_client_invite / bot_answer_client_invite
 // (schema.sql): база запоминает, кто ответил. Остальное бот не сохраняет.
@@ -33,12 +32,11 @@ import {
   SLUG,
   admin,
   appUrlFor,
-  clientBotToken,
   env,
+  salonBots,
   sameSecret,
 } from "../_shared/server.ts";
 
-const ENV_WEBHOOK_SECRET = env("CLIENT_BOT_WEBHOOK_SECRET");
 const PRIVACY_URL = env("CLIENT_PRIVACY_URL");
 
 const SETTINGS_TIMEOUT_MS = 3_000;
@@ -51,16 +49,16 @@ type Bot = { salonId: number; slug: string; token: string; secret: string };
 /** Бот клиента салона по slug из адреса вебхука (пусто — салон 1); null — нет такого. */
 async function loadBot(slug: string): Promise<Bot | null> {
   if (!SERVICE_KEY || (slug && !SLUG.test(slug))) return null;
-  const q = admin.from("salons").select("id, slug, salon_bots(kind, token, webhook_secret)");
+  const q = admin.from("salons").select("id, slug");
   const { data, error } = await (slug ? q.eq("slug", slug) : q.eq("id", DEFAULT_SALON))
     .abortSignal(AbortSignal.timeout(SETTINGS_TIMEOUT_MS))
     .maybeSingle();
   if (error) console.error("bot: salons:", error.code ?? "error");
   if (!data) return null;
-  const bot = (data.salon_bots ?? []).find((b: { kind: string }) => b.kind === "client");
-  const token = clientBotToken(data);
-  const secret = bot?.webhook_secret || (data.id === DEFAULT_SALON ? ENV_WEBHOOK_SECRET : "");
-  return token && secret ? { salonId: data.id, slug: data.slug, token, secret } : null;
+  const bots = salonBots(data.slug);
+  return bots?.client && bots.webhookSecret
+    ? { salonId: data.id, slug: data.slug, token: bots.client, secret: bots.webhookSecret }
+    : null;
 }
 
 /** Строка settings салона или null — без неё бот ответит, только короче. */

@@ -9,12 +9,12 @@
 //   TELEGRAM_CLIENT_BOT_TOKEN=… CLIENT_BOT_WEBHOOK_SECRET=… \
 //   CLIENT_BOT_WEBHOOK_URL=https://<проект>.supabase.co/functions/v1/api/bot \
 //   node scripts/setup-client-bot.mjs
-// CLIENT_BOT_WEBHOOK_SECRET — тот же, что в секретах функции client-bot.
+// Токен и секрет — client и webhook_secret салона из секрета функций
+// SALON_BOTS (supabase/functions/_shared/salon-bots.js); имена переменных
+// окружения здесь остались прежними.
 //
 // Бот другого салона (не салона 1): CLIENT_BOT_SALON=<slug> — вебхук получит
-// ?salon=<slug>, а токен и секрет должны совпадать с его строкой
-// public.salon_bots (kind = 'client', token / webhook_secret), см.
-// supabase/add-salon.sql.
+// ?salon=<slug>, см. supabase/add-salon.sql.
 
 import {
   BOT_COMMANDS,

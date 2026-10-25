@@ -22,15 +22,20 @@ import {
 // мастер и клиенты одного салона не видят и не трогают другой — ни через
 // таблицы (RLS), ни через функции, ни через вход.
 //
-// Салон 1 — из сида schema.sql, его боты — секреты функции (config.toml).
-// Салон 2 («beta») заводится здесь, его боты — в salon_bots.
+// Салон 1 — из сида schema.sql, салон 2 («beta») заводится здесь. Боты
+// обоих — в секрете функций SALON_BOTS (supabase/config.toml), не в базе.
+// Салон 3 («gamma») есть в базе, но не в SALON_BOTS.
 
 test.skip(!ENABLED, "нет SUPABASE_IT_* — локальный Supabase не поднят (см. support.js)");
 test.skip(ENABLED && !LOCAL_ONLY, "SUPABASE_IT_URL должен указывать на локальный стек");
 
 const BETA = { id: 2, slug: "beta" };
+const GAMMA = { id: 3, slug: "gamma" };
+// supabase/config.toml → SALON_BOTS.
 const BETA_CLIENT_BOT = "333333:local-test-beta-client-bot";
 const BETA_CABINET_BOT = "444444:local-test-beta-cabinet-bot";
+const BETA_WEBHOOK_SECRET = "beta-secret";
+const MAIN_WEBHOOK_SECRET = "local-test-webhook-secret";
 const UPSERT = { prefer: "resolution=merge-duplicates,return=minimal" };
 
 let M1, C1; // мастер и клиент салона 1
@@ -74,18 +79,15 @@ test.beforeAll(async () => {
   if (!ENABLED || !LOCAL_ONLY) return;
   await wipeBookings();
 
-  // Салон beta: боты, настройки (тот же график, другое имя) и услуга с тем
-  // же id, что у салона 1, — ключи теперь в пределах салона.
+  // Салон beta: настройки (тот же график, другое имя) и услуга с тем же
+  // id, что у салона 1, — ключи теперь в пределах салона. Боты — в
+  // SALON_BOTS. Салон gamma — без ботов.
   const setup = async (path, body) => {
     const res = await admin(path, { method: "POST", headers: UPSERT, body });
     // 201 — новая строка, 200 — уже была (прошлый прогон), merge-duplicates.
     expect([200, 201], `${path}: ${JSON.stringify(res.data)}`).toContain(res.status);
   };
-  await setup("/rest/v1/salons", BETA);
-  await setup("/rest/v1/salon_bots", [
-    { salon_id: BETA.id, kind: "client", token: BETA_CLIENT_BOT, webhook_secret: "beta-secret" },
-    { salon_id: BETA.id, kind: "cabinet", token: BETA_CABINET_BOT, webhook_secret: "" },
-  ]);
+  await setup("/rest/v1/salons", [BETA, GAMMA]);
   const one = (await admin("/rest/v1/settings?salon_id=eq.1&select=working_hours,time_of_day")).data[0];
   await setup("/rest/v1/settings", { salon_id: BETA.id, master_name: "Бета", reminder_hours: 24, ...one });
   await setup("/rest/v1/services", {
@@ -134,6 +136,32 @@ test.describe("вход: салон выбирает бот", () => {
       const res = await login(signInitData(tgUser("Ghost"), { token: BETA_CLIENT_BOT }), { salon });
       expect(res.status, salon).toBe(401);
     }
+  });
+
+  test("салон без ботов в SALON_BOTS — не входит, вебхука нет", async () => {
+    const tg = tgUser("Gamma");
+    const res = await login(signInitData(tg, { token: BETA_CLIENT_BOT }), { salon: GAMMA.slug });
+    expect(res).toEqual({ status: 500, data: { error: "not_configured" } });
+    const profiles = await admin(`/rest/v1/profiles?telegram_id=eq.${tg.id}&select=id`);
+    expect(profiles.data).toEqual([]);
+    expect((await webhook(GAMMA.slug, BETA_WEBHOOK_SECRET)).status).toBe(500);
+  });
+});
+
+/** Пустой апдейт вебхуку бота клиента салона: ответа нет, база и Bot API не трогаются. */
+const webhook = (slug, secret) =>
+  api(`/functions/v1/api/bot${slug ? `?salon=${slug}` : ""}`, {
+    method: "POST",
+    headers: { "x-telegram-bot-api-secret-token": secret },
+    body: { update_id: 1 },
+  });
+
+test.describe("вебхук: секрет — своего салона", () => {
+  test("свой секрет — 200, секрет другого салона — 401", async () => {
+    expect((await webhook(BETA.slug, BETA_WEBHOOK_SECRET)).status).toBe(200);
+    expect((await webhook("", MAIN_WEBHOOK_SECRET)).status).toBe(200);
+    expect((await webhook(BETA.slug, MAIN_WEBHOOK_SECRET)).status).toBe(401);
+    expect((await webhook("", BETA_WEBHOOK_SECRET)).status).toBe(401);
   });
 });
 

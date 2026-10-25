@@ -15,8 +15,9 @@
 //
 // Салон (тенант, см. «Салоны» в schema.sql). salon — slug из адреса
 // мини-аппа (?salon=… у бота салона в BotFather) — только подсказка, КАКИМИ
-// токенами проверять подпись: берутся боты этого салона из salon_bots, и
-// initData чужого бота с ними не сойдётся (401). Без salon — салон 1.
+// токенами проверять подпись: берутся боты этого салона из секрета
+// SALON_BOTS, и initData чужого бота с ними не сойдётся (401). Без salon —
+// салон 1.
 // Салон нового аккаунта — тот, чей бот подписал initData; аккаунт другого
 // салона не входит — 403 other_salon (один аккаунт — один салон), и ничего
 // не пишется.
@@ -42,9 +43,10 @@ import {
   admin,
   env,
   json,
+  salonBots,
+  signInTokens,
 } from "../_shared/server.ts";
 
-const ENV_TOKENS = [env("TELEGRAM_CLIENT_BOT_TOKEN"), env("TELEGRAM_CABINET_BOT_TOKEN")].filter(Boolean);
 const MAX_AGE = Number(env("INITDATA_MAX_AGE_SECONDS")) || 3600;
 const EMAIL_DOMAIN = env("AUTH_EMAIL_DOMAIN") || "telegram.local";
 
@@ -70,13 +72,11 @@ const must = (what: string, error: { code?: string; message?: string } | null) =
  */
 async function findSalon(slug: string): Promise<{ id: number; tokens: string[] } | null> {
   if (slug && !SLUG.test(slug)) return null;
-  const q = admin.from("salons").select("id, salon_bots(token)");
+  const q = admin.from("salons").select("id, slug");
   const res = await (slug ? q.eq("slug", slug) : q.eq("id", DEFAULT_SALON)).maybeSingle();
   must("salons.select", res.error);
   if (!res.data) return null;
-  const tokens = (res.data.salon_bots ?? []).map((b: { token: string }) => b.token);
-  if (res.data.id === DEFAULT_SALON) tokens.push(...ENV_TOKENS);
-  return { id: res.data.id, tokens };
+  return { id: res.data.id, tokens: signInTokens(salonBots(res.data.slug)) };
 }
 
 /** Подпись подошла к одному из ботов салона — пользователь; иначе причина отказа. */

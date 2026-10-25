@@ -23,9 +23,9 @@
 --       раз из Telegram; если вход не проходит — включите провайдер обратно,
 --       оставив регистрацию выключенной.
 --    2. Authentication → Anonymous Sign-ins — выключить.
---    3. Токены ботов салона — в public.salon_bots (supabase/add-salon.sql;
---       для салона 1 пока работают и секреты TELEGRAM_CLIENT_BOT_TOKEN /
---       TELEGRAM_CABINET_BOT_TOKEN, см. supabase/functions/api/auth.ts).
+--    3. Токены ботов всех салонов — в секрете функций SALON_BOTS
+--       (Edge Functions → Secrets; формат —
+--       supabase/functions/_shared/salon-bots.js). В базе их нет.
 --    4. Мастер один раз открывает кабинет (увидит «Нет доступа»), затем
 --       роль выдаётся руками — сниппет над is_master() ниже.
 --  Салонов (мастеров) может быть несколько — каждый видит только своё,
@@ -405,7 +405,7 @@ create table if not exists public.blocked_slots (
 --
 --  Салон аккаунта — profiles.salon_id. Пишет его только api/auth,
 --  при первом входе: салон определяет бот, чей токен подошёл к подписи
---  initData (salon_bots). Один аккаунт — один салон: клиент мастера A,
+--  initData (секрет SALON_BOTS). Один аккаунт — один салон: клиент мастера A,
 --  открывший бота мастера B, получает 403 other_salon.
 --
 --  Ссылки между строками — составные внешние ключи с salon_id (запись →
@@ -427,42 +427,33 @@ create table if not exists public.salons (
 -- Все данные, что были в базе до салонов, — салон 1.
 insert into public.salons (id, slug) values (1, 'main') on conflict (id) do nothing;
 
--- Боты салона: бот мини-аппа клиента и бот кабинета (токены могут
--- совпадать). Токены лежат здесь, а не в секретах функций: салонов
--- сколько угодно, секретов на каждый не заведёшь. Читает таблицу только
--- service role (api/auth, send-reminders, api/bot) — у anon и
--- authenticated нет на неё никаких прав. webhook_secret — secret_token
--- вебхука бота клиента (api/bot), у бота кабинета пусто.
-create table if not exists public.salon_bots (
-  salon_id       smallint not null references public.salons(id) on delete cascade,
-  kind           text not null check (kind in ('client', 'cabinet')),
-  token          text not null check (token ~ '^[0-9]+:[A-Za-z0-9_-]+$'),
-  webhook_secret text not null default '',
-  primary key (salon_id, kind)
-);
-
--- Как требует Telegram у secret_token: A–Z a–z 0–9 _ -, до 256 символов.
--- Длина — отдельно: повторение {0,256} регулярке Postgres не по силам
--- (предел — 255), и такая проверка отвергала бы любую строку.
-alter table public.salon_bots drop constraint if exists salon_bots_webhook_secret_check;
-alter table public.salon_bots add constraint salon_bots_webhook_secret_check
-  check (length(webhook_secret) <= 256 and webhook_secret ~ '^[A-Za-z0-9_-]*$');
-
--- Один бот — один салон: initData бота, подключённого к двум салонам,
--- подошёл бы к обоим, и новый клиент выбрал бы салон адресом. Внутри салона
--- тот же токен у client и cabinet — можно (один бот на всё).
-create extension if not exists btree_gist with schema extensions;
+-- Боты салона (токены ботов клиента и кабинета, secret_token вебхука) —
+-- не в базе, а в секрете функций SALON_BOTS: JSON по slug салона
+-- (supabase/functions/_shared/salon-bots.js). Так токены не попадают ни в
+-- бэкапы и дампы базы, ни в SQL Editor, ни к тому, у кого окажется
+-- service-role ключ. Там же проверяется «один бот — один салон».
+--
+-- Раньше они лежали в public.salon_bots. Таблица удаляется, только когда
+-- пуста, чтобы повторный запуск схемы не стёр токены, которых ещё нет в
+-- секрете: перенесите их (supabase/export-salon-bots.sql → SALON_BOTS),
+-- проверьте вход, затем truncate public.salon_bots и запустите схему снова.
 do $$
+declare
+  has_rows boolean := false;
 begin
-  alter table public.salon_bots add constraint salon_bots_one_salon_per_token
-    exclude using gist (token with =, salon_id with <>);
-exception when duplicate_object or duplicate_table then null;
+  -- Динамически: когда таблицы уже нет, статический запрос к ней не
+  -- скомпилировался бы.
+  if to_regclass('public.salon_bots') is not null then
+    execute 'select exists (select 1 from public.salon_bots)' into has_rows;
+  end if;
+  if has_rows then
+    raise exception 'В public.salon_bots ещё есть токены ботов. Перенесите их в секрет SALON_BOTS (supabase/export-salon-bots.sql), затем truncate public.salon_bots и запустите схему снова.';
+  end if;
 end
 $$;
+drop table if exists public.salon_bots;
 
 alter table public.salons     enable row level security;
-alter table public.salon_bots enable row level security;
-revoke all on public.salon_bots from anon, authenticated;
 revoke insert, update, delete, truncate on public.salons from anon, authenticated;
 
 -- ─── current_salon_id(): салон вошедшего ─────────────────────────
@@ -1538,7 +1529,7 @@ create index if not exists bookings_reminder_due_idx
 --
 --  Все салоны за один вызов, у каждого своё reminder_hours; salon_id в
 --  ответе — чтобы функция отправила напоминание ботом этого салона
---  (salon_bots), а не чужим.
+--  (секрет SALON_BOTS), а не чужим.
 --  drop: у функции сменился состав колонок ответа (salon_id), а create or
 --  replace тип ответа не меняет.
 drop function if exists public.claim_due_reminders(integer);

@@ -195,8 +195,8 @@ booking flow, not the cabinet's day/week/month calendar
   with the bot token and `auth_date` freshness
   ([supabase/functions/_shared/telegram-init-data.js](supabase/functions/_shared/telegram-init-data.js)).
   A booking's name/username come from `profiles` (written by that function from verified
-  data), never from the request body. Bot tokens live in `public.salon_bots`
-  (service role only; salon 1 may still use the function secrets), never in the client.
+  data), never from the request body. Bot tokens live in the `SALON_BOTS` function
+  secret (see «Salons» below) — never in the database, never in the client.
 
 ### Salons (tenants) — the boundary above every other rule
 
@@ -209,13 +209,22 @@ view and function filters by `current_salon_id()` (the caller's `profiles.salon_
 see another salon: reads are filtered (200 `[]`), master RPCs on a foreign id behave
 as "not found" (`delete_client` → zeros), client RPCs → 403.
 
-- **The bot decides the salon.** Each salon has its own client (and cabinet) bot in
-  `public.salon_bots` (`salon_id`, `kind 'client'|'cabinet'`, `token`,
-  `webhook_secret`; service role only). The bot's Mini App URL in BotFather carries
+- **The bot decides the salon.** Each salon has its own client (and cabinet) bot.
+  Their tokens and the client bot's webhook secret are **not in the database**: one
+  Edge Function secret `SALON_BOTS` holds them as JSON keyed by slug —
+  `{"main": {"client": "…", "cabinet": "…", "webhook_secret": "…"}}`
+  (`cabinet` optional — the client bot then opens the cabinet too). It's parsed once
+  per function instance by [_shared/salon-bots.js](supabase/functions/_shared/salon-bots.js)
+  (pure, `e2e/unit/salon-bots.spec.js`), behind `salonBots(slug)`/`clientBotToken(slug)`
+  in `_shared/server.ts`: a malformed entry drops **only that salon** (its sign-in
+  → 500 `not_configured`, no webhook), errors are logged without tokens. The
+  old `public.salon_bots` table is gone — `schema.sql` refuses to drop it while it
+  still has rows (`supabase/export-salon-bots.sql` turns them into the secret's JSON).
+  The bot's Mini App URL in BotFather carries
   `?salon=<slug>`; `salonSlug()` (`src/supabase.js`) sends it to `/api/auth`,
   which validates `initData` **only** against that salon's tokens — the slug is a hint,
-  a wrong one is just a failed HMAC (401). No slug → salon 1 (plus the
-  `TELEGRAM_*_BOT_TOKEN` secrets as a transitional fallback for salon 1 only).
+  a wrong one is just a failed HMAC (401). No slug → salon 1 (`slug = 'main'`), whose
+  bots are in `SALON_BOTS` like any other's.
 - **One account, one salon.** `/api/auth` writes `profiles.salon_id` on first
   login; an account of another salon gets **403 `other_salon`** («уже записан к другому
   мастеру») and nothing is written. Never let the client or the cabinet write
@@ -242,9 +251,16 @@ as "not found" (`delete_client` → zeros), client RPCs → 403.
   config format in `masters/example.json`, parsing/validation in
   `scripts/master-config.mjs`, unit-tested). Idempotent — re-run after the master's
   first cabinet login to grant the role. Real configs hold bot tokens and are
-  gitignored. Manual alternative: `supabase/add-salon.sql` + role grant with
-  `and salon_id = <id>` + `CLIENT_BOT_SALON=<slug> node scripts/setup-client-bot.mjs`.
-  A bot token can't belong to two salons (`salon_bots_one_salon_per_token`).
+  gitignored. Supabase never returns a secret's value, so the script keeps your copy of
+  `SALON_BOTS` in `masters/salon-bots.json` (`--bots-file`; gitignored; must exist —
+  `{}` for the first salon, a missing/empty file is refused so a fresh value can't
+  wipe the other salons), merges the salon in, and either tells you to paste the file
+  into the dashboard or, with `--write-secret`, sets that one secret through the
+  Management API (`SUPABASE_ACCESS_TOKEN`). Manual alternative: `supabase/add-salon.sql`
+  + an entry in `SALON_BOTS` + role grant with `and salon_id = <id>` +
+  `CLIENT_BOT_SALON=<slug> node scripts/setup-client-bot.mjs`.
+  A bot token can't belong to two salons: `parseSalonBots` drops every salon that
+  shares one, and `add-master` refuses it before writing anything.
 - Service-role inserts (tests, SQL editor) must pass `salon_id` explicitly — the
   default is `null` there.
 - `e2e/integration/tenancy.spec.js` is the proof: add a case there for every new table,
@@ -323,11 +339,10 @@ seed, kept in the repo because the content is no longer in git otherwise.
     `profiles` row lacks `telegram_id` — delete those `auth.users` rows first (the
     old `reset-dev.sql` that wiped everything was removed on purpose).
   - **Deploying:** `schema.sql` (on a live single-salon base it
-    migrates everything into salon 1, `slug = 'main'`; re-runnable) → salon 1's bots:
-    secrets `TELEGRAM_CLIENT_BOT_TOKEN=… TELEGRAM_CABINET_BOT_TOKEN=…` (or rows in
-    `salon_bots`) — every further salon via `supabase/add-salon.sql` → the rest of the
-    secrets: `REMINDERS_CRON_SECRET`, `CLIENT_APP_URL`, `CLIENT_BOT_WEBHOOK_SECRET`
-    (+ optional `CLIENT_PRIVACY_URL`) → **two functions**: `supabase functions deploy
+    migrates everything into salon 1, `slug = 'main'`; re-runnable) → every salon's
+    bots in the `SALON_BOTS` secret (every further salon via `npm run add-master` or
+    `supabase/add-salon.sql`) → the rest of the secrets: `REMINDERS_CRON_SECRET`,
+    `CLIENT_APP_URL` (+ optional `CLIENT_PRIVACY_URL`) → **two functions**: `supabase functions deploy
     api --no-verify-jwt` (sign-in, client bot, invitations) and `supabase functions
     deploy send-reminders --no-verify-jwt` (kept separate: only pg_cron calls it) →
     in the dashboard turn off sign-ups, the Email provider and Anonymous sign-ins
@@ -337,16 +352,23 @@ seed, kept in the repo because the content is no longer in git otherwise.
     the role by SQL → reminders: the two `vault.create_secret` calls from the header of
     `supabase/reminders-cron.sql`, then that file → client bot: `node
     scripts/setup-client-bot.mjs` with `TELEGRAM_CLIENT_BOT_TOKEN`,
-    `CLIENT_BOT_WEBHOOK_SECRET`, `CLIENT_BOT_WEBHOOK_URL=…/functions/v1/api/bot` in the
+    `CLIENT_BOT_WEBHOOK_SECRET` (the salon's `client`/`webhook_secret` from
+    `SALON_BOTS`), `CLIENT_BOT_WEBHOOK_URL=…/functions/v1/api/bot` in the
     environment (sets the webhook, commands and description; re-run after editing
     them). A project that still runs the old separate `telegram-auth`, `client-bot`
     and `client-invite`: deploy `api`, ship the frontend, re-point the webhook, then
     delete those three (`send-reminders` and its cron job stay as they are).
+    A project that still has `public.salon_bots` (or the old `TELEGRAM_*_BOT_TOKEN`/
+    `CLIENT_BOT_WEBHOOK_SECRET` secrets for salon 1): follow the header of
+    `supabase/export-salon-bots.sql` — **secret first**, then deploy both functions,
+    check sign-in and the webhook, then `truncate public.salon_bots` and `schema.sql`.
     **Set project secrets in the dashboard** (*Edge Functions → Secrets*), never with
     `supabase secrets set` from this repo: the CLI (seen on v2.119, even with
     `--workdir`) also pushes every `[edge_runtime.secrets]` entry from
-    `supabase/config.toml` — the fake test bot tokens, `TELEGRAM_API_URL` (the test
-    stub) and `CLIENT_APP_URL` — overwriting the real ones. `secrets unset` is safe.
+    `supabase/config.toml` — the fake `SALON_BOTS` (every salon would stop signing
+    in), `TELEGRAM_API_URL` (the test stub) and `CLIENT_APP_URL` — overwriting the
+    real ones. `secrets unset` is safe; `add-master --write-secret` sets only
+    `SALON_BOTS`.
 - **`bookings` RLS is asymmetric, unlike every other table**: a signed-in client may
   `insert` a row (`bookings_insert_client`: `status = 'new'`, `source = 'client'`,
   `user_id = auth.uid()`, `day` no earlier than yesterday **in Tbilisi** — the database
@@ -546,8 +568,8 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
 | [src/supabase.js](src/supabase.js) | Shared by both apps. Client (`persistSession: false` — the session never touches `localStorage`) + the session store (`useSession` → `{ status: "unknown" \| "signed" \| "no-telegram" \| "guest" \| "error", error, name, role }`, `signInWithTelegram`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. `initAuth()` signs in from `initData` on every launch. Every export must survive `supabase === null` (env vars unset). |
 | [supabase/functions/api/](supabase/functions/api/index.ts) | **The app's server — one Edge Function `api`**, routed by the last path segment (`index.ts`): `/api/auth`, `/api/bot`, `/api/invite`, one file each; env/clients/CORS/`sameSecret`/`clientBotToken` live in `_shared/server.ts` (Deno-only, shared with `send-reminders`). Deployed with `--no-verify-jwt` because sign-in and Telegram arrive without a JWT — **every route guards itself** (initData signature, the salon's webhook secret, or the caller's JWT checked by the database); a new route must too. Secrets are listed in `_shared/server.ts`. |
-| [api/auth.ts](supabase/functions/api/auth.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Logs no initData, tokens or e-mails. |
-| [api/bot.ts](supabase/functions/api/bot.ts) | Webhook of the **client bot** (`…/api/bot?salon=<slug>`) — Russian info menu: `/start`/`/help` → greeting + inline buttons («Как записаться», «Перенос и отмена», «Напоминания», «Адрес и контакты», «Ваши данные», «Открыть запись» as `web_app`); a button edits the same message, «← Назад» returns. Any other text gets "this bot isn't read, write to @master". Texts, commands and the bot description live in `_shared/client-bot.js` (pure, `e2e/unit/client-bot.spec.js`); `scripts/setup-client-bot.mjs` pushes the description/commands/webhook to Telegram. Also answers master invitations (`/start c_<code>`, «Принять»/«Отклонить» → `bot_client_invite`/`bot_answer_client_invite`); stores nothing else, checks `X-Telegram-Bot-Api-Secret-Token` = `CLIENT_BOT_WEBHOOK_SECRET`, always answers 200. |
+| [api/auth.ts](supabase/functions/api/auth.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `SALON_BOTS` (the salon's `client` + `cabinet` tokens), optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Logs no initData, tokens or e-mails. |
+| [api/bot.ts](supabase/functions/api/bot.ts) | Webhook of the **client bot** (`…/api/bot?salon=<slug>`) — Russian info menu: `/start`/`/help` → greeting + inline buttons («Как записаться», «Перенос и отмена», «Напоминания», «Адрес и контакты», «Ваши данные», «Открыть запись» as `web_app`); a button edits the same message, «← Назад» returns. Any other text gets "this bot isn't read, write to @master". Texts, commands and the bot description live in `_shared/client-bot.js` (pure, `e2e/unit/client-bot.spec.js`); `scripts/setup-client-bot.mjs` pushes the description/commands/webhook to Telegram. Also answers master invitations (`/start c_<code>`, «Принять»/«Отклонить» → `bot_client_invite`/`bot_answer_client_invite`); stores nothing else, checks `X-Telegram-Bot-Api-Secret-Token` = the salon's `webhook_secret` in `SALON_BOTS`, always answers 200. |
 | [api/invite.ts](supabase/functions/api/invite.ts) | «Пригласить в приложение» from the cabinet: `POST { client_id }` with the master's JWT → `create_client_invite` as her (all checks there) → if the card's client is already in the app, `sendMessage` of `inviteOffer` from the salon's client bot (403 → `mark_bot_unreachable`) → `{ code, sent }`. The JWT is checked by the database (the RPC runs as the caller), not by the platform. The answers arrive at `/api/bot`. Logs no token, chat id or code. |
 | [supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts) | **A separate function** (only pg_cron calls it; deploying `api` doesn't touch it), `--no-verify-jwt`, shares `_shared/server.ts` with `api`. Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
 | [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |

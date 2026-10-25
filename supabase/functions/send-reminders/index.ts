@@ -14,7 +14,7 @@
 // напомнят дважды; временная ошибка Telegram возвращает её в очередь.
 //
 // Салоны: claim_due_reminders() отдаёт записи всех салонов с salon_id, и
-// каждый салон пишет СВОИМ ботом клиента (salon_bots, kind = 'client') —
+// каждый салон пишет СВОИМ ботом клиента (секрет SALON_BOTS, client) —
 // в том, где клиент открывает мини-апп; другому боту Telegram и не дал бы
 // писать. Отправка — по салонам, отдельно: 429 одного бота не задерживает
 // напоминания другого. Салон без бота клиента — его записи в очередь.
@@ -61,11 +61,11 @@ async function loadSalons(ids: number[]): Promise<Map<number, Salon>> {
   const out = new Map<number, Salon>();
   const { data, error } = await admin
     .from("salons")
-    .select("id, slug, salon_bots(kind, token)")
+    .select("id, slug")
     .in("id", ids);
   if (error) throw new Error(`salons: ${error.code ?? "error"}`);
   for (const s of data ?? []) {
-    const token = clientBotToken(s);
+    const token = clientBotToken(s.slug);
     if (token) out.set(s.id, { token, slug: s.slug });
   }
   return out;
