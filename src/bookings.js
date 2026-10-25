@@ -15,12 +15,12 @@
 // просто не увидит один тост.
 
 import { useSyncExternalStore } from "react";
-import { isPast, labelForKey, toHHMM, toMinutes } from "./schedule.js";
+import { combineServices, isPast, labelForKey, toHHMM, toMinutes } from "./schedule.js";
 import { NOT_CONFIGURED, currentUserId, supabase, withTimeout } from "./supabase.js";
 
 const SEEN_KEY = "vs_seen_v1";
 const COLS =
-  "id,day,start_min,duration,price,service_id,service_name,comment,status,cancelled_by";
+  "id,day,start_min,duration,price,service_id,service_name,services,comment,status,cancelled_by";
 // Прошлое клиенту нужно только для «Прошедших» — хватит последних.
 const LIMIT = 100;
 const TIMEOUT_MS = 5000;
@@ -53,11 +53,32 @@ export function useMyBookings() {
 /* ─── Нормализация ──────────────────────────────────────────────
    snake_case дальше стора не уходит.                              */
 
+/** Услуги записи — снимок bookings.services, [{ id, name, duration, price }].
+ *  Строка без снимка — одна услуга из её же колонок. */
+function toServices(r) {
+  const list = Array.isArray(r.services) ? r.services : [];
+  if (list.length === 0) {
+    return [{
+      id: r.service_id ?? null,
+      name: r.service_name ?? "",
+      duration: Number(r.duration) || 0,
+      price: Number(r.price) || 0,
+    }];
+  }
+  return list.map((s) => ({
+    id: s?.id ?? null,
+    name: s?.name ?? "",
+    duration: Number(s?.duration) || 0,
+    price: Number(s?.price) || 0,
+  }));
+}
+
 function toBooking(r) {
   return {
     id: r.id,
     serviceId: r.service_id ?? null,
     serviceName: r.service_name ?? "",
+    services: toServices(r),
     day: r.day,
     time: toHHMM(Number(r.start_min) || 0),
     duration: Number(r.duration) || 0,
@@ -87,7 +108,9 @@ const fingerprint = (b) => ({
   t: b.time,
   m: b.duration,
   p: b.price,
-  s: b.serviceId,
+  // У одной услуги — её id, как и до нескольких услуг: старые отпечатки
+  // не примут такую запись за изменённую.
+  s: b.services.map((x) => x.id ?? "").join(",") || b.serviceId,
 });
 
 function readSeen(uid) {
@@ -122,7 +145,7 @@ function diff(prev, rows) {
       // Перенос важнее подтверждения: сохранение в листе мастера делает
       // и то, и другое, а клиенту главное — новое время.
       changes.push({ ...b, kind: "time" });
-    } else if (was.m !== b.duration || was.p !== b.price || was.s !== b.serviceId) {
+    } else if (was.m !== b.duration || was.p !== b.price || was.s !== fingerprint(b).s) {
       changes.push({ ...b, kind: "details" });
     } else if (was.st !== b.status && b.status === "ok") {
       changes.push({ ...b, kind: "ok" });
@@ -237,23 +260,28 @@ function storeRow(uid, row) {
  * Новая заявка. Вызывается из BookingScreen.submit() ДО sendToMaster
  * (openTelegramLink закрывает мини-апп) и ждёт ответа: без строки в
  * базе заявки нет — ни у мастера в кабинете, ни у клиента в «Мои записи».
- * Длительность, цену, название, имя, юзернейм и user_id ставит сервер
- * (guard_client_booking) — поэтому они и не отправляются.
+ * services — одна или несколько услуг подряд (pickServices). Длительность,
+ * цену, название, снимок услуг, имя, юзернейм и user_id ставит сервер
+ * (guard_client_booking): от услуг уходят одни id, остальное — только
+ * чтобы строка прошла not null до триггера.
  * @returns {Promise<{ ok: boolean, error: string|null }>}
  */
-export async function createBooking({ service, day, time, comment }) {
+export async function createBooking({ services, day, time, comment }) {
   const uid = currentUserId();
   if (!supabase || !uid) return { ok: false, error: NOT_CONFIGURED };
+  const total = combineServices(services);
+  if (!total) return { ok: false, error: "Выберите услугу." };
   const res = await withTimeout(
     supabase
       .from("bookings")
       .insert({
         day,
         start_min: toMinutes(time),
-        duration: service.duration,
-        price: service.price,
-        service_id: service.id,
-        service_name: service.name,
+        duration: total.duration,
+        price: total.price,
+        service_id: total.ids[0],
+        service_name: total.name,
+        services: total.ids.map((id) => ({ id })),
         comment,
         status: "new",
         source: "client",

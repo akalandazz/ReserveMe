@@ -25,6 +25,7 @@ test("мини-апп: разово открытое воскресенье до
 
   await page.getByRole("button", { name: "Записаться" }).click();
   await page.getByRole("button", { name: /Маникюр/ }).click();
+  await page.getByRole("button", { name: /^Далее/ }).click();
 
   const rows = page.locator(".day-row");
   // 12:00–15:00, услуга 90 мин, шаг 30: 12:00, 12:30, 13:00, 13:30.

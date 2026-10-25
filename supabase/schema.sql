@@ -331,6 +331,20 @@ alter table public.bookings add column if not exists created_by uuid references 
 -- сбрасывает отметку триггером bookings_reset_reminder: о новом времени
 -- клиенту напомнят заново.
 alter table public.bookings add column if not exists reminded_at timestamptz;
+-- Услуги записи — одна или несколько подряд, снимок из прайса на момент
+-- записи: [{id, name, duration, price}, …] в порядке прайса. duration,
+-- price и service_name строки — их сумма и общая подпись («Маникюр +
+-- Педикюр»), service_id — первая из них. Пишет только сервер
+-- (services_total(), ниже): клиент присылает одни id.
+alter table public.bookings add column if not exists services jsonb not null default '[]';
+-- Записи до нескольких услуг — снимок из их единственной услуги.
+update public.bookings b
+   set services = jsonb_build_array(jsonb_build_object(
+         'id', b.service_id, 'name', b.service_name, 'duration', b.duration, 'price', b.price))
+ where b.services = '[]'::jsonb;
+alter table public.bookings drop constraint if exists bookings_services_check;
+alter table public.bookings add constraint bookings_services_check
+  check (jsonb_typeof(services) = 'array');
 
 -- Проверка статуса вынесена из create table: там её не расширить на
 -- живой базе. Имя — то, что Postgres дал прежней inline-проверке.
@@ -806,37 +820,105 @@ as $$
   end
 $$;
 
--- ─── assert_client_slot(): то, что клиент вправе выбрать ─────────
---  Одно правило для новой заявки (guard_client_booking) и переноса
---  своей записи (reschedule_own_booking) — чтобы они не разошлись.
---  Возвращает услугу: цену и длительность берут из неё, а не от клиента.
---  Исполнять напрямую не может никто (revoke ниже) — только функции-
---  владельцы (security definer), которые её вызывают.
-create or replace function public.assert_client_slot(
-  p_service_id text,
-  p_day        date,
-  p_start_min  integer
-)
-returns public.services
+-- ─── services_total(): услуги одной записи ────────────────────────
+--  Одна или несколько услуг подряд, одним окном: длительность и цена —
+--  сумма, подпись — названия через « + », порядок — порядок прайса (как
+--  клиент их и видит), а не порядок, в котором их отметили. Снимок items
+--  ложится в bookings.services. Одно правило для заявки клиента, его
+--  переноса и записи мастера; та же подпись — combineServices() в
+--  src/schedule.js. Салон — вызывающего, явно: из security definer
+--  функций RLS services не фильтрует.
+do $$
+begin
+  create type public.services_pick as (
+    items    jsonb,
+    label    text,
+    duration integer,
+    price    integer,
+    first_id text
+  );
+exception when duplicate_object then null;
+end
+$$;
+
+create or replace function public.services_total(p_ids text[])
+returns public.services_pick
 language plpgsql
 stable
 security invoker
 set search_path = ''
 as $$
 declare
-  svc       public.services;
+  max_services constant integer := 4; -- MAX_SERVICES в src/schedule.js
+  n integer := coalesce(cardinality(p_ids), 0);
+  r public.services_pick;
+begin
+  if n < 1 or n > max_services then
+    raise exception 'Выберите от 1 до % услуг', max_services;
+  end if;
+  if array_position(p_ids, null) is not null then
+    raise exception 'Услуга не найдена';
+  end if;
+  if (select count(distinct x) from unnest(p_ids) x) <> n then
+    raise exception 'Одна и та же услуга выбрана дважды';
+  end if;
+
+  select jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'duration', s.duration, 'price', s.price)
+                   order by s.sort, s.id),
+         left(string_agg(s.name, ' + ' order by s.sort, s.id), 80),
+         sum(s.duration)::int,
+         sum(s.price)::int,
+         (array_agg(s.id order by s.sort, s.id))[1]
+    into r
+    from public.services s
+   where s.salon_id = public.current_salon_id() and s.id = any(p_ids);
+
+  if coalesce(jsonb_array_length(r.items), 0) <> n then
+    raise exception 'Услуга не найдена';
+  end if;
+  -- Те же границы, что у одной записи (bookings: duration ≤ 600,
+  -- bookings_price_check).
+  if r.duration > 600 then
+    raise exception 'Слишком долго для одной записи — выберите меньше услуг';
+  end if;
+  if r.price > 99999 then
+    raise exception 'Слишком большая сумма для одной записи — выберите меньше услуг';
+  end if;
+  return r;
+end
+$$;
+
+revoke all on function public.services_total(text[]) from public, anon;
+grant execute on function public.services_total(text[]) to authenticated;
+
+-- ─── assert_client_slot(): то, что клиент вправе выбрать ─────────
+--  Одно правило для новой заявки (guard_client_booking) и переноса
+--  своей записи (reschedule_own_booking) — чтобы они не разошлись.
+--  Возвращает услуги (services_total): цену и длительность берут из
+--  прайса, а не от клиента. Исполнять напрямую не может никто (revoke
+--  ниже) — только функции-владельцы (security definer), которые её вызывают.
+drop function if exists public.assert_client_slot(text, date, integer);
+create or replace function public.assert_client_slot(
+  p_service_ids text[],
+  p_day         date,
+  p_start_min   integer
+)
+returns public.services_pick
+language plpgsql
+stable
+security invoker
+set search_path = ''
+as $$
+declare
+  svc       public.services_pick;
   st        public.settings;
   hours     jsonb;
   open_min  integer;
   close_min integer;
   today     date := (now() at time zone 'Asia/Tbilisi')::date;
 begin
-  -- Салон — вызывающего: услуга и правила чужого салона не находятся.
-  select * into svc from public.services s
-   where s.salon_id = public.current_salon_id() and s.id = p_service_id;
-  if not found then
-    raise exception 'Услуга не найдена';
-  end if;
+  -- Салон — вызывающего: услуги и правила чужого салона не находятся.
+  svc := public.services_total(p_service_ids);
 
   select * into st from public.settings s where s.salon_id = public.current_salon_id();
   if not found then
@@ -866,7 +948,7 @@ begin
 end
 $$;
 
-revoke all on function public.assert_client_slot(text, date, integer) from public, anon, authenticated;
+revoke all on function public.assert_client_slot(text[], date, integer) from public, anon, authenticated;
 
 create or replace function public.guard_client_booking()
 returns trigger
@@ -876,7 +958,8 @@ set search_path = ''
 as $$
 declare
   max_per_hour constant integer := 30;
-  svc       public.services;
+  svc       public.services_pick;
+  ids       text[];
   prof      public.profiles;
 begin
   if new.source <> 'client' then
@@ -894,7 +977,15 @@ begin
   -- Салон заявки — салон аккаунта, а не то, что прислал клиент.
   new.salon_id := prof.salon_id;
 
-  svc := public.assert_client_slot(new.service_id, new.day, new.start_min);
+  -- Из присланного берутся только id услуг: services = [{id}, …].
+  -- Бандл до нескольких услуг (лежит в кэше Telegram) шлёт один
+  -- service_id — это та же заявка из одной услуги.
+  if jsonb_typeof(new.services) = 'array' and jsonb_array_length(new.services) > 0 then
+    select array_agg(e ->> 'id') into ids from jsonb_array_elements(new.services) e;
+  else
+    ids := array[new.service_id];
+  end if;
+  svc := public.assert_client_slot(ids, new.day, new.start_min);
 
   -- Лок — чтобы параллельные вставки не прошли потолок все разом,
   -- посчитав одно и то же число. Потолок — свой у каждого салона.
@@ -906,9 +997,11 @@ begin
     raise exception 'Слишком много заявок — попробуйте позже';
   end if;
 
+  new.services        := svc.items;
+  new.service_id      := svc.first_id;
   new.duration        := svc.duration;
   new.price           := svc.price;
-  new.service_name    := svc.name;
+  new.service_name    := svc.label;
   new.status          := 'new';
   new.user_id         := auth.uid();
   new.cancelled_by    := '';
@@ -1330,8 +1423,9 @@ grant execute on function public.cancel_own_booking(bigint) to authenticated;
 --  Новое время проверяет assert_client_slot — то же правило, что у новой
 --  заявки. Перенос возвращает запись в «Заявки» (status 'new'): даже
 --  подтверждённую мастер подтверждает заново, пересечения с чужими
---  заявками, как и у новой заявки, разбирает она. Цена и длительность —
---  текущие из прайса, как у новой заявки.
+--  заявками, как и у новой заявки, разбирает она. Услуги — те же (все из
+--  bookings.services), цена и длительность — текущие из прайса, как у
+--  новой заявки.
 --  Возвращает строку целиком — клиенту можно читать свою строку и так
 --  (bookings_select_own).
 create or replace function public.reschedule_own_booking(
@@ -1347,7 +1441,8 @@ set search_path = ''
 as $$
 declare
   bk  public.bookings;
-  svc public.services;
+  svc public.services_pick;
+  ids text[];
 begin
   if not public.is_telegram_user() then
     raise exception 'Войдите через Telegram' using errcode = '42501';
@@ -1362,18 +1457,28 @@ begin
      or bk.day < (now() at time zone 'Asia/Tbilisi')::date - 1 then
     raise exception 'Эту запись уже нельзя перенести';
   end if;
-  if bk.service_id is null then
+  select array_agg(e ->> 'id') into ids from jsonb_array_elements(bk.services) e;
+  if ids is null then
+    ids := array[bk.service_id];
+  end if;
+  -- Услугу удалили из прайса: id в снимке остался, а в services его нет
+  -- (у одной услуги — и service_id обнулился).
+  if array_position(ids, null) is not null
+     or (select count(*) from public.services s
+          where s.salon_id = bk.salon_id and s.id = any(ids)) <> cardinality(ids) then
     raise exception 'Этой услуги больше нет — отмените запись и запишитесь заново';
   end if;
 
-  svc := public.assert_client_slot(bk.service_id, p_day, p_start_min);
+  svc := public.assert_client_slot(ids, p_day, p_start_min);
 
   update public.bookings b
      set day          = p_day,
          start_min    = p_start_min,
+         services     = svc.items,
+         service_id   = svc.first_id,
          duration     = svc.duration,
          price        = svc.price,
-         service_name = svc.name,
+         service_name = svc.label,
          status       = 'new',
          cancelled_by = '',
          cancel_seen  = false
@@ -1772,11 +1877,15 @@ grant select on public.client_stats to authenticated;
 --  должно считаться занятым (иначе сдвинуть запись на полчаса нельзя).
 --  drop перед create: у функции сменился список аргументов, а create
 --  or replace завёл бы вторую перегрузку рядом со старой.
+--  Услуг может быть несколько — одним окном подряд, длина — их сумма
+--  (как у services_total()).
 drop function if exists public.free_slots(date, text);
+drop function if exists public.free_slot_counts(date, integer, text, bigint);
+drop function if exists public.free_slots(date, text, bigint);
 create or replace function public.free_slots(
-  p_day        date,
-  p_service_id text,
-  p_exclude_id bigint default null
+  p_day         date,
+  p_service_ids text[],
+  p_exclude_id  bigint default null
 )
 returns table (start_min integer)
 language plpgsql
@@ -1805,8 +1914,12 @@ begin
   -- функция не зависит от политик каждой таблицы.
   select st.working_hours, st.slot_step_minutes into wh, step
     from public.settings st where st.salon_id = sid;
-  select sv.duration into dur from public.services sv
-   where sv.salon_id = sid and sv.id = p_service_id;
+  -- Не все услуги нашлись — свободного времени под них нет.
+  select case when count(distinct sv.id) = coalesce(cardinality(p_service_ids), 0)
+              then sum(sv.duration)::int end
+    into dur
+    from public.services sv
+   where sv.salon_id = sid and sv.id = any(p_service_ids);
   if wh is null or dur is null or p_day < local_now::date then
     return;
   end if;
@@ -1845,8 +1958,8 @@ begin
 end
 $$;
 
-revoke all on function public.free_slots(date, text, bigint) from public, anon;
-grant execute on function public.free_slots(date, text, bigint) to authenticated;
+revoke all on function public.free_slots(date, text[], bigint) from public, anon;
+grant execute on function public.free_slots(date, text[], bigint) to authenticated;
 
 -- ─── free_slot_counts(): сколько свободных стартов в каждом дне ────
 --  Для шага «Выберите день» листа записи: список из трёх недель с
@@ -1855,10 +1968,10 @@ grant execute on function public.free_slots(date, text, bigint) to authenticated
 --  на следующем шаге. p_days ограничен, чтобы случайный огромный
 --  диапазон не превратился в тяжёлый запрос.
 create or replace function public.free_slot_counts(
-  p_from       date,
-  p_days       integer,
-  p_service_id text,
-  p_exclude_id bigint default null
+  p_from        date,
+  p_days        integer,
+  p_service_ids text[],
+  p_exclude_id  bigint default null
 )
 returns table (day date, free_count integer)
 language sql
@@ -1868,7 +1981,7 @@ set search_path = ''
 as $$
   select d::date,
          (select count(*)::int
-            from public.free_slots(d::date, p_service_id, p_exclude_id))
+            from public.free_slots(d::date, p_service_ids, p_exclude_id))
   from generate_series(
     p_from,
     p_from + (least(greatest(p_days, 1), 62) - 1),
@@ -1877,8 +1990,8 @@ as $$
   order by 1
 $$;
 
-revoke all on function public.free_slot_counts(date, integer, text, bigint) from public, anon;
-grant execute on function public.free_slot_counts(date, integer, text, bigint) to authenticated;
+revoke all on function public.free_slot_counts(date, integer, text[], bigint) from public, anon;
+grant execute on function public.free_slot_counts(date, integer, text[], bigint) to authenticated;
 
 -- ─── create_master_booking(): мастер записывает клиента сама ──────
 --  Одна транзакция на «клиент + запись»: новый клиент из «Новый
@@ -1891,13 +2004,14 @@ grant execute on function public.free_slot_counts(date, integer, text, bigint) t
 --  Старая шестиаргументная версия удаляется: иначе она осталась бы
 --  перегрузкой без телеграма, канала и комментария.
 drop function if exists public.create_master_booking(bigint, text, text, text, date, integer);
+drop function if exists public.create_master_booking(bigint, text, text, text, text, text, date, integer, text);
 create or replace function public.create_master_booking(
   p_client_id    bigint,
   p_new_name     text,
   p_new_phone    text,
   p_new_telegram text,
   p_new_channel  text,
-  p_service_id   text,
+  p_service_ids  text[],
   p_day          date,
   p_start_min    integer,
   p_comment      text
@@ -1910,7 +2024,7 @@ set search_path = ''
 as $$
 declare
   sid    smallint := public.current_salon_id();
-  svc    public.services;
+  svc    public.services_pick;
   cl     public.clients;
   new_id bigint;
 begin
@@ -1921,15 +2035,12 @@ begin
     raise exception 'Нет доступа' using errcode = '42501';
   end if;
 
-  select * into svc from public.services sv where sv.salon_id = sid and sv.id = p_service_id;
-  if not found then
-    raise exception 'Услуга не найдена — обновите страницу';
-  end if;
+  svc := public.services_total(p_service_ids);
 
   -- Лок дня — свой у каждого салона: у разных мастеров разные окна.
   perform pg_advisory_xact_lock(hashtext('bookings:' || sid || ':' || p_day::text));
   if not exists (
-    select 1 from public.free_slots(p_day, p_service_id) f
+    select 1 from public.free_slots(p_day, p_service_ids) f
     where f.start_min = p_start_min
   ) then
     raise exception 'Это время уже занято — выберите другое';
@@ -1959,10 +2070,10 @@ begin
   -- в «Мои записи» (bookings_select_own). Без него запись, которую мастер
   -- добавила клиенту из мини-аппа, ему не видна.
   insert into public.bookings (
-    salon_id, day, start_min, duration, price, service_id, service_name,
+    salon_id, day, start_min, duration, price, service_id, service_name, services,
     client_name, client_username, comment, status, source, client_id, user_id
   ) values (
-    sid, p_day, p_start_min, svc.duration, svc.price, svc.id, svc.name,
+    sid, p_day, p_start_min, svc.duration, svc.price, svc.first_id, svc.label, svc.items,
     cl.name, cl.telegram_username, left(coalesce(btrim(p_comment), ''), 1000),
     'ok', 'master', cl.id, cl.user_id
   )
@@ -1972,9 +2083,9 @@ begin
 end
 $$;
 
-revoke all on function public.create_master_booking(bigint, text, text, text, text, text, date, integer, text)
+revoke all on function public.create_master_booking(bigint, text, text, text, text, text[], date, integer, text)
   from public, anon;
-grant execute on function public.create_master_booking(bigint, text, text, text, text, text, date, integer, text)
+grant execute on function public.create_master_booking(bigint, text, text, text, text, text[], date, integer, text)
   to authenticated;
 
 -- ─── update_master_booking(): правка записи из листа «Изменить» ───
@@ -1987,10 +2098,12 @@ grant execute on function public.create_master_booking(bigint, text, text, text,
 --  Время перепроверяется, только если поменялись день, старт или
 --  услуга, — и без самой этой записи (p_exclude_id в free_slots):
 --  иначе нельзя было бы сдвинуть запись на полчаса в пределах её же
---  окна. Если услуга та же, цена и длительность остаются прежними —
---  это то, что уже согласовано с клиентом (см. денормализацию выше).
+--  окна. Если услуги те же (тот же набор id), цена и длительность
+--  остаются прежними — это то, что уже согласовано с клиентом (см.
+--  денормализацию выше).
 --  p_client_channel = null — канал клиента не трогаем (форма правки
 --  его не показывает).
+drop function if exists public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text);
 create or replace function public.update_master_booking(
   p_id              bigint,
   p_client_id       bigint,
@@ -1998,7 +2111,7 @@ create or replace function public.update_master_booking(
   p_client_phone    text,
   p_client_telegram text,
   p_client_channel  text,
-  p_service_id      text,
+  p_service_ids     text[],
   p_day             date,
   p_start_min       integer,
   p_comment         text
@@ -2010,13 +2123,14 @@ security invoker
 set search_path = ''
 as $$
 declare
-  sid   smallint := public.current_salon_id();
-  bk    public.bookings;
-  svc   public.services;
-  cl    public.clients;
-  nm    text := coalesce(btrim(p_client_name), '');
-  tgu   text := regexp_replace(coalesce(btrim(p_client_telegram), ''), '^@+', '');
-  moved boolean;
+  sid      smallint := public.current_salon_id();
+  bk       public.bookings;
+  svc      public.services_pick;
+  cl       public.clients;
+  nm       text := coalesce(btrim(p_client_name), '');
+  tgu      text := regexp_replace(coalesce(btrim(p_client_telegram), ''), '^@+', '');
+  same_svc boolean;
+  moved    boolean;
 begin
   if not public.is_master() then
     raise exception 'Нет доступа' using errcode = '42501';
@@ -2026,10 +2140,7 @@ begin
     raise exception 'Укажите имя клиента.';
   end if;
 
-  select * into svc from public.services sv where sv.salon_id = sid and sv.id = p_service_id;
-  if not found then
-    raise exception 'Услуга не найдена — обновите страницу';
-  end if;
+  svc := public.services_total(p_service_ids);
 
   perform pg_advisory_xact_lock(hashtext('bookings:' || sid || ':' || p_day::text));
   select * into bk from public.bookings b where b.salon_id = sid and b.id = p_id for update;
@@ -2042,11 +2153,15 @@ begin
     raise exception 'Запись уже отменена — обновите страницу';
   end if;
 
+  -- Порядок не важен: снимок лежит в порядке прайса на момент записи.
+  same_svc := (select array_agg(e ->> 'id' order by e ->> 'id') from jsonb_array_elements(bk.services) e)
+              is not distinct from
+              (select array_agg(x order by x) from unnest(p_service_ids) x);
   moved := bk.day <> p_day
         or bk.start_min <> p_start_min
-        or bk.service_id is distinct from p_service_id;
+        or not same_svc;
   if moved and not exists (
-    select 1 from public.free_slots(p_day, p_service_id, p_id) f
+    select 1 from public.free_slots(p_day, p_service_ids, p_id) f
     where f.start_min = p_start_min
   ) then
     raise exception 'Это время уже занято — выберите другое';
@@ -2086,10 +2201,11 @@ begin
   update public.bookings b set
     day             = p_day,
     start_min       = p_start_min,
-    service_id      = svc.id,
-    service_name    = case when bk.service_id is distinct from svc.id then svc.name     else b.service_name end,
-    duration        = case when bk.service_id is distinct from svc.id then svc.duration else b.duration     end,
-    price           = case when bk.service_id is distinct from svc.id then svc.price    else b.price        end,
+    service_id      = case when same_svc then b.service_id   else svc.first_id end,
+    services        = case when same_svc then b.services     else svc.items    end,
+    service_name    = case when same_svc then b.service_name else svc.label    end,
+    duration        = case when same_svc then b.duration     else svc.duration end,
+    price           = case when same_svc then b.price        else svc.price    end,
     client_id       = cl.id,
     -- Запись переходит к другому клиенту — и к его аккаунту (или ни к
     -- чьему); тот же клиент — аккаунт не трогаем.
@@ -2102,9 +2218,9 @@ begin
 end
 $$;
 
-revoke all on function public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text)
+revoke all on function public.update_master_booking(bigint, bigint, text, text, text, text, text[], date, integer, text)
   from public, anon;
-grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text)
+grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text[], date, integer, text)
   to authenticated;
 
 -- Разово: записи, которые мастер завела клиентам с аккаунтом до того,

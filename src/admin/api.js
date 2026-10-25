@@ -276,7 +276,7 @@ export function ackCancellation(id) {
  *  clientId — существующий клиент; иначе newClient ({name, phone,
  *  telegram_username, channel}) создаёт нового в той же транзакции
  *  (см. create_master_booking в schema.sql). */
-export async function createMasterBooking({ clientId, newClient, serviceId, day, startMin, comment }) {
+export async function createMasterBooking({ clientId, newClient, serviceIds, day, startMin, comment }) {
   const nc = clientFields(newClient ?? {});
   return clientResult(
     await run(() =>
@@ -286,7 +286,7 @@ export async function createMasterBooking({ clientId, newClient, serviceId, day,
         p_new_phone: nc.phone,
         p_new_telegram: nc.telegram_username,
         p_new_channel: nc.channel ?? "",
-        p_service_id: serviceId,
+        p_service_ids: serviceIds,
         p_day: day,
         p_start_min: startMin,
         p_comment: String(comment ?? "").trim(),
@@ -296,10 +296,10 @@ export async function createMasterBooking({ clientId, newClient, serviceId, day,
   );
 }
 
-/** Правка записи из листа «Изменить»: клиент, услуга, время, комментарий —
+/** Правка записи из листа «Изменить»: клиент, услуги, время, комментарий —
  *  одной транзакцией, и запись становится подтверждённой. clientId null —
  *  завести нового клиента из client (см. update_master_booking). */
-export async function updateMasterBooking(id, { clientId, client, serviceId, day, startMin, comment }) {
+export async function updateMasterBooking(id, { clientId, client, serviceIds, day, startMin, comment }) {
   const c = clientFields(client ?? {});
   return clientResult(
     await run(() =>
@@ -311,7 +311,7 @@ export async function updateMasterBooking(id, { clientId, client, serviceId, day
         p_client_telegram: c.telegram_username,
         // null — канал существующего клиента не трогаем.
         p_client_channel: c.channel ?? null,
-        p_service_id: serviceId,
+        p_service_ids: serviceIds,
         p_day: day,
         p_start_min: startMin,
         p_comment: String(comment ?? "").trim(),
@@ -321,15 +321,16 @@ export async function updateMasterBooking(id, { clientId, client, serviceId, day
   );
 }
 
-/** Свободные старты под услугу на дату — считает сервер (free_slots).
+/** Свободные старты под услуги (одну или несколько подряд, serviceIds) на
+ *  дату — считает сервер (free_slots).
  *  excludeId — переносимая запись: её собственное время свободно.
  *  Только чтение, поэтому без loadAdminData. */
-export async function fetchFreeSlots(day, serviceId, excludeId = null) {
+export async function fetchFreeSlots(day, serviceIds, excludeId = null) {
   if (!supabase) return { ok: false, error: NOT_CONFIGURED, slots: [] };
   try {
     const { data, error } = await supabase.rpc("free_slots", {
       p_day: day,
-      p_service_id: serviceId,
+      p_service_ids: serviceIds,
       p_exclude_id: excludeId,
     });
     if (error) return { ...fail(error), slots: [] };
@@ -341,13 +342,13 @@ export async function fetchFreeSlots(day, serviceId, excludeId = null) {
 
 /** Сколько свободных стартов в каждом из days дней начиная с from — для
  *  шага «Выберите день». counts: Map "ГГГГ-ММ-ДД" → число. */
-export async function fetchFreeSlotCounts(from, days, serviceId, excludeId = null) {
+export async function fetchFreeSlotCounts(from, days, serviceIds, excludeId = null) {
   if (!supabase) return { ok: false, error: NOT_CONFIGURED, counts: new Map() };
   try {
     const { data, error } = await supabase.rpc("free_slot_counts", {
       p_from: from,
       p_days: days,
-      p_service_id: serviceId,
+      p_service_ids: serviceIds,
       p_exclude_id: excludeId,
     });
     if (error) return { ...fail(error), counts: new Map() };

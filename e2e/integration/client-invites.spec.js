@@ -67,7 +67,7 @@ async function masterBooksNewClient(name, telegram) {
       p_new_phone: "",
       p_new_telegram: telegram,
       p_new_channel: "tg",
-      p_service_id: "manicure",
+      p_service_ids: ["manicure"],
       p_day: last.day,
       p_start_min: last.start,
       p_comment: "",

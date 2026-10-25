@@ -165,7 +165,8 @@ Shared as plain imports (both apps use these as-is, no duplication):
 [src/telegram.js](src/telegram.js), [src/money.js](src/money.js), and from [src/schedule.js](src/schedule.js) the
 date/time helpers (`dateKey`, `toMinutes`, `toHHMM`, `labelForKey`) and the
 "which hours does this date have" rule (`hoursForDay`, `toDaysOpen` — see «Days off
-and one-off open days» below) — but **not**
+and one-off open days» below) and the several-services helpers (`MAX_SERVICES`,
+`pickServices`, `combineServices` — see «Several services in one booking») — but **not**
 `buildSlots`/`buildDays`/`serverBusyFor`/`isPast`, which are shaped around the client's
 booking flow, not the cabinet's day/week/month calendar
 ([src/admin/calendar.js](src/admin/calendar.js) has the cabinet's own equivalents).
@@ -367,8 +368,9 @@ seed, kept in the repo because the content is no longer in git otherwise.
   `created_by` = the master. `anon` can do none of this (401). Only the
   master (`is_master()`) reads or changes every booking. Availability comes from the
   `busy_slots` view (day/start/duration only, no names), which bypasses RLS in one
-  small place with a fixed column list. The client row's contents are not trusted: the `guard_client_booking()` trigger overwrites `duration`/`price`/
-  `service_name` from `services`, bounds `day` to the booking window, rejects a start
+  small place with a fixed column list. The client row's contents are not trusted: the `guard_client_booking()` trigger takes only the ids from `services` (or the
+  lone `service_id` of an older bundle), overwrites `services`/`service_id`/`duration`/`price`/
+  `service_name` from `services_total()`, bounds `day` to the booking window, rejects a start
   that isn't a real slot (day off, outside working hours, off the grid — the grid
   must stay in step with `buildSlots` in `schedule.js`), caps client requests at
   `max_per_hour` salon-wide (anyone can sign up, so an account is no per-person
@@ -439,7 +441,7 @@ seed, kept in the repo because the content is no longer in git otherwise.
   «Заявки»). It copies the client's `user_id` onto the booking (and
   `update_master_booking` does when it switches the client) — that is what makes a
   booking the master adds for a Mini App client show up in their «Мои записи», and
-  what makes cancelling it a soft `cancelled`, not a delete. Start times come from `free_slots(day, service_id, exclude_id)` on the
+  what makes cancelling it a soft `cancelled`, not a delete. Start times come from `free_slots(day, service_ids, exclude_id)` on the
   server (the date's hours via `hours_for_day`, overlaps with bookings and blocked slots, not in
   the past, on the `slot_step_minutes` grid), and the per-day counts in the sheet's
   «Выберите день» step come from `free_slot_counts()`, which wraps the same function.
@@ -449,8 +451,9 @@ seed, kept in the repo because the content is no longer in git otherwise.
   «Изменить» when they have an upcoming booking) goes through `update_master_booking()`:
   client data, a switch to another or a new client, service, day/time and comment in
   one transaction, and saving **always confirms** (`status → 'ok'`). Time is re-checked
-  only when day, start or service changed, via `free_slots(…, p_id)` so the booking
-  doesn't collide with itself. Same service keeps the row's agreed `price`/`duration`.
+  only when day, start or the set of services changed, via `free_slots(…, p_id)` so the booking
+  doesn't collide with itself. The same set of services (any order) keeps the row's
+  agreed `price`/`duration`/`services`.
   «Подтвердить» in «Заявки» goes through `approve_booking()`, never a bare
   `update status = 'ok'`: two client requests for one slot are normal, two confirmed
   bookings are not. The `bookings_no_overlap_ok` exclusion constraint (`btree_gist`)
@@ -519,10 +522,13 @@ seed, kept in the repo because the content is no longer in git otherwise.
 **Client**: screens are a stack in `useState` — no router. The booking steps
 (`book:service` → `book:date` → `book:time` → `book:confirm`) are entries in that
 stack, which is what makes BackButton walk the flow backwards for free. Going back
-preserves the draft; only `home()` clears it. Changing the service resets
-`draft.time`, because a slot valid for a 90-minute service may not exist for a
-120-minute one. «Перенести» in «Мои записи» reuses the same steps from `book:date`
-with `draft.reschedule = { id, day, time, duration }` (`startReschedule` in `App.jsx`);
+preserves the draft; only `home()` clears it. `book:service` toggles services
+(`draft.services`, kept in price-list order by `pickServices`) and moves on with the
+footer «Далее»; picking one in «Услуги и цены» opens that step with it already ticked.
+Changing the services resets `draft.time`, because a slot valid for a 90-minute
+service may not exist for a 120-minute one. «Перенести» in «Мои записи» reuses the same
+steps from `book:date` with the booking's services and
+`draft.reschedule = { id, day, time, duration }` (`startReschedule` in `App.jsx`);
 `BookingScreen` then hides the booking's own window from `busy` (`withoutOwn`), calls
 `rescheduleMyBooking` instead of `createBooking` — still **before** `sendToMaster` — and
 sends `rescheduleMessage`. Starting a new booking clears `draft.reschedule`.
@@ -554,14 +560,36 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [src/admin/calendar.js](src/admin/calendar.js) | Cabinet's pure calendar math — month/week/day derivations from `bookings`/`blocked_slots`/`working_hours`. No React. Parallel to `schedule.js` but shaped for browsing any date, not just the client's next N bookable days. |
 | [src/admin/components/](src/admin/components/) | One component per section of the cabinet page, plus `SignIn.jsx` and `Icons.jsx`. `CalendarSection.jsx` owns the month/week/day toggle and the selected date; `MonthGrid.jsx` wraps `react-day-picker` (custom `DayButton`, no default stylesheet — see `admin.css`); `WeekGrid.jsx` and `DayPanel.jsx` are hand-built, not calendar-library shaped. `SalonSection.jsx` («Настройки») edits the rest of `settings` in three groups — profile, address, booking rules — each with its own draft and «Сохранить» (like `ServicesSection`), while `ScheduleSection.jsx` saves working hours and reminders on every click. In `ServicesSection.jsx` the draft's array order **is** the service order: the drag handle — the only reorder control, there are no arrows — (`@dnd-kit/sortable`, one `PointerSensor` for mouse and finger — native HTML5 drag never fires on touch; the handle has `touch-action: none`, so only it starts a drag) reorder the draft, and «Сохранить» writes `services.sort = index + 1`, which both apps already `order by sort, id`. `time_of_day` and `info_blocks` are still SQL-only. `BookingSheet.jsx` is the one bottom sheet for bookings and clients, in three modes: `new` (the 4-step «Записать» wizard — client → service → day → time → check, from the Расписание header or a client card), `edit` (an existing booking or request, opened on the check step) and `client` («Новый клиент», or «Изменить» on a client with no upcoming booking). It shows errors inline, because the cabinet's toast sits in page flow under the backdrop, and reports back through `onDone({ toast, day?, view?, clientId? })`. |
 
-A client booking in the store is `{ id, serviceId, serviceName, day, time, duration,
-price, comment, status, cancelledBy }` — camelCase, normalized from the row in
+A client booking in the store is `{ id, serviceId, serviceName, services, day, time,
+duration, price, comment, status, cancelledBy }` — camelCase, normalized from the row in
 `bookings.js` (`toBooking`). `duration` and `price` are denormalized on the row on
 purpose: the master edits prices in the cabinet, and an old booking must keep showing
 what was agreed (`duration`, `price`, `service_name` columns), plus `service_id` can go
 `null` (`on delete set null`) if the service is deleted outright — the cabinet's service
 editor deletes for real, unlike the old admin's `active = false` hide. The old
 `bookings.client_token` column is dropped by `schema.sql`.
+
+### Several services in one booking
+
+A booking is **one row however many services it has** (1–`MAX_SERVICES` = 4), done
+back to back in one window. `bookings.services` is the server-written snapshot
+`[{ id, name, duration, price }]` in price-list order (`services.sort`, not tap order);
+the old columns are its totals — `duration`/`price` the sums, `service_name` the
+names joined by « + », `service_id` the first service. Everything that reads one row
+(`busy_slots`, `bookings_no_overlap_ok`, reminders, toasts, «Заявки», the calendar,
+`client_stats`) therefore works unchanged. One rule, written twice and changed
+together: `services_total(ids)` in `schema.sql` (used by `assert_client_slot`,
+`create_master_booking`, `update_master_booking`; `free_slots` sums the same way) and
+`combineServices(pickServices(services, ids))` in `schedule.js` (client steps, the
+cabinet sheet). The client sends only `services: [{ id }]` — the guard rewrites the
+rest. Rejections: a duplicate id, more than 4, a missing/foreign id («Услуга не
+найдена»), a total over 600 min or 99 999 ₽. A row that predates the column was
+backfilled with its single service; `toBooking` also falls back to that shape. In the
+cabinet sheet `st.s` is the ids joined by commas (`"manicure,pedicure"`, `""` = none),
+so comparisons and request keys stay plain strings; the service step ticks into
+`st.sp` and «Дальше» commits it. Changing RPC arguments means the cabinet and
+`schema.sql` must ship together: deploy `schema.sql` first (the old
+`free_slots(date, text, …)` etc. are dropped).
 
 ## Conventions
 

@@ -21,7 +21,8 @@ const HOME = "menu";
 // reschedule — перенос своей записи ({ id, day, time, duration }), null —
 // новая заявка. Сбрасывается вместе со всем черновиком (home()) и при
 // старте новой записи.
-const EMPTY_DRAFT = { service: null, dateKey: null, time: null, comment: "", reschedule: null };
+// services — одна или несколько услуг в порядке прайса (pickServices).
+const EMPTY_DRAFT = { services: [], dateKey: null, time: null, comment: "", reschedule: null };
 // Период опроса — VITE_CLIENT_POLL_SECONDS (.env.example), по умолчанию 20 с.
 const POLL_MS = (Number(import.meta.env.VITE_CLIENT_POLL_SECONDS) || 20) * 1000;
 
@@ -141,27 +142,27 @@ function App() {
   // 3) Прячем кнопку при размонтировании — мини-апп может переоткрыться.
   useEffect(() => () => window.Telegram?.WebApp?.BackButton?.hide(), []);
 
+  // Из прайса — с этой услугой уже отмеченной: к ней можно добавить ещё.
   const startBooking = useCallback(
     (service) => {
       if (service) {
-        // смена услуги обнуляет время: слот на 90 мин может не существовать для 120
-        setDraft((d) => ({ ...d, service, time: null, reschedule: null }));
-        push("book:date");
+        // смена услуг обнуляет время: слот на 90 мин может не существовать для 120
+        setDraft((d) => ({ ...d, services: [service], time: null, reschedule: null }));
       } else {
         setDraft((d) => ({ ...d, reschedule: null }));
-        push("book:service");
       }
+      push("book:service");
     },
     [push]
   );
 
-  // «Перенести» в «Мои записи»: те же шаги, начиная с дня, с той же
-  // услугой. Сервер (reschedule_own_booking) сам проверит, что запись своя.
+  // «Перенести» в «Мои записи»: те же шаги, начиная с дня, с теми же
+  // услугами. Сервер (reschedule_own_booking) сам проверит, что запись своя.
   const startReschedule = useCallback(
-    (booking, service) => {
+    (booking, services) => {
       setDraft({
         ...EMPTY_DRAFT,
-        service,
+        services,
         dateKey: booking.day,
         comment: booking.comment,
         reschedule: {

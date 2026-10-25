@@ -36,6 +36,7 @@ async function stubChat(page) {
 async function reachConfirm(page) {
   await page.getByRole("button", { name: "Записаться" }).click();
   await page.getByRole("button", { name: /Маникюр/ }).click();
+  await page.getByRole("button", { name: /^Далее/ }).click();
   await page.locator(".day-row:not([disabled])").first().click();
   await page.locator(".slot").first().click();
   await expect(page.getByRole("heading", { name: "Подтвердите заявку" })).toBeVisible();
