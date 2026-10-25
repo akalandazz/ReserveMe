@@ -208,6 +208,7 @@ test.describe("клиент: эндпоинты мастера — 403", () => {
       },
     ],
     ["delete_client", { p_id: bBooking.client_id }],
+    ["create_client_invite", { p_client_id: bBooking.client_id }],
   ];
 
   test("функции мастера", async () => {
@@ -219,7 +220,7 @@ test.describe("клиент: эндпоинты мастера — 403", () => {
   });
 
   test("таблицы мастера: чтение пустое, запись — 403", async () => {
-    for (const t of ["clients", "client_stats", "client_comments"]) {
+    for (const t of ["clients", "client_stats", "client_comments", "client_invites"]) {
       expect((await api(`/rest/v1/${t}?select=*`, { token: A.token })).data, t).toEqual([]);
     }
     const svc = await api("/rest/v1/services", {

@@ -54,6 +54,17 @@ function fail(message) {
 const ok = (message) => console.log(`✓ ${message}`);
 const note = (message) => console.log(`  ${message}`);
 
+/** Логин бота по токену (getMe) или "": без него мастер укажет логин сама. */
+async function botUsername(token) {
+  try {
+    const res = await fetch(`${API_URL}/bot${token}/getMe`);
+    const json = await res.json();
+    return json.ok && typeof json.result?.username === "string" ? json.result.username : "";
+  } catch {
+    return "";
+  }
+}
+
 main().catch((e) => {
   console.error(`✗ ${e instanceof Fail ? e.message : e?.stack ?? e}`);
   process.exitCode = 1;
@@ -155,11 +166,19 @@ async function main() {
   // ─── 3. Настройки ───────────────────────────────────────────────
   const hasSettings = await must(
     "settings",
-    db.from("settings").select("salon_id").eq("salon_id", salon.id).maybeSingle()
+    db.from("settings").select("salon_id, client_bot_username").eq("salon_id", salon.id).maybeSingle()
   );
+  // Логин бота клиента (settings.client_bot_username) — для ссылки-
+  // приглашения t.me/<бот>?start=c_<код>. Только если его ещё нет.
+  const settings = { ...plan.settings };
+  if (!hasSettings?.client_bot_username) {
+    const botName = await botUsername(plan.bots.client);
+    if (botName) settings.client_bot_username = botName;
+    else note("логин бота клиента не получен (getMe) — мастер укажет его в «Настройках»");
+  }
   if (hasSettings) {
-    await must("settings: обновление", db.from("settings").update(plan.settings).eq("salon_id", salon.id));
-    ok(`настройки обновлены: ${Object.keys(plan.settings).join(", ")}`);
+    await must("settings: обновление", db.from("settings").update(settings).eq("salon_id", salon.id));
+    ok(`настройки обновлены: ${Object.keys(settings).join(", ")}`);
   } else {
     await must(
       "settings: создание",
@@ -167,10 +186,10 @@ async function main() {
         salon_id: salon.id,
         working_hours: DEFAULT_WORKING_HOURS,
         time_of_day: DEFAULT_TIME_OF_DAY,
-        ...plan.settings,
+        ...settings,
       })
     );
-    ok(`настройки созданы${plan.settings.working_hours ? "" : " (график по умолчанию: пн–пт 10–19)"}`);
+    ok(`настройки созданы${settings.working_hours ? "" : " (график по умолчанию: пн–пт 10–19)"}`);
   }
 
   // ─── 4. Услуги ──────────────────────────────────────────────────

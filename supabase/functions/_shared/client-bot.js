@@ -189,6 +189,143 @@ function notReadMessage({ salon, appUrl }) {
   return { text, reply_markup: menuKeyboard(appUrl) };
 }
 
+/* ─── Приглашение мастера ─────────────────────────────────────────
+   Мастер завела клиента сама; чтобы её записи появились у клиента в
+   «Мои записи», он принимает приглашение кнопкой. Сюда оно приходит
+   двумя путями: ссылкой t.me/<бот>?start=c_<код> (клиент жмёт
+   «Запустить» — бот получает "/start c_<код>") или сообщением, которое
+   бот шлёт сам (Edge Function client-invite, тот же inviteOffer). Код
+   проверяет база (bot_client_invite / bot_answer_client_invite в
+   schema.sql); здесь — только разбор апдейта и тексты.                */
+
+const INVITE_START = /^\/start(?:@\S+)?\s+c_([0-9a-f]{32})$/;
+const INVITE_ANSWER = /^inv:([ad]):([0-9a-f]{32})$/;
+const MONTHS = [
+  "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря",
+];
+
+/** "2026-10-26", 600 → "26 октября, 10:00". */
+function when(day, startMin) {
+  const [, month, date] = String(day).split("-").map(Number);
+  const m = Number(startMin) || 0;
+  const hhmm = `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  return `${date} ${MONTHS[month - 1] ?? ""}, ${hhmm}`;
+}
+
+/**
+ * Апдейт про приглашение или null:
+ *   { kind: "start", code, telegramId, chatId } — "/start c_<код>";
+ *   { kind: "answer", accept, code, telegramId, chatId, messageId, callbackId } — кнопка.
+ * Только личный чат; telegramId — from.id, кто именно ответил.
+ */
+export function inviteUpdate(update) {
+  const cq = update?.callback_query;
+  if (cq) {
+    const m = INVITE_ANSWER.exec(typeof cq.data === "string" ? cq.data : "");
+    const msg = cq.message;
+    if (!m || !msg?.chat || msg.chat.type !== "private" || !cq.from?.id) return null;
+    return {
+      kind: "answer",
+      accept: m[1] === "a",
+      code: m[2],
+      telegramId: cq.from.id,
+      chatId: msg.chat.id,
+      messageId: msg.message_id,
+      callbackId: cq.id,
+    };
+  }
+  const msg = update?.message;
+  if (!msg?.chat || msg.chat.type !== "private" || !msg.from?.id) return null;
+  const m = INVITE_START.exec(typeof msg.text === "string" ? msg.text.trim() : "");
+  return m ? { kind: "start", code: m[1], telegramId: msg.from.id, chatId: msg.chat.id } : null;
+}
+
+/**
+ * Само приглашение: кто записал, на что, и кнопки «Принять» / «Отклонить».
+ * invite — строка bot_client_invite: { master_name, client_name, bookings }.
+ */
+export function inviteOffer(invite, code) {
+  const name = clean(invite?.master_name) || "Мастер";
+  const client = clean(invite?.client_name);
+  const bookings = Array.isArray(invite?.bookings) ? invite.bookings : [];
+  const lines = [
+    client ? `Здравствуйте, ${client}! 🌸` : "Здравствуйте! 🌸",
+    "",
+    `${name} записала вас и приглашает в приложение: там видно ваши записи, их можно перенести или отменить, а бот напомнит о визите.`,
+  ];
+  if (bookings.length) {
+    lines.push("", ...bookings.map((b) => `📅 ${when(b.day, b.start_min)} — ${clean(b.service_name)}`));
+  }
+  lines.push("", "Это вы? Нажмите «Принять» — записи появятся в приложении, в «Мои записи».");
+  return {
+    text: lines.join("\n"),
+    reply_markup: {
+      inline_keyboard: [[btn("✅ Принять", `inv:a:${code}`), btn("✖️ Отклонить", `inv:d:${code}`)]],
+    },
+  };
+}
+
+/**
+ * Итог приглашения. result — ответ bot_answer_client_invite ('linked',
+ * 'pending', 'already', 'declined', 'other_salon', 'invalid').
+ */
+export function inviteResult(result, { appUrl = "" } = {}) {
+  const app = appButton(appUrl, "Мои записи");
+  const withApp = (text) => (app ? { text, reply_markup: { inline_keyboard: [app] } } : { text });
+  if (result === "linked" || result === "already") {
+    return withApp("Готово! ✅ Ваши записи — в приложении, в «Мои записи».");
+  }
+  if (result === "pending") {
+    return withApp("Готово! ✅ Откройте приложение — ваши записи появятся в «Мои записи».");
+  }
+  if (result === "declined") {
+    return { text: "Хорошо, приглашение отклонено. Если это ошибка — напишите мастеру." };
+  }
+  if (result === "other_salon") {
+    return {
+      text: "Этот аккаунт Telegram уже записан к другому мастеру — принять приглашение не получится. Напишите мастеру.",
+    };
+  }
+  return {
+    text: "Приглашение недействительно: его уже использовали, отклонили или мастер отправила новое. Попросите мастера прислать ещё раз.",
+  };
+}
+
+/**
+ * Вызовы Bot API на "/start c_<код>". view — строка bot_client_invite
+ * ({ status, … }) или null, если база не ответила.
+ */
+export function inviteStartReplies(intent, view, { appUrl = "" } = {}) {
+  const send = (m) => [{ method: "sendMessage", body: { chat_id: intent.chatId, ...m } }];
+  if (!view) return send({ text: "Не получилось открыть приглашение — попробуйте ещё раз чуть позже." });
+  if (view.status === "open") return send(inviteOffer(view, intent.code));
+  return send(inviteResult(view.status === "accepted" ? "already" : "invalid", { appUrl }));
+}
+
+/**
+ * Вызовы Bot API на «Принять» / «Отклонить»: сообщение-приглашение
+ * заменяется итогом. result = null — база не ответила: кнопки остаются,
+ * клиент нажмёт ещё раз.
+ */
+export function inviteAnswerReplies(intent, result, { appUrl = "" } = {}) {
+  if (!result) {
+    return [
+      {
+        method: "answerCallbackQuery",
+        body: { callback_query_id: intent.callbackId, text: "Не получилось — попробуйте ещё раз.", show_alert: true },
+      },
+    ];
+  }
+  return [
+    { method: "answerCallbackQuery", body: { callback_query_id: intent.callbackId } },
+    {
+      method: "editMessageText",
+      body: { chat_id: intent.chatId, message_id: intent.messageId, ...inviteResult(result, { appUrl }) },
+    },
+  ];
+}
+
 const COMMAND_SECTIONS = { book: "book", contacts: "contacts", privacy: "privacy" };
 
 /**

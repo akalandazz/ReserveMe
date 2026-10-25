@@ -1,7 +1,16 @@
 import { Fragment, useMemo, useState } from "react";
 import { formatPrice } from "../../money.js";
 import { labelForKey, toHHMM } from "../../schedule.js";
-import { CHANNELS, addClientComment, deleteClient, deleteClientComment } from "../api.js";
+import { openChatWith } from "../../telegram.js";
+import {
+  CHANNELS,
+  addClientComment,
+  botInviteLink,
+  deleteClient,
+  deleteClientComment,
+  sendClientInvite,
+} from "../api.js";
+import { inviteMessage } from "../messages.js";
 import {
   commentDate,
   isBookingPast,
@@ -47,6 +56,20 @@ function contactLink(c) {
   return { href: `tel:${phone}`, label: "Позвонить", icon: "phone" };
 }
 
+/**
+ * Карточка и мини-апп (client_stats): записи видны клиенту в «Мои записи»
+ * только у карточки «в приложении». Иначе — приглашение (ждёт клиента,
+ * принято в боте — ждём первого входа, отклонено, истекло) или ничего.
+ */
+function appStatus(c) {
+  if (c.in_app) return "в приложении";
+  if (c.invite_status === "pending") return "ждёт подтверждения клиента";
+  if (c.invite_status === "accepted") return "клиент принял — ждём входа в приложение";
+  if (c.invite_status === "declined") return "клиент отклонил приглашение";
+  if (c.invite_status === "expired") return "приглашение истекло";
+  return "нет в приложении";
+}
+
 /** Все ещё не прошедшие записи и заявки клиента, ближайшие сверху. */
 function upcomingBookingsFor(bookings, clientId) {
   return bookings
@@ -72,6 +95,7 @@ export default function ClientsSection({
   clients,
   comments,
   bookings,
+  settings,
   selectedKey,
   focus,
   busy,
@@ -178,6 +202,38 @@ export default function ClientsSection({
           ? `${c.name} удалена вместе со всеми записями.`
           : "Клиент удалён вместе со всеми записями."
       );
+    });
+  };
+
+  // Приглашение в приложение (client-invite): клиенту, который уже там,
+  // бот пишет сам; остальным — чат мастера с клиентом и ссылкой на бота
+  // (бот первым не напишет). Код уже в базе до openChatWith — тот обычно
+  // закрывает кабинет.
+  const invite = (c) => {
+    busyThen(`invite-${c.id}`, 250, async () => {
+      const res = await sendClientInvite(c.id);
+      if (!res.ok) {
+        onError(res.error);
+        return;
+      }
+      if (res.sent) {
+        onToast("Бот отправил клиенту приглашение — ждём ответа.");
+        return;
+      }
+      if (!settings?.clientBotUsername) {
+        onError("Бот не может написать клиенту первым — укажите логин бота в «Настройках» и отправьте ссылку.");
+        return;
+      }
+      openChatWith(
+        c.telegram_username,
+        inviteMessage({
+          clientName: c.name,
+          masterName: settings?.masterName,
+          link: botInviteLink(settings.clientBotUsername, res.code),
+          bookings: upcomingBookingsFor(bookings, c.id),
+        })
+      );
+      onToast("Приглашение готово — отправьте его клиенту в открывшемся чате.");
     });
   };
 
@@ -323,6 +379,7 @@ export default function ClientsSection({
                   .join(" · ");
             const subtitle = [
               handle,
+              (c.in_app || c.invite_status === "pending") && appStatus(c),
               `${c.visit_count} ${pluralVisits(c.visit_count)}`,
               mode === "day"
                 ? c.dayBookings
@@ -362,7 +419,50 @@ export default function ClientsSection({
                       <span>
                         Телефон: <span className="client-fact">{c.phone || "—"}</span>
                       </span>
+                      <span>
+                        Приложение: <span className="client-fact">{appStatus(c)}</span>
+                      </span>
                     </div>
+
+                    {!c.in_app && (
+                      <div className="client-app">
+                        {c.invite_status === "accepted" ? (
+                          <p className="client-app-note">
+                            Клиент принял приглашение — записи появятся у него, как только он
+                            откроет приложение.
+                          </p>
+                        ) : !c.telegram_username ? (
+                          <p className="client-app-note">
+                            Чтобы пригласить клиента в приложение, укажите его Telegram в «Изменить».
+                          </p>
+                        ) : !c.app_match && !settings?.clientBotUsername ? (
+                          <p className="client-app-note">
+                            Чтобы приглашать клиентов, укажите логин бота для клиентов в «Настройках».
+                          </p>
+                        ) : (
+                          <>
+                            <button
+                              className="btn-outline client-app-btn"
+                              type="button"
+                              disabled={!!busy}
+                              onClick={() => invite(c)}
+                            >
+                              {busy === `invite-${c.id}` && (
+                                <span className="btn-spinner" aria-hidden="true" />
+                              )}
+                              {c.invite_status === "pending"
+                                ? "Отправить приглашение ещё раз"
+                                : "Пригласить в приложение"}
+                            </button>
+                            <p className="client-app-note">
+                              {c.app_match
+                                ? "Клиент уже в приложении — бот пришлёт ему приглашение с кнопками «Принять» и «Отклонить»."
+                                : "Откроется чат с клиентом и ссылкой на бота — бот пришлёт приглашение с кнопками «Принять» и «Отклонить»."}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    )}
 
                     <div className="client-actions">
                       <button className="btn-save" type="button" onClick={() => onBook(c.id)}>

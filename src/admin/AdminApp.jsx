@@ -358,6 +358,7 @@ export default function AdminApp() {
                 clients={data.clients}
                 comments={data.comments}
                 bookings={data.bookings}
+                settings={data.settings}
                 selectedKey={selectedKey}
                 focus={clientFocus}
                 busy={busy}

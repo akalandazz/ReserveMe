@@ -156,7 +156,7 @@ Consequences that constrain every change here:
 |---|---|---|
 | Auth | Telegram `initData` → `telegram-auth` → Supabase session, **in memory only**; role `user` | the same, through the cabinet bot; data only for role `master` |
 | Reads | `settings`, `services`, `days_off`, `days_open`, `info_blocks`, `busy_slots` (own salon, signed in), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only, own salon) |
-| Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)`, `set_reminders(enabled)` (its own `profiles.reminders` only) — never `profiles` directly | everything, incl. its own confirmed bookings via `create_master_booking()` — never `profiles` |
+| Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)`, `set_reminders(enabled)` (its own `profiles.reminders` only) — never `profiles` directly; invitations are answered in the bot, not the app | everything, incl. its own confirmed bookings via `create_master_booking()`, invitations via the `client-invite` function — never `profiles` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
 
@@ -399,6 +399,34 @@ seed, kept in the repo because the content is no longer in git otherwise.
   a non-empty client name, so a later request can't undo the master's rename.
   Comments live in `client_comments` (the old `clients.note` and `clients.email`
   columns are dropped).
+- **A card the master creates is invisible to the client until it has an account**
+  (`clients.user_id` → every booking's `user_id`; `client_stats.in_app`). All in
+  `schema.sql` («Карточка клиента и его аккаунт мини-аппа»), tested end to end in
+  `e2e/integration/client-invites.spec.js`:
+  1. **The account exists and has no card** — the `clients_link_account` trigger links
+     a card the **master** saves (insert or username change) with a `@username` that
+     exactly one account of her salon has. The one place a username links anything,
+     and only on the master's save, never on the client's side (the takeover above).
+  2. **Otherwise the client agrees in the bot** — «Пригласить в приложение» → Edge
+     Function `client-invite` (master's JWT → `create_client_invite`; a new code voids
+     the old). Client already in the app (`client_stats.app_match`,
+     `bot_invite_recipient`) → the **client bot sends the invitation itself**
+     (`inviteOffer`: «✅ Принять» / «✖️ Отклонить», callback `inv:a|d:<code>`).
+     Otherwise `sent: false` → the cabinet opens the master's chat with
+     `t.me/<client_bot_username>?start=c_<code>` (a bot can't write first, nor by
+     username); «Запустить» → `client-bot` gets `/start c_<code>` and sends the same
+     invitation. Buttons → `bot_answer_client_invite` (service role only, salon of the
+     bot that got the update, `from.id`): `linked` (account exists — merged via
+     `attach_client_account`), `pending` (no account yet — stored as
+     `client_invites.telegram_id`; the card becomes theirs on the first sign-in, after
+     the consent screen, via the `profiles_claim_invites` trigger), `declined`,
+     `other_salon`, `invalid`. Card statuses (`invite_status`): `pending` «ждёт
+     подтверждения клиента», `accepted` «принял — ждём входа», `declined`, `expired`.
+     Bookings stay normal `ok` bookings throughout. Codes: single-use, per salon,
+     30 days; a master's account can't accept one.
+  `settings.client_bot_username` is filled by `npm run add-master` (`getMe`) and
+  editable in «Настройки» → профиль. Pure texts/parsing live in
+  `_shared/client-bot.js` (`inviteUpdate`, `inviteOffer`, …, unit-tested).
   `client_stats` derives `visit_count`/`last_visit_at` from **past confirmed**
   bookings and `favorite_service_id` from all confirmed ones (`status = 'ok'` — an
   unhandled request is neither a visit nor a choice); it must stay
@@ -511,6 +539,7 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [supabase/functions/telegram-auth/](supabase/functions/telegram-auth/index.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Deployed with `--no-verify-jwt`. Logs no initData, tokens or e-mails. |
 | [supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts) | Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
 | [supabase/functions/client-bot/](supabase/functions/client-bot/index.ts) | Webhook of the **client bot** — Russian info menu: `/start`/`/help` → greeting + inline buttons («Как записаться», «Перенос и отмена», «Напоминания», «Адрес и контакты», «Ваши данные», «Открыть запись» as `web_app`); a button edits the same message, «← Назад» returns. Any other text gets "this bot isn't read, write to @master". Texts, commands and the bot description live in `_shared/client-bot.js` (pure, `e2e/unit/client-bot.spec.js`); `scripts/setup-client-bot.mjs` pushes the description/commands/webhook to Telegram. Reads `settings` with the anon key, stores nothing, checks `X-Telegram-Bot-Api-Secret-Token` = `CLIENT_BOT_WEBHOOK_SECRET`, always answers 200. |
+| [supabase/functions/client-invite/](supabase/functions/client-invite/index.ts) | «Пригласить в приложение» from the cabinet: `POST { client_id }` with the master's JWT → `create_client_invite` as her (all checks there) → if the card's client is already in the app, `sendMessage` of `inviteOffer` from the salon's client bot (403 → `mark_bot_unreachable`) → `{ code, sent }`. Deployed **with** JWT verification. The answers arrive at `client-bot`. Logs no token, chat id or code. |
 | [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |

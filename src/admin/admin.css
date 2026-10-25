@@ -1811,6 +1811,26 @@ input:focus {
   color: var(--ink);
 }
 
+/* Карточка без аккаунта мини-аппа: пригласить или привязать. */
+.client-app {
+  margin-top: 12px;
+}
+
+.client-app-btn {
+  width: 100%;
+}
+
+.client-app-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.client-app-btn + .client-app-note {
+  margin-top: 6px;
+}
+
 .client-actions {
   display: flex;
   flex-wrap: wrap;

@@ -115,6 +115,7 @@ const SETTINGS_COLUMNS = {
   slotStepMinutes: "slot_step_minutes",
   bookingDaysAhead: "booking_days_ahead",
   minLeadMinutes: "min_lead_minutes",
+  clientBotUsername: "client_bot_username",
 };
 
 // settings_slot_step_minutes_check в schema.sql.
@@ -128,7 +129,8 @@ export function normalizeSettingsFields(patch) {
   for (const [key, value] of Object.entries(patch)) {
     if (!(key in SETTINGS_COLUMNS)) continue;
     if (NUMERIC_SETTINGS.has(key)) out[key] = Number(value);
-    else if (key === "masterUsername") out[key] = String(value ?? "").trim().replace(/^@+/, "");
+    else if (key === "masterUsername" || key === "clientBotUsername")
+      out[key] = String(value ?? "").trim().replace(/^@+/, "");
     else out[key] = String(value ?? "").trim();
   }
   return out;
@@ -143,6 +145,8 @@ export function validateSettingsFields(s) {
   // Клиент открывает ссылку через openLink — только https, без javascript: и т. п.
   if ("mapUrl" in s && s.mapUrl && !/^https:\/\/\S+$/i.test(s.mapUrl))
     return "Ссылка на карту должна начинаться с https://";
+  if ("clientBotUsername" in s && !/^[A-Za-z0-9_]{0,32}$/.test(s.clientBotUsername))
+    return "Логин бота — латиница, цифры и «_», до 32 символов";
   if ("slotStepMinutes" in s && !SLOT_STEPS.includes(s.slotStepMinutes))
     return `Шаг записи — одно из: ${SLOT_STEPS.join(", ")} минут`;
   if (
@@ -425,6 +429,41 @@ export async function deleteClient(id) {
       comments: res.data?.comments_deleted ?? 0,
     },
   };
+}
+
+/* ─── Клиент и его аккаунт мини-аппа ──────────────────────────────
+   Записи карточки клиент видит в «Мои записи», только когда карточка
+   привязана к аккаунту (client_stats.in_app). См. «Карточка клиента и
+   его аккаунт мини-аппа» в schema.sql.                              */
+
+/**
+ * «Пригласить в приложение» — Edge Function client-invite: новый код
+ * приглашения (прежний перестаёт работать), и если клиент уже в
+ * приложении — бот сам присылает ему приглашение с кнопками.
+ * → { ok, error, code, sent }; sent: false — бот написать не может,
+ * мастер отправляет клиенту ссылку botInviteLink() сама.
+ */
+export async function sendClientInvite(clientId) {
+  if (!supabase) return { ok: false, error: NOT_CONFIGURED, code: null, sent: false };
+  try {
+    const { data, error } = await supabase.functions.invoke("client-invite", {
+      body: { client_id: clientId },
+    });
+    if (error) {
+      // Отказ функции — { error } с текстом базы по-русски.
+      const body = await error.context?.json?.().catch(() => null);
+      return { ok: false, error: body?.error || "Не удалось создать приглашение", code: null, sent: false };
+    }
+    await loadAdminData(CLIENTS);
+    return { ok: true, error: null, code: data?.code ?? null, sent: data?.sent === true };
+  } catch (e) {
+    return { ...fail(e), code: null, sent: false };
+  }
+}
+
+/** Ссылка на бота клиента: «Запустить» — и бот пришлёт приглашение. */
+export function botInviteLink(botUsername, code) {
+  return `https://t.me/${botUsername}?start=c_${code}`;
 }
 
 export function addClientComment(clientId, body) {

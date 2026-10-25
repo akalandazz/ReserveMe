@@ -402,6 +402,9 @@ TELEGRAM_CABINET_BOT_TOKEN = "222222:local-test-cabinet-bot"
 REMINDERS_CRON_SECRET = "local-test-cron-secret"
 TELEGRAM_API_URL = "http://host.docker.internal:54399"
 CLIENT_APP_URL = "https://example.invalid/miniapp"
+# client-bot салона 1: secret_token вебхука, которым e2e/integration/
+# client-invites.spec.js подписывает апдейты.
+CLIENT_BOT_WEBHOOK_SECRET = "local-test-webhook-secret"
 
 # Вызывается до появления сессии — без проверки JWT (в проекте:
 # `supabase functions deploy telegram-auth --no-verify-jwt`).
@@ -418,6 +421,11 @@ verify_jwt = false
 # `supabase functions deploy client-bot --no-verify-jwt`).
 [functions.client-bot]
 verify_jwt = false
+
+# «Пригласить в приложение» из кабинета — с JWT мастера (в проекте:
+# `supabase functions deploy client-invite`).
+[functions.client-invite]
+verify_jwt = true
 
 [analytics]
 enabled = true

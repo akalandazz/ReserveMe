@@ -26,13 +26,21 @@
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY Supabase подставляет сам:
 // salon_bots и settings анониму не видны.
 //
-// Ничего не сохраняет. В логи — ни токена, ни chat id, ни текстов.
+// Приглашение мастера ("/start c_<код>" и кнопки «Принять» / «Отклонить»)
+// — через bot_client_invite / bot_answer_client_invite (schema.sql): база
+// запоминает, кто ответил. Остальное бот не сохраняет. В логи — ни
+// токена, ни chat id, ни текстов, ни кодов.
 //
 // Деплой — без проверки JWT (доступ закрыт секретом вебхука):
 //   supabase functions deploy client-bot --no-verify-jwt
 
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { botReplies } from "../_shared/client-bot.js";
+import {
+  botReplies,
+  inviteAnswerReplies,
+  inviteStartReplies,
+  inviteUpdate,
+} from "../_shared/client-bot.js";
 
 const env = (name: string) => Deno.env.get(name)?.trim() ?? "";
 
@@ -131,6 +139,33 @@ async function call(token: string, method: string, body: unknown) {
 
 const ok = () => new Response("ok", { status: 200, headers: { "cache-control": "no-store" } });
 
+type InviteIntent = { kind: "start" | "answer"; code: string; telegramId: number; accept?: boolean };
+
+/** Строка bot_client_invite для "/start c_<код>" или null — база не ответила. */
+async function inviteView(salonId: number, intent: InviteIntent) {
+  if (!db) return null;
+  const { data, error } = await db.rpc("bot_client_invite", {
+    p_salon: salonId,
+    p_code: intent.code,
+    p_telegram_id: intent.telegramId,
+  });
+  if (error) console.error("client-bot: bot_client_invite:", error.code ?? "error");
+  return error ? null : (data?.[0] ?? null);
+}
+
+/** Ответ bot_answer_client_invite ('linked', 'pending', …) или null — база не ответила. */
+async function answerInvite(salonId: number, intent: InviteIntent) {
+  if (!db) return null;
+  const { data, error } = await db.rpc("bot_answer_client_invite", {
+    p_salon: salonId,
+    p_code: intent.code,
+    p_telegram_id: intent.telegramId,
+    p_accept: intent.accept === true,
+  });
+  if (error) console.error("client-bot: bot_answer_client_invite:", error.code ?? "error");
+  return error || typeof data !== "string" ? null : data;
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("method_not_allowed", { status: 405 });
   let bot: Bot | null = null;
@@ -154,11 +189,23 @@ Deno.serve(async (req) => {
     return ok();
   }
 
+  const appUrl = appUrlFor(bot.slug);
+
+  // Приглашение мастера — раньше меню: "/start c_<код>" — тоже /start.
+  const intent = inviteUpdate(update);
+  if (intent) {
+    const calls =
+      intent.kind === "start"
+        ? inviteStartReplies(intent, await inviteView(bot.salonId, intent), { appUrl })
+        : inviteAnswerReplies(intent, await answerInvite(bot.salonId, intent), { appUrl });
+    for (const { method, body } of calls) await call(bot.token, method, body);
+    return ok();
+  }
+
   // Апдейт без ответа (группа, сервисное сообщение) — базу не трогаем.
   if (!botReplies(update).length) return ok();
 
   const salon = await loadSalon(bot.salonId);
-  const appUrl = appUrlFor(bot.slug);
   for (const { method, body } of botReplies(update, { salon, appUrl, privacyUrl: PRIVACY_URL })) {
     await call(bot.token, method, body);
   }

@@ -4,6 +4,10 @@ import {
   BOT_DESCRIPTION,
   BOT_SHORT_DESCRIPTION,
   botReplies,
+  inviteAnswerReplies,
+  inviteOffer,
+  inviteStartReplies,
+  inviteUpdate,
   sectionMessage,
 } from "../../supabase/functions/_shared/client-bot.js";
 
@@ -122,4 +126,115 @@ test("группы, сервисные апдейты и мусор — молч
   expect(botReplies({ message: { chat: { id: 1, type: "private" }, web_app_data: { data: "x" } } })).toEqual([]);
   expect(botReplies({})).toEqual([]);
   expect(botReplies(null)).toEqual([]);
+});
+
+/* ─── Приглашение мастера ───────────────────────────────────────── */
+
+const CODE = "0123456789abcdef0123456789abcdef";
+const VIEW = {
+  status: "open",
+  master_name: "Владислава",
+  client_name: "Вероника",
+  bookings: [{ day: "2026-10-26", start_min: 600, service_name: "Маникюр" }],
+};
+const from = (text) => ({ message: { message_id: 1, chat: { id: 4242, type: "private" }, from: { id: 77 }, text } });
+const answer = (data, chat = { id: 4242, type: "private" }) => ({
+  callback_query: { id: "cq1", from: { id: 77 }, data, message: { message_id: 9, chat } },
+});
+
+test("inviteUpdate: «/start c_<код>» и кнопки приглашения, остальное — не приглашение", () => {
+  expect(inviteUpdate(from(`/start c_${CODE}`))).toEqual({
+    kind: "start",
+    code: CODE,
+    telegramId: 77,
+    chatId: 4242,
+  });
+  expect(inviteUpdate(answer(`inv:a:${CODE}`))).toEqual({
+    kind: "answer",
+    accept: true,
+    code: CODE,
+    telegramId: 77,
+    chatId: 4242,
+    messageId: 9,
+    callbackId: "cq1",
+  });
+  expect(inviteUpdate(answer(`inv:d:${CODE}`)).accept).toBe(false);
+
+  for (const u of [
+    from("/start"),
+    from(`/start c_${CODE.toUpperCase()}`),
+    from(`/start c_${CODE}x`),
+    from(`привет c_${CODE}`),
+    answer("i:book"),
+    answer(`inv:x:${CODE}`),
+    answer(`inv:a:${CODE}`, { id: -100, type: "group" }),
+    { message: { chat: { id: 1, type: "private" }, text: `/start c_${CODE}` } }, // без from
+    null,
+  ]) {
+    expect(inviteUpdate(u)).toBeNull();
+  }
+});
+
+test("inviteOffer: кто, на что и кнопки «Принять» / «Отклонить» с кодом", () => {
+  const m = inviteOffer(VIEW, CODE);
+  expect(m.text).toContain("Здравствуйте, Вероника!");
+  expect(m.text).toContain("Владислава записала вас");
+  expect(m.text).toContain("📅 26 октября, 10:00 — Маникюр");
+  expect(m.reply_markup.inline_keyboard).toEqual([
+    [
+      { text: "✅ Принять", callback_data: `inv:a:${CODE}` },
+      { text: "✖️ Отклонить", callback_data: `inv:d:${CODE}` },
+    ],
+  ]);
+  // callback_data у Telegram — не длиннее 64 байт.
+  for (const b of m.reply_markup.inline_keyboard[0]) {
+    expect(Buffer.byteLength(b.callback_data)).toBeLessThanOrEqual(64);
+  }
+  // Без имени и без записей — тоже связный текст.
+  const bare = inviteOffer({ master_name: "", client_name: "", bookings: [] }, CODE).text;
+  expect(bare).toContain("Здравствуйте! 🌸");
+  expect(bare).toContain("Мастер записала вас");
+  expect(bare).not.toContain("📅");
+});
+
+test("inviteStartReplies: открытое — приглашение, принятое — «уже», прочее — «недействительно»", () => {
+  const intent = inviteUpdate(from(`/start c_${CODE}`));
+  const [open] = inviteStartReplies(intent, VIEW, { appUrl: APP });
+  expect(open).toMatchObject({ method: "sendMessage", body: { chat_id: 4242 } });
+  expect(open.body.reply_markup.inline_keyboard[0][0].callback_data).toBe(`inv:a:${CODE}`);
+
+  const [already] = inviteStartReplies(intent, { status: "accepted" }, { appUrl: APP });
+  expect(already.body.text).toContain("Ваши записи — в приложении");
+  expect(buttons(already.body.reply_markup)).toEqual([{ text: "Мои записи", web_app: { url: APP } }]);
+
+  const [invalid] = inviteStartReplies(intent, { status: "invalid" });
+  expect(invalid.body.text).toContain("Приглашение недействительно");
+
+  const [down] = inviteStartReplies(intent, null);
+  expect(down.body.text).toContain("попробуйте ещё раз");
+});
+
+test("inviteAnswerReplies: ответ базы заменяет приглашение, сбой — только всплывашка", () => {
+  const intent = inviteUpdate(answer(`inv:a:${CODE}`));
+  const texts = {
+    linked: "Ваши записи — в приложении",
+    pending: "Откройте приложение",
+    declined: "приглашение отклонено",
+    other_salon: "уже записан к другому мастеру",
+    invalid: "Приглашение недействительно",
+  };
+  for (const [result, text] of Object.entries(texts)) {
+    const [ack, edit] = inviteAnswerReplies(intent, result, { appUrl: APP });
+    expect(ack).toEqual({ method: "answerCallbackQuery", body: { callback_query_id: "cq1" } });
+    expect(edit.method).toBe("editMessageText");
+    expect(edit.body).toMatchObject({ chat_id: 4242, message_id: 9 });
+    expect(edit.body.text).toContain(text);
+    // Кнопка в приложение — только когда записи там (или будут).
+    const hasApp = result === "linked" || result === "pending";
+    expect(Boolean(edit.body.reply_markup), result).toBe(hasApp);
+  }
+
+  const failed = inviteAnswerReplies(intent, null);
+  expect(failed).toHaveLength(1);
+  expect(failed[0].body).toMatchObject({ callback_query_id: "cq1", show_alert: true });
 });

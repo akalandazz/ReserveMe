@@ -118,6 +118,7 @@ function seed() {
         slot_step_minutes: 30,
         booking_days_ahead: 14,
         working_hours: { 0: null, 1: HOURS, 2: HOURS, 3: HOURS, 4: HOURS, 5: HOURS, 6: HOURS },
+        client_bot_username: "vseees_bot",
       },
     ],
     services: [
@@ -130,6 +131,8 @@ function seed() {
     bookings: [],
     client_stats: [],
     client_comments: [],
+    // Приглашения в приложение (Edge Function client-invite): { code, client_id, sent }.
+    client_invites: [],
     // Только для мини-аппа клиента (content.js).
     info_blocks: [],
     busy_slots: [],
@@ -149,7 +152,7 @@ export function bookingRow(id, fields) {
     price: fields.price ?? 60,
     service_id: fields.service_id ?? "manicure",
     service_name: fields.service_name || "Маникюр",
-    client_id: null,
+    client_id: fields.client_id ?? null,
     client_name: fields.client_name ?? "Анна",
     client_username: fields.client_username ?? "",
     comment: "",
@@ -172,6 +175,10 @@ export function clientRow(id, fields) {
     phone: fields.phone ?? "",
     channel: fields.channel ?? "",
     created_at: new Date().toISOString(),
+    // Привязка к аккаунту мини-аппа (см. client_stats в schema.sql).
+    in_app: fields.in_app ?? false,
+    app_match: fields.app_match ?? false,
+    invite_status: fields.invite_status ?? null,
     visit_count: 0,
     last_visit_at: null,
     favorite_service_id: null,
@@ -489,6 +496,27 @@ async function handle(route, state) {
     const i = rows.findIndex((r) => r.day === day);
     if (i >= 0) rows.splice(i, 1);
     return route.fulfill({ status: 204, headers: cors });
+  }
+
+  // ─── «Пригласить в приложение» (Edge Function client-invite) ────
+  //  Как настоящая: код в базу (create_client_invite), и если клиент уже в
+  //  приложении (app_match) — «бот написал ему сам», sent: true; иначе
+  //  sent: false, кабинет откроет чат со ссылкой на бота. Кнопки в боте —
+  //  e2e/integration/client-invites.spec.js.
+  if (url.pathname === "/functions/v1/client-invite" && method === "POST") {
+    if (requester(req) !== MASTER.id) return json(403, { error: "Нет доступа" });
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: "client-invite", body });
+    const card = state.tables.client_stats.find((c) => c.id === body.client_id);
+    if (card.in_app) return json(400, { error: "Клиент уже в приложении" });
+    if (!card.telegram_username) {
+      return json(400, { error: "Укажите Telegram клиента — приглашение уходит ему в чат" });
+    }
+    const code = String(state.nextId++).padStart(32, "0");
+    const sent = card.app_match === true;
+    state.tables.client_invites.push({ code, client_id: card.id, sent });
+    card.invite_status = "pending";
+    return json(200, { code, sent });
   }
 
   // ─── RPC кабинета (schema.sql) — без перепроверок времени ───────

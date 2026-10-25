@@ -68,6 +68,16 @@ alter table public.settings drop constraint if exists settings_reminder_hours_ch
 alter table public.settings add constraint settings_reminder_hours_check
   check (reminder_hours between 0 and 72);
 
+-- Логин бота клиента (без @): приглашение клиенту, которого нет в
+-- приложении, — ссылка t.me/<бот>?start=c_<код> в чате мастера с ним
+-- (create_client_invite ниже). Пусто — такую ссылку не собрать. Заполняет
+-- npm run add-master (getMe бота клиента), правит мастер в «Настройках».
+-- Тот же формат проверяет validateSettingsFields() в src/admin/api.js.
+alter table public.settings add column if not exists client_bot_username text not null default '';
+alter table public.settings drop constraint if exists settings_client_bot_username_check;
+alter table public.settings add constraint settings_client_bot_username_check
+  check (client_bot_username ~ '^[A-Za-z0-9_]{0,32}$');
+
 -- ─── Услуги ────────────────────────────────────────────────────
 --  id — text, а не uuid: сохранённые у клиентов заявки ссылаются на
 --  услугу по нему (короткий ключ "s"), и по нему же достаётся название
@@ -1594,6 +1604,77 @@ create policy client_comments_delete_auth on public.client_comments
   for delete to authenticated
   using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
 
+-- ─── client_invites: приглашение клиента в мини-апп ─────────────
+--  Карточку, которую мастер завела сама, нельзя привязать к аккаунту по
+--  юзернейму со стороны клиента (см. link_booking_client: юзернейм
+--  меняют и занимают другие). Вместо этого клиенту приходит приглашение
+--  от бота с кнопками «Принять» / «Отклонить» (create_client_invite и
+--  bot_* ниже, Edge Functions client-invite и client-bot): бот пишет сам,
+--  если клиент уже в приложении, иначе мастер шлёт ему в чат ссылку
+--  t.me/<бот>?start=c_<код>. Код знает только тот, кому его отправили.
+--
+--  Код — 32 hex-символа (gen_random_uuid без дефисов: 122 случайных
+--  бита), одноразовый: принятый, отклонённый, просроченный или
+--  заменённый новым больше не работает. Удаление карточки уносит её коды.
+--  telegram_id — кто ответил в боте; принявший без аккаунта получает
+--  карточку при первом входе в приложение (profiles_claim_invites).
+--  Читает мастер (статус в «Клиенты»), пишут только функции ниже.
+create table if not exists public.client_invites (
+  code        text primary key check (code ~ '^[0-9a-f]{32}$'),
+  salon_id    smallint not null default public.current_salon_id() references public.salons(id),
+  client_id   bigint not null,
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null default now() + interval '30 days',
+  accepted_at timestamptz,
+  declined_at timestamptz,
+  telegram_id bigint,
+  constraint client_invites_client_fkey foreign key (salon_id, client_id)
+    references public.clients (salon_id, id) on delete cascade
+);
+alter table public.client_invites add column if not exists telegram_id bigint;
+
+create index if not exists client_invites_salon_telegram_idx
+  on public.client_invites (salon_id, telegram_id)
+  where telegram_id is not null;
+
+create index if not exists client_invites_salon_client_idx
+  on public.client_invites (salon_id, client_id, created_at desc);
+
+alter table public.client_invites enable row level security;
+revoke all on public.client_invites from anon, authenticated;
+grant select on public.client_invites to authenticated;
+
+drop policy if exists client_invites_select_master on public.client_invites;
+create policy client_invites_select_master on public.client_invites
+  for select to authenticated
+  using ((select public.is_master()) and salon_id = (select public.current_salon_id()));
+
+-- ─── client_app_match(): есть ли в приложении аккаунт с этим юзернеймом ─
+--  Для «Клиент уже в приложении — бот пришлёт приглашение»: профили
+--  мастеру не видны (profiles_select_own), поэтому security definer, но
+--  наружу — только да/нет и только мастеру своего салона. Регистр не
+--  важен: Telegram юзернеймы его не различает.
+create or replace function public.client_app_match(p_salon smallint, p_username text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(p_username, '') <> ''
+     and p_salon = public.current_salon_id()
+     and public.is_master()
+     and exists (
+       select 1 from public.profiles p
+        where p.salon_id = p_salon
+          and p.role = 'user'
+          and lower(p.telegram_username) = lower(p_username)
+     )
+$$;
+
+revoke all on function public.client_app_match(smallint, text) from public, anon;
+grant execute on function public.client_app_match(smallint, text) to authenticated;
+
 -- ─── client_stats: клиенты + производные показатели для «Клиенты» ─
 --  security_invoker = on — задан ЯВНО: по умолчанию вьюха в Postgres
 --  исполняется от владельца и обходит RLS, а Supabase по default
@@ -1623,6 +1704,22 @@ create view public.client_stats
     c.phone,
     c.channel,
     c.created_at,
+    -- Карточка привязана к аккаунту мини-аппа: её записи клиент видит в
+    -- «Мои записи». Сам user_id кабинету не нужен.
+    c.user_id is not null as in_app,
+    -- Не привязана, но аккаунт с её юзернеймом в приложении есть —
+    -- приглашение ему пришлёт сам бот (Edge Function client-invite).
+    c.user_id is null and public.client_app_match(c.salon_id, c.telegram_username) as app_match,
+    -- Последнее приглашение, пока карточка не привязана: 'pending' —
+    -- ждёт подтверждения клиента, 'accepted' — принял в боте, но в
+    -- приложение ещё не входил, 'declined', 'expired'; иначе null.
+    case
+      when c.user_id is not null or inv.created_at is null then null
+      when inv.declined_at is not null then 'declined'
+      when inv.accepted_at is not null then 'accepted'
+      when inv.expires_at < now() then 'expired'
+      else 'pending'
+    end as invite_status,
     v.visit_count,
     v.last_visit_at,
     fav.service_id as favorite_service_id,
@@ -1644,6 +1741,13 @@ create view public.client_stats
     order by count(*) desc, max(b2.day) desc
     limit 1
   ) fav on true
+  left join lateral (
+    select i.created_at, i.expires_at, i.accepted_at, i.declined_at
+    from public.client_invites i
+    where i.salon_id = c.salon_id and i.client_id = c.id
+    order by i.created_at desc
+    limit 1
+  ) inv on true
   left join public.services s on s.salon_id = c.salon_id and s.id = fav.service_id;
 
 revoke all on public.client_stats from anon;
@@ -2127,6 +2231,380 @@ $$;
 
 revoke all on function public.delete_client(bigint) from public, anon;
 grant execute on function public.delete_client(bigint) to authenticated;
+
+-- ═══════════════════════════════════════════════════════════════
+--  Карточка клиента и его аккаунт мини-аппа
+--
+--  Записи карточки клиент видит в «Мои записи», только если у карточки
+--  есть аккаунт (clients.user_id → bookings.user_id). Заявка из мини-аппа
+--  находит карточку только по аккаунту (link_booking_client), поэтому
+--  карточку, которую мастер завела сама, привязывают:
+--    • триггер clients_link_account — мастер сохраняет карточку с
+--      @юзернеймом, и аккаунт с ним в её салоне уже есть (клиент уже
+--      входил): привязка сразу. Это решение мастера в момент, когда она
+--      знает, кого записывает; со стороны клиента по юзернейму не
+--      привязывается ничего;
+--    • приглашение (client_invites) — клиент сам подтверждает в боте
+--      кнопкой «Принять». Аккаунт есть (карточка появилась раньше него) —
+--      бот пишет ему сам (Edge Function client-invite); аккаунта нет —
+--      мастер шлёт ссылку на бота, бот присылает то же приглашение после
+--      «Запустить» (client-bot). Принявший без аккаунта получает карточку
+--      при первом входе в приложение (триггер profiles_claim_invites).
+--  Если у аккаунта уже есть своя карточка (оставлял заявки), она
+--  вливается в карточку мастера: записи, комментарии, пустые поля.
+-- ═══════════════════════════════════════════════════════════════
+
+-- ─── attach_client_account(): привязать карточку к аккаунту ─────
+--  Общая часть bot_answer_client_invite и profiles_claim_invites; сама
+--  права не проверяет и никому не выдана. Записи карточки получают user_id через
+--  триггер clients_account_to_bookings.
+create or replace function public.attach_client_account(p_salon smallint, p_client_id bigint, p_uid uuid)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  own public.clients;
+begin
+  select * into own from public.clients c
+   where c.salon_id = p_salon and c.user_id = p_uid and c.id <> p_client_id
+   for update;
+  if found then
+    -- Сначала снять с неё аккаунт и юзернейм: оба уникальны.
+    update public.clients c set user_id = null, telegram_username = '' where c.id = own.id;
+    update public.bookings b set client_id = p_client_id
+     where b.salon_id = p_salon and b.client_id = own.id;
+    update public.client_comments cm set client_id = p_client_id
+     where cm.salon_id = p_salon and cm.client_id = own.id;
+    delete from public.clients c where c.id = own.id;
+  end if;
+
+  update public.clients c
+     set user_id           = p_uid,
+         name              = case when c.name = '' then coalesce(own.name, '') else c.name end,
+         phone             = case when c.phone = '' then coalesce(own.phone, '') else c.phone end,
+         telegram_username = case when c.telegram_username = ''
+                                  then coalesce(own.telegram_username, '') else c.telegram_username end
+   where c.salon_id = p_salon and c.id = p_client_id;
+
+  update public.client_invites i set accepted_at = now()
+   where i.salon_id = p_salon and i.client_id = p_client_id
+     and i.accepted_at is null and i.declined_at is null;
+end
+$$;
+
+revoke all on function public.attach_client_account(smallint, bigint, uuid) from public, anon, authenticated;
+
+-- ─── Триггеры clients: привязка при сохранении мастером ─────────
+--  before insert / update юзернейма: если сохраняет мастер (не заявка
+--  клиента — у link_booking_client свой путь, только по аккаунту),
+--  карточка ещё без аккаунта, а в салоне ровно один аккаунт с этим
+--  юзернеймом и без своей карточки — он и есть. Аккаунт со своей
+--  карточкой не трогаем: это слияние двух карточек, на него соглашается
+--  сам клиент — приглашением от бота (client_stats.app_match).
+--  security definer — читать чужие profiles; салон фильтруется явно.
+create or replace function public.clients_link_account()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  ids uuid[];
+begin
+  if new.user_id is not null or new.telegram_username = ''
+     or new.salon_id is distinct from public.current_salon_id()
+     or not public.is_master() then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and new.telegram_username is not distinct from old.telegram_username then
+    return new;
+  end if;
+  select array_agg(p.id) into ids
+    from public.profiles p
+   where p.salon_id = new.salon_id
+     and p.role = 'user'
+     and lower(p.telegram_username) = lower(new.telegram_username)
+     and not exists (select 1 from public.clients c where c.user_id = p.id);
+  if cardinality(ids) = 1 then
+    new.user_id := ids[1];
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists clients_link_account on public.clients;
+create trigger clients_link_account
+  before insert or update of telegram_username on public.clients
+  for each row execute function public.clients_link_account();
+
+--  after update: карточка получила аккаунт — её записи тоже (так они
+--  появляются у клиента в «Мои записи»). Одно место на все пути:
+--  триггер выше и attach_client_account.
+create or replace function public.clients_account_to_bookings()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.bookings b set user_id = new.user_id
+   where b.salon_id = new.salon_id and b.client_id = new.id
+     and b.user_id is distinct from new.user_id;
+  return new;
+end
+$$;
+
+drop trigger if exists clients_account_to_bookings on public.clients;
+-- Без «of user_id»: такой триггер смотрит на список SET запроса, а
+-- user_id ставит триггер clients_link_account выше — в SET его нет.
+create trigger clients_account_to_bookings
+  after update on public.clients
+  for each row
+  when (new.user_id is not null and new.user_id is distinct from old.user_id)
+  execute function public.clients_account_to_bookings();
+
+-- ─── create_client_invite(): код приглашения для карточки ───────
+--  Только карточке без аккаунта и с юзернеймом: по нему бот находит
+--  клиента в приложении, а мастер — чат с ним для ссылки. Зовёт Edge
+--  Function client-invite с JWT мастера. Прежние неотвеченные коды
+--  карточки удаляются — работает только последний.
+create or replace function public.create_client_invite(p_client_id bigint)
+returns text
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  sid  smallint := public.current_salon_id();
+  cl       public.clients;
+  new_code text := replace(gen_random_uuid()::text, '-', '');
+begin
+  if not public.is_master() then
+    raise exception 'Нет доступа' using errcode = '42501';
+  end if;
+  select * into cl from public.clients c where c.salon_id = sid and c.id = p_client_id for update;
+  if not found then
+    raise exception 'Клиент не найден — обновите страницу';
+  end if;
+  if cl.user_id is not null then
+    raise exception 'Клиент уже в приложении';
+  end if;
+  if cl.telegram_username = '' then
+    raise exception 'Укажите Telegram клиента — приглашение уходит ему в чат';
+  end if;
+
+  delete from public.client_invites i
+   where i.salon_id = sid and i.client_id = cl.id and i.accepted_at is null;
+  insert into public.client_invites (code, salon_id, client_id) values (new_code, sid, cl.id);
+  return new_code;
+end
+$$;
+
+revoke all on function public.create_client_invite(bigint) from public, anon;
+grant execute on function public.create_client_invite(bigint) to authenticated;
+
+-- ─── Приглашение в боте: только service role ────────────────────
+--  Зовут Edge Functions client-bot (вебхук: /start c_<код> и кнопки) и
+--  client-invite (бот пишет клиенту, который уже в приложении). Салон —
+--  тот, чей бот получил апдейт; telegram_id — from.id из апдейта Telegram
+--  (вебхук проверен секретом салона). У anon и authenticated прав нет.
+
+-- bot_client_invite(): что показать по коду. status: 'open' — можно
+-- принять; 'accepted' — этот же Telegram уже принял; 'invalid' — код
+-- неверный, чужого салона, отклонён, просрочен, заменён или принят
+-- другим (тогда остальные поля пусты).
+create or replace function public.bot_client_invite(p_salon smallint, p_code text, p_telegram_id bigint)
+returns table (status text, master_name text, client_name text, bookings jsonb)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  inv public.client_invites;
+  cl  public.clients;
+begin
+  select * into inv from public.client_invites i where i.salon_id = p_salon and i.code = p_code;
+  if found then
+    select * into cl from public.clients c where c.salon_id = p_salon and c.id = inv.client_id;
+  end if;
+  if inv.code is null or cl.id is null then
+    status := 'invalid';
+  elsif inv.accepted_at is not null and inv.telegram_id = p_telegram_id then
+    status := 'accepted';
+  elsif inv.accepted_at is not null or inv.declined_at is not null
+        or inv.expires_at < now() or cl.user_id is not null then
+    status := 'invalid';
+  else
+    status := 'open';
+  end if;
+  if status = 'invalid' then
+    return next;
+    return;
+  end if;
+
+  select s.master_name into master_name from public.settings s where s.salon_id = p_salon;
+  client_name := cl.name;
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'day', b.day, 'start_min', b.start_min, 'service_name', b.service_name)
+           order by b.day, b.start_min), '[]'::jsonb)
+    into bookings
+    from public.bookings b
+   where b.salon_id = p_salon and b.client_id = cl.id
+     and b.status in ('new', 'ok')
+     and b.day >= (now() at time zone 'Asia/Tbilisi')::date;
+  return next;
+end
+$$;
+
+-- bot_answer_client_invite(): «Принять» / «Отклонить». Ответ:
+--   'linked'      — принял, аккаунт этого салона уже есть: карточка его;
+--   'pending'     — принял, аккаунта ещё нет: карточка станет его при
+--                   первом входе в приложение (profiles_claim_invites);
+--   'already'     — этот же Telegram уже принял (повторное нажатие);
+--   'declined'    — отклонил, код больше не работает;
+--   'other_salon' — аккаунт Telegram уже у другого мастера (один аккаунт —
+--                   один салон), ничего не изменилось;
+--   'invalid'     — как у bot_client_invite, ничего не изменилось.
+create or replace function public.bot_answer_client_invite(
+  p_salon smallint, p_code text, p_telegram_id bigint, p_accept boolean
+)
+returns text
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  inv  public.client_invites;
+  cl   public.clients;
+  prof public.profiles;
+begin
+  select * into inv from public.client_invites i
+   where i.salon_id = p_salon and i.code = p_code
+   for update;
+  if found then
+    select * into cl from public.clients c
+     where c.salon_id = p_salon and c.id = inv.client_id
+     for update;
+  end if;
+  if inv.code is null or cl.id is null then
+    return 'invalid';
+  end if;
+  if inv.accepted_at is not null and inv.telegram_id = p_telegram_id then
+    return case when p_accept then 'already' else 'invalid' end;
+  end if;
+  if inv.accepted_at is not null or inv.declined_at is not null
+     or inv.expires_at < now() or cl.user_id is not null then
+    return 'invalid';
+  end if;
+
+  if not p_accept then
+    update public.client_invites i set declined_at = now(), telegram_id = p_telegram_id
+     where i.code = inv.code;
+    return 'declined';
+  end if;
+
+  select * into prof from public.profiles p where p.telegram_id = p_telegram_id;
+  if prof.id is not null and prof.salon_id <> p_salon then
+    return 'other_salon';
+  end if;
+  -- Аккаунт мастера клиентом не становится.
+  if prof.id is not null and prof.role <> 'user' then
+    return 'invalid';
+  end if;
+
+  update public.client_invites i set accepted_at = now(), telegram_id = p_telegram_id
+   where i.code = inv.code;
+  if prof.id is null then
+    return 'pending';
+  end if;
+  perform public.attach_client_account(p_salon, cl.id, prof.id);
+  return 'linked';
+end
+$$;
+
+-- bot_invite_recipient(): кому бот может написать приглашение сам —
+-- аккаунт салона с юзернеймом карточки (ровно один, клиент, сам
+-- запускал бота — иначе Telegram не даст написать). Ни строки — писать
+-- некому, мастер шлёт ссылку (client-invite отвечает sent: false).
+create or replace function public.bot_invite_recipient(p_code text)
+returns table (salon_id smallint, telegram_id bigint)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select i.salon_id, min(p.telegram_id)
+    from public.client_invites i
+    join public.clients c on c.salon_id = i.salon_id and c.id = i.client_id
+    join public.profiles p
+      on p.salon_id = i.salon_id
+     and p.role = 'user'
+     and c.telegram_username <> ''
+     and lower(p.telegram_username) = lower(c.telegram_username)
+   where i.code = p_code
+     and i.accepted_at is null and i.declined_at is null and i.expires_at >= now()
+     and c.user_id is null
+     and p.bot_unreachable_at is null
+   group by i.salon_id
+  having count(*) = 1
+$$;
+
+revoke all on function public.bot_client_invite(smallint, text, bigint) from public, anon, authenticated;
+revoke all on function public.bot_answer_client_invite(smallint, text, bigint, boolean) from public, anon, authenticated;
+revoke all on function public.bot_invite_recipient(text) from public, anon, authenticated;
+grant execute on function public.bot_client_invite(smallint, text, bigint) to service_role;
+grant execute on function public.bot_answer_client_invite(smallint, text, bigint, boolean) to service_role;
+grant execute on function public.bot_invite_recipient(text) to service_role;
+
+-- ─── profiles_claim_invites(): принял в боте — карточка при входе ─
+--  Клиент нажал «Принять», но аккаунта у него ещё не было ('pending'):
+--  аккаунт заводит telegram-auth при первом входе (после согласия на
+--  обработку данных), и карточка из принятого приглашения становится
+--  его. Аккаунт — один, карточка — тоже одна: первая принятая.
+create or replace function public.profiles_claim_invites()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  card bigint;
+begin
+  if new.role <> 'user' then
+    return new;
+  end if;
+  select i.client_id into card
+    from public.client_invites i
+    join public.clients c on c.salon_id = i.salon_id and c.id = i.client_id
+   where i.salon_id = new.salon_id
+     and i.telegram_id = new.telegram_id
+     and i.accepted_at is not null and i.declined_at is null
+     and c.user_id is null
+   order by i.accepted_at
+   limit 1;
+  if card is not null then
+    -- Сбой привязки не должен ломать вход (триггер — внутри telegram-auth):
+    -- карточка останется «принял — ждём входа», мастер это увидит.
+    begin
+      perform public.attach_client_account(new.salon_id, card, new.id);
+    exception when others then
+      raise warning 'profiles_claim_invites: %', sqlerrm;
+    end;
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists profiles_claim_invites on public.profiles;
+create trigger profiles_claim_invites
+  after insert or update of salon_id on public.profiles
+  for each row execute function public.profiles_claim_invites();
 
 -- ─── blocked_slots: читает салон (это часть доступности), пишет мастер ──
 
