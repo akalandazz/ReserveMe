@@ -19,7 +19,7 @@ import {
 
 // Напоминания о записи на локальном Supabase: claim_due_reminders() и
 // соседи из supabase/schema.sql, set_reminders() под RLS и настоящая Edge
-// Function send-reminders. Bot API подменён HTTP-сервером на хосте:
+// Function api/reminders. Bot API подменён HTTP-сервером на хосте:
 // функция в Docker ходит на TELEGRAM_API_URL из supabase/config.toml
 // (host.docker.internal:54399).
 
@@ -222,7 +222,7 @@ test.describe("права", () => {
   });
 });
 
-test.describe("Edge Function send-reminders", () => {
+test.describe("Edge Function api/reminders", () => {
   /** Поддельный Bot API: ответ по chat_id, все запросы — в журнал. */
   let server;
   const calls = [];
@@ -249,7 +249,7 @@ test.describe("Edge Function send-reminders", () => {
   });
 
   const run = (secret = CRON_SECRET) =>
-    api("/functions/v1/send-reminders", {
+    api("/functions/v1/api/reminders", {
       method: "POST",
       headers: secret === null ? {} : { "x-cron-secret": secret },
       body: {},

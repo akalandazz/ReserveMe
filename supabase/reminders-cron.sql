@@ -1,5 +1,5 @@
 -- Расписание напоминаний о записи: pg_cron раз в 10 минут зовёт Edge
--- Function send-reminders (supabase/functions/send-reminders).
+-- Function api/reminders (supabase/functions/api/reminders.ts).
 --
 -- Выполняется ОДИН раз в SQL-редакторе проекта, после schema.sql и
 -- деплоя функции. В schema.sql не входит намеренно: локальный стек
@@ -14,7 +14,7 @@
 -- supabase/config.toml поверх настоящих токенов ботов.
 --
 -- Перед первым запуском (подставьте свои значения, один раз):
---   select vault.create_secret('https://<project-ref>.supabase.co/functions/v1/send-reminders',
+--   select vault.create_secret('https://<project-ref>.supabase.co/functions/v1/api/reminders',
 --                              'reminders_function_url');
 --   select vault.create_secret('<тот же REMINDERS_CRON_SECRET>', 'reminders_cron_secret');
 -- Поменять потом: vault.update_secret(id, new_secret) — id из
@@ -22,12 +22,14 @@
 --
 -- Выключить напоминания: в кабинете «Напоминание» → «Выкл.» (settings.
 -- reminder_hours = 0) или совсем убрать задачу:
---   select cron.unschedule('send-reminders');
+--   select cron.unschedule('api/reminders');
 
 create extension if not exists pg_cron;
 create extension if not exists pg_net with schema extensions;
 
--- cron.schedule с тем же именем заменяет задачу — файл можно выполнить повторно.
+-- cron.schedule с тем же именем заменяет задачу — файл можно выполнить
+-- повторно. Имя — прежнее, send-reminders: с другим рядом встала бы
+-- вторая задача.
 select cron.schedule(
   'send-reminders',
   '*/10 * * * *',

@@ -8,8 +8,8 @@
 --  в src/data.js под гитом, теперь он живёт в облаке. Эта схема вместе
 --  с сидом — единственный способ воссоздать проект с нуля.
 --
---  Вход — только через Telegram: Edge Function telegram-auth
---  (supabase/functions/telegram-auth) проверяет подпись initData токеном
+--  Вход — только через Telegram: Edge Function api/auth
+--  (supabase/functions/api/auth.ts) проверяет подпись initData токеном
 --  бота и выдаёт обычную сессию Supabase аккаунту, привязанному к
 --  Telegram user id (profiles.telegram_id). Паролей и писем нет.
 --
@@ -25,7 +25,7 @@
 --    2. Authentication → Anonymous Sign-ins — выключить.
 --    3. Токены ботов салона — в public.salon_bots (supabase/add-salon.sql;
 --       для салона 1 пока работают и секреты TELEGRAM_CLIENT_BOT_TOKEN /
---       TELEGRAM_CABINET_BOT_TOKEN, см. supabase/functions/telegram-auth).
+--       TELEGRAM_CABINET_BOT_TOKEN, см. supabase/functions/api/auth.ts).
 --    4. Мастер один раз открывает кабинет (увидит «Нет доступа»), затем
 --       роль выдаётся руками — сниппет над is_master() ниже.
 --  Салонов (мастеров) может быть несколько — каждый видит только своё,
@@ -61,7 +61,7 @@ create table if not exists public.settings (
 );
 
 -- За сколько часов до начала бот напоминает клиенту о подтверждённой
--- записи (claim_due_reminders, Edge Function send-reminders). 0 —
+-- записи (claim_due_reminders, Edge Function api/reminders). 0 —
 -- напоминания выключены для всего салона. Правит мастер в кабинете.
 alter table public.settings add column if not exists reminder_hours integer not null default 24;
 alter table public.settings drop constraint if exists settings_reminder_hours_check;
@@ -188,7 +188,7 @@ create table if not exists public.client_comments (
 --  Роль: 'user' — любой клиент, 'master' — только мастер (выдаётся
 --  руками, см. is_master()).
 --
---  Пишет сюда ТОЛЬКО Edge Function telegram-auth (service role): заводит
+--  Пишет сюда ТОЛЬКО Edge Function api/auth (service role): заводит
 --  строку с 'user' при первом входе и обновляет имя/юзернейм из
 --  проверенного initData. Роль она не трогает никогда — ни при создании
 --  существующей строки, ни при обновлении. У authenticated нет ни одной
@@ -217,10 +217,10 @@ alter table public.profiles add column if not exists first_name        text not 
 alter table public.profiles add column if not exists last_name         text not null default '';
 alter table public.profiles add column if not exists updated_at        timestamptz not null default now();
 alter table public.profiles add column if not exists last_login_at     timestamptz;
--- Напоминания о записи от бота клиента (send-reminders). reminders —
+-- Напоминания о записи от бота клиента (api/reminders). reminders —
 -- выбор самого клиента: пишет только set_reminders() (своя строка, одна
 -- колонка). bot_unreachable_at — Telegram ответил 403 (бота заблокировали
--- или не разрешили ему писать): больше не пытаемся, пока telegram-auth не
+-- или не разрешили ему писать): больше не пытаемся, пока api/auth не
 -- увидит в подписанном initData allows_write_to_pm и не сбросит отметку.
 alter table public.profiles add column if not exists reminders          boolean not null default true;
 alter table public.profiles add column if not exists bot_unreachable_at timestamptz;
@@ -389,7 +389,7 @@ create table if not exists public.blocked_slots (
 --  вошёл. Чужой салон не виден ни мастеру, ни клиенту: чтение RLS
 --  фильтрует (200, []), функции отвечают 42501 (403).
 --
---  Салон аккаунта — profiles.salon_id. Пишет его только telegram-auth,
+--  Салон аккаунта — profiles.salon_id. Пишет его только api/auth,
 --  при первом входе: салон определяет бот, чей токен подошёл к подписи
 --  initData (salon_bots). Один аккаунт — один салон: клиент мастера A,
 --  открывший бота мастера B, получает 403 other_salon.
@@ -416,9 +416,9 @@ insert into public.salons (id, slug) values (1, 'main') on conflict (id) do noth
 -- Боты салона: бот мини-аппа клиента и бот кабинета (токены могут
 -- совпадать). Токены лежат здесь, а не в секретах функций: салонов
 -- сколько угодно, секретов на каждый не заведёшь. Читает таблицу только
--- service role (telegram-auth, send-reminders, client-bot) — у anon и
+-- service role (api/auth, api/reminders, api/bot) — у anon и
 -- authenticated нет на неё никаких прав. webhook_secret — secret_token
--- вебхука бота клиента (client-bot), у бота кабинета пусто.
+-- вебхука бота клиента (api/bot), у бота кабинета пусто.
 create table if not exists public.salon_bots (
   salon_id       smallint not null references public.salons(id) on delete cascade,
   kind           text not null check (kind in ('client', 'cabinet')),
@@ -491,7 +491,7 @@ create policy salons_select_own on public.salons
 -- salon_id в каждую таблицу салона. Прежние строки — салону 1. default —
 -- салон вошедшего: кабинет вставляет строки, не называя салона, а
 -- политики (with check) сверяют то, что получилось. У profiles default нет:
--- салон аккаунта ставит только telegram-auth.
+-- салон аккаунта ставит только api/auth.
 do $$
 declare t text;
 begin
@@ -914,7 +914,7 @@ begin
   new.cancelled_by    := '';
   new.cancel_seen     := false;
   new.client_id       := null; -- выставит link_booking_client()
-  -- Имя и юзернейм — из профиля (проверенный initData, см. telegram-auth),
+  -- Имя и юзернейм — из профиля (проверенный initData, см. api/auth),
   -- а не из тела запроса: то, что прислал клиент, игнорируется.
   new.client_name     := left(btrim(concat_ws(' ', nullif(prof.first_name, ''), nullif(prof.last_name, ''))), 128);
   new.client_username := left(prof.telegram_username, 64);
@@ -1052,7 +1052,7 @@ create trigger bookings_link_client
 --  тоже выдают authenticated. Поэтому каждое право клиента проверяет
 --  is_telegram_user(), а каждое право мастера — is_master() поверх неё.
 --
---  telegram_id в app_metadata JWT пишет только Edge Function telegram-auth
+--  telegram_id в app_metadata JWT пишет только Edge Function api/auth
 --  (admin API, service role): сам пользователь app_metadata не меняет.
 --  Совпадение с profiles.telegram_id привязывает сессию к аккаунту,
 --  который вошёл через проверенный initData.
@@ -1126,7 +1126,7 @@ $$;
 grant execute on function public.is_master() to anon, authenticated;
 
 -- ─── profiles: каждый видит только свою строку, не пишет никто ──────
---  Пишет только service role (Edge Function telegram-auth), она RLS
+--  Пишет только service role (Edge Function api/auth), она RLS
 --  обходит. Ни insert-, ни update-, ни delete-политик нет — и права на
 --  запись отозваны целиком: поднять себе роль нельзя ни запросом, ни
 --  «первой строкой» до функции входа.
@@ -1143,7 +1143,7 @@ revoke insert, update, delete, truncate on public.profiles from anon, authentica
 -- ─── Согласия на обработку персональных данных (152-ФЗ, ст. 9) ──────
 --  Доказательство согласия: кто (Telegram id), на какую редакцию политики
 --  (supabase/functions/_shared/consent.js) и когда. Пишет только
---  telegram-auth (service role) — ДО того, как заведёт аккаунт: без строки
+--  api/auth (service role) — ДО того, как заведёт аккаунт: без строки
 --  на текущую редакцию функция отвечает 403 consent_required и ничего не
 --  сохраняет.
 --  Ключ — telegram_id, а не auth.users.id: строка должна пережить удаление
@@ -1391,7 +1391,7 @@ grant execute on function public.reschedule_own_booking(bigint, date, integer) t
 --
 --  Единственное место, где сервер пишет клиенту без его действия.
 --  pg_cron (supabase/reminders-cron.sql) раз в несколько минут дёргает
---  Edge Function send-reminders, та берёт подошедшие записи через
+--  Edge Function api/reminders, та берёт подошедшие записи через
 --  claim_due_reminders() и шлёт sendMessage от бота клиента на
 --  profiles.telegram_id. Токен бота живёт только в секретах функции,
 --  в базу он не попадает.
@@ -1609,7 +1609,7 @@ create policy client_comments_delete_auth on public.client_comments
 --  юзернейму со стороны клиента (см. link_booking_client: юзернейм
 --  меняют и занимают другие). Вместо этого клиенту приходит приглашение
 --  от бота с кнопками «Принять» / «Отклонить» (create_client_invite и
---  bot_* ниже, Edge Functions client-invite и client-bot): бот пишет сам,
+--  bot_* ниже, Edge Functions api/invite и api/bot): бот пишет сам,
 --  если клиент уже в приложении, иначе мастер шлёт ему в чат ссылку
 --  t.me/<бот>?start=c_<код>. Код знает только тот, кому его отправили.
 --
@@ -1708,7 +1708,7 @@ create view public.client_stats
     -- «Мои записи». Сам user_id кабинету не нужен.
     c.user_id is not null as in_app,
     -- Не привязана, но аккаунт с её юзернеймом в приложении есть —
-    -- приглашение ему пришлёт сам бот (Edge Function client-invite).
+    -- приглашение ему пришлёт сам бот (Edge Function api/invite).
     c.user_id is null and public.client_app_match(c.salon_id, c.telegram_username) as app_match,
     -- Последнее приглашение, пока карточка не привязана: 'pending' —
     -- ждёт подтверждения клиента, 'accepted' — принял в боте, но в
@@ -2246,9 +2246,9 @@ grant execute on function public.delete_client(bigint) to authenticated;
 --      привязывается ничего;
 --    • приглашение (client_invites) — клиент сам подтверждает в боте
 --      кнопкой «Принять». Аккаунт есть (карточка появилась раньше него) —
---      бот пишет ему сам (Edge Function client-invite); аккаунта нет —
+--      бот пишет ему сам (Edge Function api/invite); аккаунта нет —
 --      мастер шлёт ссылку на бота, бот присылает то же приглашение после
---      «Запустить» (client-bot). Принявший без аккаунта получает карточку
+--      «Запустить» (api/bot). Принявший без аккаунта получает карточку
 --      при первом входе в приложение (триггер profiles_claim_invites).
 --  Если у аккаунта уже есть своя карточка (оставлял заявки), она
 --  вливается в карточку мастера: записи, комментарии, пустые поля.
@@ -2369,7 +2369,7 @@ create trigger clients_account_to_bookings
 -- ─── create_client_invite(): код приглашения для карточки ───────
 --  Только карточке без аккаунта и с юзернеймом: по нему бот находит
 --  клиента в приложении, а мастер — чат с ним для ссылки. Зовёт Edge
---  Function client-invite с JWT мастера. Прежние неотвеченные коды
+--  Function api/invite с JWT мастера. Прежние неотвеченные коды
 --  карточки удаляются — работает только последний.
 create or replace function public.create_client_invite(p_client_id bigint)
 returns text
@@ -2408,8 +2408,8 @@ revoke all on function public.create_client_invite(bigint) from public, anon;
 grant execute on function public.create_client_invite(bigint) to authenticated;
 
 -- ─── Приглашение в боте: только service role ────────────────────
---  Зовут Edge Functions client-bot (вебхук: /start c_<код> и кнопки) и
---  client-invite (бот пишет клиенту, который уже в приложении). Салон —
+--  Зовут Edge Functions api/bot (вебхук: /start c_<код> и кнопки) и
+--  api/invite (бот пишет клиенту, который уже в приложении). Салон —
 --  тот, чей бот получил апдейт; telegram_id — from.id из апдейта Telegram
 --  (вебхук проверен секретом салона). У anon и authenticated прав нет.
 
@@ -2531,7 +2531,7 @@ $$;
 -- bot_invite_recipient(): кому бот может написать приглашение сам —
 -- аккаунт салона с юзернеймом карточки (ровно один, клиент, сам
 -- запускал бота — иначе Telegram не даст написать). Ни строки — писать
--- некому, мастер шлёт ссылку (client-invite отвечает sent: false).
+-- некому, мастер шлёт ссылку (api/invite отвечает sent: false).
 create or replace function public.bot_invite_recipient(p_code text)
 returns table (salon_id smallint, telegram_id bigint)
 language sql
@@ -2564,7 +2564,7 @@ grant execute on function public.bot_invite_recipient(text) to service_role;
 
 -- ─── profiles_claim_invites(): принял в боте — карточка при входе ─
 --  Клиент нажал «Принять», но аккаунта у него ещё не было ('pending'):
---  аккаунт заводит telegram-auth при первом входе (после согласия на
+--  аккаунт заводит api/auth при первом входе (после согласия на
 --  обработку данных), и карточка из принятого приглашения становится
 --  его. Аккаунт — один, карточка — тоже одна: первая принятая.
 create or replace function public.profiles_claim_invites()
@@ -2589,7 +2589,7 @@ begin
    order by i.accepted_at
    limit 1;
   if card is not null then
-    -- Сбой привязки не должен ломать вход (триггер — внутри telegram-auth):
+    -- Сбой привязки не должен ломать вход (триггер — внутри api/auth):
     -- карточка останется «принял — ждём входа», мастер это увидит.
     begin
       perform public.attach_client_account(new.salon_id, card, new.id);

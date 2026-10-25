@@ -4,7 +4,7 @@ import { expect, test } from "../support/fixtures.js";
 // Карточка клиента и приложение («Клиенты» → карточка, ClientsSection.jsx):
 // записи карточки клиент видит в «Мои записи», только когда она привязана
 // к его аккаунту (client_stats.in_app). «Пригласить в приложение» —
-// Edge Function client-invite: клиенту, который уже в приложении, бот
+// Edge Function api/invite: клиенту, который уже в приложении, бот
 // пишет сам; остальным кабинет открывает чат со ссылкой на бота, и бот
 // присылает приглашение после «Запустить». Сами кнопки «Принять» /
 // «Отклонить» в боте — e2e/integration/client-invites.spec.js.
@@ -43,7 +43,7 @@ test.describe("Кабинет: клиента нет в приложении —
     await row.getByRole("button", { name: "Пригласить в приложение" }).click();
 
     await expect(page.getByText("Приглашение готово")).toBeVisible();
-    expect(backend.rpcs.filter((r) => r.name === "client-invite").map((r) => r.body)).toEqual([
+    expect(backend.rpcs.filter((r) => r.name === "api/invite").map((r) => r.body)).toEqual([
       { client_id: 7 },
     ]);
     const { code } = backend.tables.client_invites[0];

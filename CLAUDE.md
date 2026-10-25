@@ -18,7 +18,7 @@ All tests are Playwright, in three projects (`playwright.config.js`):
 
 - **`mobile-chromium`** (UI, `e2e/cabinet`, `e2e/miniapp`) — runs against its **own** Vite
   server (port 5179) built with a fake `VITE_SUPABASE_URL`, and
-  `e2e/support/fake-supabase.js` answers the `telegram-auth` function, Auth, PostgREST and
+  `e2e/support/fake-supabase.js` answers the `/api/auth` route, Auth, PostgREST and
   RPC in the browser, for both `admin.html` (`cabinet` fixture) and `index.html`
   (`miniapp` fixture). `withTelegram(page, user)` (fixtures.js) stubs
   `window.Telegram.WebApp` with a fake `initData` (`"e2e:<telegram id>"`) — the fake does
@@ -27,13 +27,13 @@ All tests are Playwright, in three projects (`playwright.config.js`):
   doesn't handle; extend it when a new flow reads or writes a new table.
 - **`unit`** (`e2e/unit`) — `supabase/functions/_shared/telegram-init-data.js`, signing its
   fixtures with its own `node:crypto` code (never with the module under test).
-- **`integration`** (`e2e/integration`) — the real `telegram-auth` function, PostgREST and
+- **`integration`** (`e2e/integration`) — the real `api` Edge Function (`/api/auth`, `/api/bot`, `/api/invite`, `/api/reminders`), PostgREST and
   the RLS from `schema.sql`, on a **local** Supabase in Docker (`npx supabase start …`,
   then `SUPABASE_IT_URL`/`SUPABASE_IT_ANON_KEY`/`SUPABASE_IT_SERVICE_KEY` from
   `npx supabase status -o env`; exact commands in `e2e/integration/support.js`). Skipped
   without those variables; refuses a non-localhost URL; wipes bookings and clients.
   `supabase/config.toml` exists only for this stack: it seeds from `schema.sql` and holds
-  **fake** bot tokens the tests sign with, plus `send-reminders`' fake cron secret and a
+  **fake** bot tokens the tests sign with, plus the fake cron secret of `/api/reminders` and a
   `TELEGRAM_API_URL` pointing at the Bot API stub that `e2e/integration/reminders.spec.js`
   serves on the host (`host.docker.internal:54399`). Run the integration project with
   `--workers=1`: its files share one database.
@@ -45,7 +45,7 @@ Two Telegram Mini Apps in one repo, one React 19 + Vite 8 codebase:
 - **The client** (`index.html` → `src/main.jsx` → `src/App.jsx`) — where a customer
   browses services, submits a booking request and moves or cancels their own bookings.
   **The whole app sits behind Telegram sign-in** — no form, no password, no e-mail:
-  the signed `initData` goes to the `telegram-auth` Edge Function on launch
+  the signed `initData` goes to the `/api/auth` route on launch
   ([AuthScreen.jsx](src/screens/AuthScreen.jsx) only explains failures). Every account
   it creates has the role `user` (see "Accounts and roles" below). No Supabase writes
   except new bookings and the client's own `cancel_own_booking`/`reschedule_own_booking`.
@@ -119,8 +119,8 @@ Consequences that constrain every change here:
   master still resolves any collision by hand in the cabinet.
 - **Reminders are the one message the server sends by itself.** pg_cron
   (`supabase/reminders-cron.sql`, run once by hand, **not** part of `schema.sql`, so the
-  test stack never fires it) POSTs every 10 min to the `send-reminders` Edge Function
-  ([supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts),
+  test stack never fires it) POSTs every 10 min to the `/api/reminders` route
+  ([supabase/functions/api/reminders.ts](supabase/functions/api/reminders.ts),
   `x-cron-secret` = `REMINDERS_CRON_SECRET`, `--no-verify-jwt`). It calls
   `claim_due_reminders()` (service role only): `status = 'ok'` bookings with a `user_id`,
   starting in `(now + 30 min, now + settings.reminder_hours]` (0 = off, set in the
@@ -133,7 +133,7 @@ Consequences that constrain every change here:
   Moving a booking (any path) clears `reminded_at` via the `bookings_reset_reminder`
   trigger. A bot may only write to someone who allowed it: the client's «Напоминать о
   записи» switch in «Мои записи» calls `requestWriteAccess()` (6.9+) before
-  `set_reminders(true)`; `telegram-auth` clears `bot_unreachable_at` when the signed
+  `set_reminders(true)`; `/api/auth` clears `bot_unreachable_at` when the signed
   initData carries `allows_write_to_pm`. Reminders are a purpose in the 152-ФЗ policy
   ([src/legal.js](src/legal.js)) — dropping or widening them means bumping `POLICY_VERSION`.
 - **The cabinet opens a chat only with a Mini App client who has a Telegram username**
@@ -154,9 +154,9 @@ Consequences that constrain every change here:
 
 | | Client (`src/`, `index.html`) | Cabinet (`src/admin/`, `admin.html`) |
 |---|---|---|
-| Auth | Telegram `initData` → `telegram-auth` → Supabase session, **in memory only**; role `user` | the same, through the cabinet bot; data only for role `master` |
+| Auth | Telegram `initData` → `/api/auth` → Supabase session, **in memory only**; role `user` | the same, through the cabinet bot; data only for role `master` |
 | Reads | `settings`, `services`, `days_off`, `days_open`, `info_blocks`, `busy_slots` (own salon, signed in), own `profiles` row, own `bookings` rows (`user_id = auth.uid()`) | those, plus `bookings`, `blocked_slots`, `client_stats`, `client_comments`, `free_slots()` (master only, own salon) |
-| Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)`, `set_reminders(enabled)` (its own `profiles.reminders` only) — never `profiles` directly; invitations are answered in the bot, not the app | everything, incl. its own confirmed bookings via `create_master_booking()`, invitations via the `client-invite` function — never `profiles` |
+| Writes | its own rows into `bookings`, `cancel_own_booking(id)`, `reschedule_own_booking(id, day, start)`, `set_reminders(enabled)` (its own `profiles.reminders` only) — never `profiles` directly; invitations are answered in the bot, not the app | everything, incl. its own confirmed bookings via `create_master_booking()`, invitations via the `/api/invite` function — never `profiles` |
 | CSS | `src/index.css` | `src/admin/admin.css` — its own token layer, duplicated on purpose |
 | UI primitives | `src/ui.jsx` | `src/admin/components/Icons.jsx` — its own small icon set, duplicated on purpose |
 
@@ -190,7 +190,7 @@ booking flow, not the cabinet's day/week/month calendar
 - `initDataUnsafe` is unverified client data — fine for the greeting and the signature
   line of a message the client sends themselves, nothing else. Identity comes only from
   the **signed** `initData` string (`initData()` in telegram.js), which the client never
-  interprets: it goes as-is to the `telegram-auth` Edge Function, which checks the HMAC
+  interprets: it goes as-is to the `/api/auth` route, which checks the HMAC
   with the bot token and `auth_date` freshness
   ([supabase/functions/_shared/telegram-init-data.js](supabase/functions/_shared/telegram-init-data.js)).
   A booking's name/username come from `profiles` (written by that function from verified
@@ -211,11 +211,11 @@ as "not found" (`delete_client` → zeros), client RPCs → 403.
 - **The bot decides the salon.** Each salon has its own client (and cabinet) bot in
   `public.salon_bots` (`salon_id`, `kind 'client'|'cabinet'`, `token`,
   `webhook_secret`; service role only). The bot's Mini App URL in BotFather carries
-  `?salon=<slug>`; `salonSlug()` (`src/supabase.js`) sends it to `telegram-auth`,
+  `?salon=<slug>`; `salonSlug()` (`src/supabase.js`) sends it to `/api/auth`,
   which validates `initData` **only** against that salon's tokens — the slug is a hint,
   a wrong one is just a failed HMAC (401). No slug → salon 1 (plus the
   `TELEGRAM_*_BOT_TOKEN` secrets as a transitional fallback for salon 1 only).
-- **One account, one salon.** `telegram-auth` writes `profiles.salon_id` on first
+- **One account, one salon.** `/api/auth` writes `profiles.salon_id` on first
   login; an account of another salon gets **403 `other_salon`** («уже записан к другому
   мастеру») and nothing is written. Never let the client or the cabinet write
   `salon_id`: it comes from the column default `current_salon_id()`, the policies'
@@ -234,9 +234,9 @@ as "not found" (`delete_client` → zeros), client RPCs → 403.
   `assert_client_slot`). Any new definer function or view must do the same.
 - Content is **no longer public**: anon reads nothing, `content.js` loads only after
   sign-in, and its cache key is per salon (`vs_content_v1:<slug>`).
-- Reminders: `claim_due_reminders()` returns `salon_id`; `send-reminders` sends each
+- Reminders: `claim_due_reminders()` returns `salon_id`; `/api/reminders` sends each
   salon's rows with that salon's client bot (429 on one bot doesn't stall another).
-  `client-bot` webhooks are `…/client-bot?salon=<slug>` with that salon's secret.
+  `/api/bot` webhooks are `…/api/bot?salon=<slug>` with that salon's secret.
 - A new salon: `npm run add-master -- masters/<name>.json` (`scripts/add-master.mjs`;
   config format in `masters/example.json`, parsing/validation in
   `scripts/master-config.mjs`, unit-tested). Idempotent — re-run after the master's
@@ -274,8 +274,8 @@ seed, kept in the repo because the content is no longer in git otherwise.
   RLS.
 - **Accounts and roles — Telegram is the identity provider.** One account per
   **Telegram user id** (`profiles.telegram_id`, unique) — never per device, session or
-  username. The `telegram-auth` Edge Function
-  ([supabase/functions/telegram-auth/index.ts](supabase/functions/telegram-auth/index.ts))
+  username. The `/api/auth` route
+  ([supabase/functions/api/auth.ts](supabase/functions/api/auth.ts))
   takes **only** `initData` from the request body, validates it, finds the profile by
   `telegram_id` or creates an `auth.users` row (synthetic e-mail `tg<id>@…`, **no
   password**, `app_metadata.telegram_id`) plus a `profiles` row with the default role
@@ -287,7 +287,7 @@ seed, kept in the repo because the content is no longer in git otherwise.
   - **Consent to personal-data processing (152-ФЗ) comes before the account.**
     Without a `public.consents` row (`telegram_id`, `version`) for the current
     `POLICY_VERSION` ([supabase/functions/_shared/consent.js](supabase/functions/_shared/consent.js)),
-    `telegram-auth` returns **403 `consent_required`** and writes nothing; the app
+    `/api/auth` returns **403 `consent_required`** and writes nothing; the app
     shows the consent screen (session status `"consent"`, `AuthScreen` / cabinet
     `SignIn`) and `acceptConsent()` signs in again with `{ initData, consent }`.
     Applies to the master too. `consents` is service-role only and keyed by
@@ -324,20 +324,23 @@ seed, kept in the repo because the content is no longer in git otherwise.
   - **Deploying:** `schema.sql` (on a live single-salon base it
     migrates everything into salon 1, `slug = 'main'`; re-runnable) → salon 1's bots:
     secrets `TELEGRAM_CLIENT_BOT_TOKEN=… TELEGRAM_CABINET_BOT_TOKEN=…` (or rows in
-    `salon_bots`) — every further salon via `supabase/add-salon.sql` → `supabase functions
-    deploy telegram-auth --no-verify-jwt` → in the dashboard turn off sign-ups, the
-    Email provider and Anonymous sign-ins (the function doesn't need any of them) →
+    `salon_bots`) — every further salon via `supabase/add-salon.sql` → the rest of the
+    secrets: `REMINDERS_CRON_SECRET`, `CLIENT_APP_URL`, `CLIENT_BOT_WEBHOOK_SECRET`
+    (+ optional `CLIENT_PRIVACY_URL`) → **the whole server is one function**:
+    `supabase functions deploy api --no-verify-jwt` → in the dashboard turn off
+    sign-ups, the Email provider and Anonymous sign-ins (it doesn't need any of them) →
     raise *Authentication → Rate Limits → token verifications*: every login is one OTP
     verification, and all of them come **from the function's IP** (default 30 per
-    5 min) → master opens the cabinet once → grant the role by SQL → reminders:
-    secrets `REMINDERS_CRON_SECRET=… CLIENT_APP_URL=…` → `supabase
-    functions deploy send-reminders --no-verify-jwt` → the two `vault.create_secret`
-    calls from the header of `supabase/reminders-cron.sql`, then that file → client bot
-    info buttons: secrets `CLIENT_BOT_WEBHOOK_SECRET` (+ optional `CLIENT_PRIVACY_URL`)
-    → `supabase functions deploy client-bot --no-verify-jwt` → `node
+    5 min) → master opens the cabinet once → grant the role by SQL → reminders: the
+    two `vault.create_secret` calls from the header of `supabase/reminders-cron.sql`
+    (URL `…/functions/v1/api/reminders`), then that file → client bot: `node
     scripts/setup-client-bot.mjs` with `TELEGRAM_CLIENT_BOT_TOKEN`,
-    `CLIENT_BOT_WEBHOOK_SECRET`, `CLIENT_BOT_WEBHOOK_URL` in the environment (sets the
-    webhook, commands and description; re-run after editing them).
+    `CLIENT_BOT_WEBHOOK_SECRET`, `CLIENT_BOT_WEBHOOK_URL=…/functions/v1/api/bot` in the
+    environment (sets the webhook, commands and description; re-run after editing
+    them). A project that still runs the old separate functions (`telegram-auth`,
+    `send-reminders`, `client-bot`, `client-invite`): deploy `api`, ship the
+    frontend, re-point the webhook and the Vault URL (header of `reminders-cron.sql`),
+    then delete the old functions.
     **Set project secrets in the dashboard** (*Edge Functions → Secrets*), never with
     `supabase secrets set` from this repo: the CLI (seen on v2.119, even with
     `--workdir`) also pushes every `[edge_runtime.secrets]` entry from
@@ -407,14 +410,14 @@ seed, kept in the repo because the content is no longer in git otherwise.
      a card the **master** saves (insert or username change) with a `@username` that
      exactly one account of her salon has. The one place a username links anything,
      and only on the master's save, never on the client's side (the takeover above).
-  2. **Otherwise the client agrees in the bot** — «Пригласить в приложение» → Edge
-     Function `client-invite` (master's JWT → `create_client_invite`; a new code voids
+  2. **Otherwise the client agrees in the bot** — «Пригласить в приложение» →
+     `/api/invite` (master's JWT → `create_client_invite`; a new code voids
      the old). Client already in the app (`client_stats.app_match`,
      `bot_invite_recipient`) → the **client bot sends the invitation itself**
      (`inviteOffer`: «✅ Принять» / «✖️ Отклонить», callback `inv:a|d:<code>`).
      Otherwise `sent: false` → the cabinet opens the master's chat with
      `t.me/<client_bot_username>?start=c_<code>` (a bot can't write first, nor by
-     username); «Запустить» → `client-bot` gets `/start c_<code>` and sends the same
+     username); «Запустить» → `/api/bot` gets `/start c_<code>` and sends the same
      invitation. Buttons → `bot_answer_client_invite` (service role only, salon of the
      bot that got the update, `from.id`): `linked` (account exists — merged via
      `attach_client_account`), `pending` (no account yet — stored as
@@ -536,10 +539,11 @@ month/week/day is showing) and each section's own edit-in-place state.
 |---|---|
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
 | [src/supabase.js](src/supabase.js) | Shared by both apps. Client (`persistSession: false` — the session never touches `localStorage`) + the session store (`useSession` → `{ status: "unknown" \| "signed" \| "no-telegram" \| "guest" \| "error", error, name, role }`, `signInWithTelegram`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. `initAuth()` signs in from `initData` on every launch. Every export must survive `supabase === null` (env vars unset). |
-| [supabase/functions/telegram-auth/](supabase/functions/telegram-auth/index.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Deployed with `--no-verify-jwt`. Logs no initData, tokens or e-mails. |
-| [supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts) | Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
-| [supabase/functions/client-bot/](supabase/functions/client-bot/index.ts) | Webhook of the **client bot** — Russian info menu: `/start`/`/help` → greeting + inline buttons («Как записаться», «Перенос и отмена», «Напоминания», «Адрес и контакты», «Ваши данные», «Открыть запись» as `web_app`); a button edits the same message, «← Назад» returns. Any other text gets "this bot isn't read, write to @master". Texts, commands and the bot description live in `_shared/client-bot.js` (pure, `e2e/unit/client-bot.spec.js`); `scripts/setup-client-bot.mjs` pushes the description/commands/webhook to Telegram. Reads `settings` with the anon key, stores nothing, checks `X-Telegram-Bot-Api-Secret-Token` = `CLIENT_BOT_WEBHOOK_SECRET`, always answers 200. |
-| [supabase/functions/client-invite/](supabase/functions/client-invite/index.ts) | «Пригласить в приложение» from the cabinet: `POST { client_id }` with the master's JWT → `create_client_invite` as her (all checks there) → if the card's client is already in the app, `sendMessage` of `inviteOffer` from the salon's client bot (403 → `mark_bot_unreachable`) → `{ code, sent }`. Deployed **with** JWT verification. The answers arrive at `client-bot`. Logs no token, chat id or code. |
+| [supabase/functions/api/](supabase/functions/api/index.ts) | **The whole server — one Edge Function `api`**, routed by the last path segment (`index.ts`): `/api/auth`, `/api/reminders`, `/api/bot`, `/api/invite`, one file each, shared env/clients/CORS/`sameSecret`/`clientBotToken` in `common.ts`. Deployed with `--no-verify-jwt` because sign-in, cron and Telegram arrive without a JWT — **every route guards itself** (initData signature, cron secret, the salon's webhook secret, or the caller's JWT checked by the database); a new route must too. Secrets are listed in `common.ts`. |
+| [api/auth.ts](supabase/functions/api/auth.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Logs no initData, tokens or e-mails. |
+| [api/reminders.ts](supabase/functions/api/reminders.ts) | Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
+| [api/bot.ts](supabase/functions/api/bot.ts) | Webhook of the **client bot** (`…/api/bot?salon=<slug>`) — Russian info menu: `/start`/`/help` → greeting + inline buttons («Как записаться», «Перенос и отмена», «Напоминания», «Адрес и контакты», «Ваши данные», «Открыть запись» as `web_app`); a button edits the same message, «← Назад» returns. Any other text gets "this bot isn't read, write to @master". Texts, commands and the bot description live in `_shared/client-bot.js` (pure, `e2e/unit/client-bot.spec.js`); `scripts/setup-client-bot.mjs` pushes the description/commands/webhook to Telegram. Also answers master invitations (`/start c_<code>`, «Принять»/«Отклонить» → `bot_client_invite`/`bot_answer_client_invite`); stores nothing else, checks `X-Telegram-Bot-Api-Secret-Token` = `CLIENT_BOT_WEBHOOK_SECRET`, always answers 200. |
+| [api/invite.ts](supabase/functions/api/invite.ts) | «Пригласить в приложение» from the cabinet: `POST { client_id }` with the master's JWT → `create_client_invite` as her (all checks there) → if the card's client is already in the app, `sendMessage` of `inviteOffer` from the salon's client bot (403 → `mark_bot_unreachable`) → `{ code, sent }`. The JWT is checked by the database (the RPC runs as the caller), not by the platform. The answers arrive at `/api/bot`. Logs no token, chat id or code. |
 | [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |

@@ -1,7 +1,7 @@
 // Напоминания о записи: текст сообщения и цикл отправки.
 //
 // Обычный ESM без зависимостей, как telegram-init-data.js: его исполняет
-// Edge Function send-reminders (Deno) и юнит-тест e2e/unit (Node). Сеть и
+// Edge Function api/reminders (Deno) и юнит-тест e2e/unit (Node). Сеть и
 // база приходят параметрами (send/release/markUnreachable) — здесь только
 // решения: что написать и что делать с ответом Telegram.
 //

@@ -8,7 +8,7 @@ import {
 
 // Напоминания о записи (supabase/functions/_shared/reminders.js) — текст
 // сообщения и разбор ответов Telegram, тот же код, что исполняет Edge
-// Function send-reminders. Сеть и база подменены функциями.
+// Function api/reminders. Сеть и база подменены функциями.
 
 // Вторник, 20 октября 2026, 10:00 по Тбилиси (UTC+4).
 const NOW = new Date("2026-10-20T06:00:00Z");

@@ -1,7 +1,7 @@
 // Проверка Telegram.WebApp.initData — подписи и свежести.
 //
 // Обычный ESM на Web Crypto, без зависимостей: тот же файл исполняет
-// Edge Function telegram-auth (Deno) и юнит-тест e2e/unit (Node).
+// Edge Function api/auth (Deno) и юнит-тест e2e/unit (Node).
 //
 // Алгоритм — из документации Telegram («Validating data received via the
 // Mini App»):
@@ -117,7 +117,7 @@ export async function validateInitData(initData, botToken, { maxAgeSeconds, now 
       firstName: text(user.first_name, 64),
       lastName: text(user.last_name, 64),
       // Пользователь разрешил боту писать ему в личку — для напоминаний
-      // (send-reminders). Нет поля — не разрешал.
+      // (api/reminders). Нет поля — не разрешал.
       allowsWriteToPm: user.allows_write_to_pm === true,
     },
   };

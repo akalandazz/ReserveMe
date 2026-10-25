@@ -25,8 +25,8 @@ import {
 //      принявший получает карточку при первом входе в приложение;
 //   2. клиент уже в приложении — карточка привязывается сама, когда мастер
 //      её сохраняет, а если у него уже своя карточка — бот сам присылает
-//      ему приглашение (Edge Function client-invite).
-// Настоящие Edge Functions client-bot и client-invite; Bot API подменён
+//      ему приглашение (Edge Function api/invite).
+// Настоящие Edge Functions api/bot и api/invite; Bot API подменён
 // HTTP-сервером на хосте (TELEGRAM_API_URL в supabase/config.toml).
 
 test.skip(!ENABLED, "нет SUPABASE_IT_* — локальный Supabase не поднят (см. support.js)");
@@ -80,11 +80,11 @@ async function masterBooksNewClient(name, telegram) {
 
 /** «Пригласить в приложение» в кабинете → { status, data: { code, sent } | { error } }. */
 const invite = (clientId, token = M.token) =>
-  api("/functions/v1/client-invite", { method: "POST", token, body: { client_id: clientId } });
+  api("/functions/v1/api/invite", { method: "POST", token, body: { client_id: clientId } });
 
 /** Апдейт Telegram вебхуку бота клиента салона 1. */
 const webhook = (update) =>
-  api("/functions/v1/client-bot", {
+  api("/functions/v1/api/bot", {
     method: "POST",
     headers: { "x-telegram-bot-api-secret-token": WEBHOOK_SECRET },
     body: { update_id: 1, ...update },
@@ -368,7 +368,7 @@ test.describe("права", () => {
     expect((await bookingAsAdmin(bookingId)).user_id).toBeNull();
 
     // Чужой секрет вебхука — 401, апдейт не обработан.
-    const forged = await api("/functions/v1/client-bot", {
+    const forged = await api("/functions/v1/api/bot", {
       method: "POST",
       headers: { "x-telegram-bot-api-secret-token": "wrong" },
       body: { callback_query: { id: "x", from: { id: tg.id }, data: `inv:a:${code}`, message: { message_id: 1, chat: chat(tg) } } },

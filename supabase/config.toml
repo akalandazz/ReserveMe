@@ -209,7 +209,7 @@ token_refresh = 150
 # Number of sign up and sign-in requests that can be made in a 5 minute interval per IP address (excludes anonymous users).
 sign_in_sign_ups = 30
 # Number of OTP / Magic link verifications that can be made in a 5 minute interval per IP address.
-# ⚠️ Каждый вход через telegram-auth — одна такая проверка, и все они идут
+# ⚠️ Каждый вход через api/auth — одна такая проверка, и все они идут
 # с адреса Edge Function. Локально поднято для тестов; в проекте —
 # Dashboard → Authentication → Rate Limits (см. CLAUDE.md).
 token_verifications = 1000
@@ -226,7 +226,7 @@ web3 = 30
 # Allow/disallow new user signups via email to your project.
 # Как в проекте: провайдер Email выключен (вход по паролю и письмом —
 # «Email logins are disabled»); аккаунты и сессии выпускает только
-# telegram-auth через admin API, ему это не мешает.
+# api/auth через admin API, ему это не мешает.
 enable_signup = false
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
@@ -397,35 +397,21 @@ deno_version = 2
 [edge_runtime.secrets]
 TELEGRAM_CLIENT_BOT_TOKEN = "111111:local-test-client-bot"
 TELEGRAM_CABINET_BOT_TOKEN = "222222:local-test-cabinet-bot"
-# send-reminders: секрет cron-задачи и поддельный Bot API — HTTP-сервер,
-# который поднимает e2e/integration/reminders.spec.js на хосте.
+# /api/reminders: секрет cron-задачи и поддельный Bot API — HTTP-сервер,
+# который поднимают e2e/integration/reminders.spec.js и client-invites.spec.js.
 REMINDERS_CRON_SECRET = "local-test-cron-secret"
 TELEGRAM_API_URL = "http://host.docker.internal:54399"
 CLIENT_APP_URL = "https://example.invalid/miniapp"
-# client-bot салона 1: secret_token вебхука, которым e2e/integration/
+# /api/bot салона 1: secret_token вебхука, которым e2e/integration/
 # client-invites.spec.js подписывает апдейты.
 CLIENT_BOT_WEBHOOK_SECRET = "local-test-webhook-secret"
 
-# Вызывается до появления сессии — без проверки JWT (в проекте:
-# `supabase functions deploy telegram-auth --no-verify-jwt`).
-[functions.telegram-auth]
+# Весь сервер — одна функция api (supabase/functions/api/index.ts). Вход,
+# cron и Telegram приходят без JWT, поэтому проверки JWT платформой нет:
+# каждый маршрут закрыт сам (в проекте: `supabase functions deploy api
+# --no-verify-jwt`).
+[functions.api]
 verify_jwt = false
-
-# Доступ закрыт заголовком x-cron-secret (в проекте:
-# `supabase functions deploy send-reminders --no-verify-jwt`).
-[functions.send-reminders]
-verify_jwt = false
-
-# Вебхук бота клиента: Telegram шлёт без JWT, доступ закрыт заголовком
-# X-Telegram-Bot-Api-Secret-Token (в проекте:
-# `supabase functions deploy client-bot --no-verify-jwt`).
-[functions.client-bot]
-verify_jwt = false
-
-# «Пригласить в приложение» из кабинета — с JWT мастера (в проекте:
-# `supabase functions deploy client-invite`).
-[functions.client-invite]
-verify_jwt = true
 
 [analytics]
 enabled = true

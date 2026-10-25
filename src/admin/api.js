@@ -437,7 +437,7 @@ export async function deleteClient(id) {
    его аккаунт мини-аппа» в schema.sql.                              */
 
 /**
- * «Пригласить в приложение» — Edge Function client-invite: новый код
+ * «Пригласить в приложение» — Edge Function api/invite: новый код
  * приглашения (прежний перестаёт работать), и если клиент уже в
  * приложении — бот сам присылает ему приглашение с кнопками.
  * → { ok, error, code, sent }; sent: false — бот написать не может,
@@ -446,7 +446,7 @@ export async function deleteClient(id) {
 export async function sendClientInvite(clientId) {
   if (!supabase) return { ok: false, error: NOT_CONFIGURED, code: null, sent: false };
   try {
-    const { data, error } = await supabase.functions.invoke("client-invite", {
+    const { data, error } = await supabase.functions.invoke("api/invite", {
       body: { client_id: clientId },
     });
     if (error) {

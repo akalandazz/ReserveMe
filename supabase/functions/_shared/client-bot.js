@@ -1,7 +1,7 @@
 // Бот клиента: ответы на /start, /help и кнопки «что умеет бот».
 //
 // Обычный ESM без зависимостей, как reminders.js: его исполняют Edge
-// Function client-bot (Deno, вебхук), scripts/setup-client-bot.mjs (Node:
+// Function api/bot (Deno, вебхук), scripts/setup-client-bot.mjs (Node:
 // команды и описание бота в Telegram) и юнит-тест e2e/unit. Сети здесь
 // нет — botReplies() только решает, какие вызовы Bot API сделать.
 //
@@ -194,7 +194,7 @@ function notReadMessage({ salon, appUrl }) {
    «Мои записи», он принимает приглашение кнопкой. Сюда оно приходит
    двумя путями: ссылкой t.me/<бот>?start=c_<код> (клиент жмёт
    «Запустить» — бот получает "/start c_<код>") или сообщением, которое
-   бот шлёт сам (Edge Function client-invite, тот же inviteOffer). Код
+   бот шлёт сам (Edge Function api/invite, тот же inviteOffer). Код
    проверяет база (bot_client_invite / bot_answer_client_invite в
    schema.sql); здесь — только разбор апдейта и тексты.                */
 

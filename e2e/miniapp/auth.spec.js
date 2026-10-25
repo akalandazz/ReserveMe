@@ -5,7 +5,7 @@ import { expect, test, withTelegram } from "../support/fixtures.js";
 
 // Мини-апп целиком — только для вошедших (App.jsx → AuthScreen). Вход —
 // через Telegram: src/supabase.js шлёт initData в Edge Function
-// telegram-auth (здесь — поддельную, fake-supabase.js), формы нет.
+// api/auth (здесь — поддельную, fake-supabase.js), формы нет.
 // Здесь не фикстура miniapp: она входит заранее, а нам нужен сам вход.
 // Подпись initData проверяют e2e/unit и e2e/integration — не здесь.
 
