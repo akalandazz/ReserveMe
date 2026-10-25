@@ -37,10 +37,10 @@ async function sendByBot(code: string) {
   });
   const { data: salon } = await admin
     .from("salons")
-    .select("id, salon_bots(kind, token)")
+    .select("slug")
     .eq("id", to.salon_id)
     .maybeSingle();
-  const token = salon ? clientBotToken(salon) : "";
+  const token = salon ? clientBotToken(salon.slug) : "";
   if (view?.[0]?.status !== "open" || !token) return false;
 
   try {

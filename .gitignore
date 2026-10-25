@@ -35,3 +35,4 @@ masters/*.json
 # Playwright
 test-results
 playwright-report
+scripts/setup-client-bot.cmd

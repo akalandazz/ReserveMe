@@ -393,18 +393,20 @@ deno_version = 2
 
 # ТОЛЬКО для локального стека и e2e/integration: ненастоящие токены,
 # которыми тесты сами подписывают initData. Настоящие токены ботов —
-# секреты проекта (`supabase secrets set`), сюда их не вписывать.
+# секрет SALON_BOTS проекта (в дашборде), сюда их не вписывать. И никогда
+# не `supabase secrets set` из репозитория: CLI зальёт отсюда и этот
+# SALON_BOTS — поверх настоящего, и все салоны перестанут входить.
 [edge_runtime.secrets]
-TELEGRAM_CLIENT_BOT_TOKEN = "111111:local-test-client-bot"
-TELEGRAM_CABINET_BOT_TOKEN = "222222:local-test-cabinet-bot"
+# Боты салонов (supabase/functions/_shared/salon-bots.js): main — салон 1
+# из сида schema.sql; beta — салон 2, его заводит e2e/integration/
+# tenancy.spec.js. webhook_secret main — им client-invites.spec.js
+# подписывает апдейты /api/bot.
+SALON_BOTS = '{"main":{"client":"111111:local-test-client-bot","cabinet":"222222:local-test-cabinet-bot","webhook_secret":"local-test-webhook-secret"},"beta":{"client":"333333:local-test-beta-client-bot","cabinet":"444444:local-test-beta-cabinet-bot","webhook_secret":"beta-secret"}}'
 # send-reminders: секрет cron-задачи и поддельный Bot API — HTTP-сервер,
 # который поднимают e2e/integration/reminders.spec.js и client-invites.spec.js.
 REMINDERS_CRON_SECRET = "local-test-cron-secret"
 TELEGRAM_API_URL = "http://host.docker.internal:54399"
 CLIENT_APP_URL = "https://example.invalid/miniapp"
-# /api/bot салона 1: secret_token вебхука, которым e2e/integration/
-# client-invites.spec.js подписывает апдейты.
-CLIENT_BOT_WEBHOOK_SECRET = "local-test-webhook-secret"
 
 # Сервер приложения — функция api (supabase/functions/api/index.ts): вход,
 # бот клиента, приглашения. Вход и Telegram приходят без JWT, поэтому

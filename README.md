@@ -47,10 +47,11 @@ Telegram Desktop. Вход — по вашему аккаунту Telegram, па
    прогонять повторно на живой базе.
 2. Сервер — Edge Function `api` (вход, бот клиента, приглашения; напоминания —
    отдельная функция `send-reminders`, см. `supabase/reminders-cron.sql`):
-   токены ботов салона — строки в `salon_bots` (см.
-   [supabase/add-salon.sql](supabase/add-salon.sql)) или секреты
-   `TELEGRAM_CLIENT_BOT_TOKEN` / `TELEGRAM_CABINET_BOT_TOKEN` в дашборде
-   (**Edge Functions → Secrets**), затем
+   токены ботов всех салонов — один секрет `SALON_BOTS` в дашборде
+   (**Edge Functions → Secrets**): JSON по slug салона
+   `{"main": {"client": "…", "cabinet": "…", "webhook_secret": "…"}}`
+   (формат — [salon-bots.js](supabase/functions/_shared/salon-bots.js),
+   новый салон — `npm run add-master`), затем
    `npx supabase functions deploy api --no-verify-jwt`. Токены ботов
    живут **только** на сервере — не в `.env` и не в коде.
    ⚠️ Не ставьте секреты командой `supabase secrets set` из этого репозитория:
