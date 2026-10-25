@@ -45,8 +45,9 @@ Telegram Desktop. Вход — по вашему аккаунту Telegram, па
 1. Выполните [supabase/schema.sql](supabase/schema.sql) целиком в SQL Editor
    проекта — таблицы, политики доступа и начальные данные. Файл можно
    прогонять повторно на живой базе.
-2. Сервер — одна Edge Function `api` (вход, напоминания, бот клиента,
-   приглашения): токены ботов салона — строки в `salon_bots` (см.
+2. Сервер — Edge Function `api` (вход, бот клиента, приглашения; напоминания —
+   отдельная функция `send-reminders`, см. `supabase/reminders-cron.sql`):
+   токены ботов салона — строки в `salon_bots` (см.
    [supabase/add-salon.sql](supabase/add-salon.sql)) или секреты
    `TELEGRAM_CLIENT_BOT_TOKEN` / `TELEGRAM_CABINET_BOT_TOKEN` в дашборде
    (**Edge Functions → Secrets**), затем

@@ -27,13 +27,13 @@ All tests are Playwright, in three projects (`playwright.config.js`):
   doesn't handle; extend it when a new flow reads or writes a new table.
 - **`unit`** (`e2e/unit`) — `supabase/functions/_shared/telegram-init-data.js`, signing its
   fixtures with its own `node:crypto` code (never with the module under test).
-- **`integration`** (`e2e/integration`) — the real `api` Edge Function (`/api/auth`, `/api/bot`, `/api/invite`, `/api/reminders`), PostgREST and
+- **`integration`** (`e2e/integration`) — the real Edge Functions (`api`: `/api/auth`, `/api/bot`, `/api/invite`; `send-reminders`), PostgREST and
   the RLS from `schema.sql`, on a **local** Supabase in Docker (`npx supabase start …`,
   then `SUPABASE_IT_URL`/`SUPABASE_IT_ANON_KEY`/`SUPABASE_IT_SERVICE_KEY` from
   `npx supabase status -o env`; exact commands in `e2e/integration/support.js`). Skipped
   without those variables; refuses a non-localhost URL; wipes bookings and clients.
   `supabase/config.toml` exists only for this stack: it seeds from `schema.sql` and holds
-  **fake** bot tokens the tests sign with, plus the fake cron secret of `/api/reminders` and a
+  **fake** bot tokens the tests sign with, plus the fake cron secret of `send-reminders` and a
   `TELEGRAM_API_URL` pointing at the Bot API stub that `e2e/integration/reminders.spec.js`
   serves on the host (`host.docker.internal:54399`). Run the integration project with
   `--workers=1`: its files share one database.
@@ -119,8 +119,8 @@ Consequences that constrain every change here:
   master still resolves any collision by hand in the cabinet.
 - **Reminders are the one message the server sends by itself.** pg_cron
   (`supabase/reminders-cron.sql`, run once by hand, **not** part of `schema.sql`, so the
-  test stack never fires it) POSTs every 10 min to the `/api/reminders` route
-  ([supabase/functions/api/reminders.ts](supabase/functions/api/reminders.ts),
+  test stack never fires it) POSTs every 10 min to the `send-reminders` Edge Function
+  ([supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts),
   `x-cron-secret` = `REMINDERS_CRON_SECRET`, `--no-verify-jwt`). It calls
   `claim_due_reminders()` (service role only): `status = 'ok'` bookings with a `user_id`,
   starting in `(now + 30 min, now + settings.reminder_hours]` (0 = off, set in the
@@ -234,7 +234,7 @@ as "not found" (`delete_client` → zeros), client RPCs → 403.
   `assert_client_slot`). Any new definer function or view must do the same.
 - Content is **no longer public**: anon reads nothing, `content.js` loads only after
   sign-in, and its cache key is per salon (`vs_content_v1:<slug>`).
-- Reminders: `claim_due_reminders()` returns `salon_id`; `/api/reminders` sends each
+- Reminders: `claim_due_reminders()` returns `salon_id`; `send-reminders` sends each
   salon's rows with that salon's client bot (429 on one bot doesn't stall another).
   `/api/bot` webhooks are `…/api/bot?salon=<slug>` with that salon's secret.
 - A new salon: `npm run add-master -- masters/<name>.json` (`scripts/add-master.mjs`;
@@ -326,21 +326,21 @@ seed, kept in the repo because the content is no longer in git otherwise.
     secrets `TELEGRAM_CLIENT_BOT_TOKEN=… TELEGRAM_CABINET_BOT_TOKEN=…` (or rows in
     `salon_bots`) — every further salon via `supabase/add-salon.sql` → the rest of the
     secrets: `REMINDERS_CRON_SECRET`, `CLIENT_APP_URL`, `CLIENT_BOT_WEBHOOK_SECRET`
-    (+ optional `CLIENT_PRIVACY_URL`) → **the whole server is one function**:
-    `supabase functions deploy api --no-verify-jwt` → in the dashboard turn off
-    sign-ups, the Email provider and Anonymous sign-ins (it doesn't need any of them) →
-    raise *Authentication → Rate Limits → token verifications*: every login is one OTP
-    verification, and all of them come **from the function's IP** (default 30 per
-    5 min) → master opens the cabinet once → grant the role by SQL → reminders: the
-    two `vault.create_secret` calls from the header of `supabase/reminders-cron.sql`
-    (URL `…/functions/v1/api/reminders`), then that file → client bot: `node
+    (+ optional `CLIENT_PRIVACY_URL`) → **two functions**: `supabase functions deploy
+    api --no-verify-jwt` (sign-in, client bot, invitations) and `supabase functions
+    deploy send-reminders --no-verify-jwt` (kept separate: only pg_cron calls it) →
+    in the dashboard turn off sign-ups, the Email provider and Anonymous sign-ins
+    (neither needs any of them) → raise *Authentication → Rate Limits → token
+    verifications*: every login is one OTP verification, and all of them come **from
+    the function's IP** (default 30 per 5 min) → master opens the cabinet once → grant
+    the role by SQL → reminders: the two `vault.create_secret` calls from the header of
+    `supabase/reminders-cron.sql`, then that file → client bot: `node
     scripts/setup-client-bot.mjs` with `TELEGRAM_CLIENT_BOT_TOKEN`,
     `CLIENT_BOT_WEBHOOK_SECRET`, `CLIENT_BOT_WEBHOOK_URL=…/functions/v1/api/bot` in the
     environment (sets the webhook, commands and description; re-run after editing
-    them). A project that still runs the old separate functions (`telegram-auth`,
-    `send-reminders`, `client-bot`, `client-invite`): deploy `api`, ship the
-    frontend, re-point the webhook and the Vault URL (header of `reminders-cron.sql`),
-    then delete the old functions.
+    them). A project that still runs the old separate `telegram-auth`, `client-bot`
+    and `client-invite`: deploy `api`, ship the frontend, re-point the webhook, then
+    delete those three (`send-reminders` and its cron job stay as they are).
     **Set project secrets in the dashboard** (*Edge Functions → Secrets*), never with
     `supabase secrets set` from this repo: the CLI (seen on v2.119, even with
     `--workdir`) also pushes every `[edge_runtime.secrets]` entry from
@@ -539,11 +539,11 @@ month/week/day is showing) and each section's own edit-in-place state.
 |---|---|
 | [src/content.js](src/content.js) | Client's read-only salon content: fetch, `localStorage` cache, plus uncached availability from the `busy_slots` view (`refreshBusy()`). Exposed through `useContent()` — a `useSyncExternalStore` store, the same idiom as `theme.js`. **`getSnapshot` must return a cached object**; building a fresh one per call is an infinite render loop. No mutations — those live in `src/admin/api.js`. Imports `dateKey` from `schedule.js`; the dependency only ever runs that way, never back. |
 | [src/supabase.js](src/supabase.js) | Shared by both apps. Client (`persistSession: false` — the session never touches `localStorage`) + the session store (`useSession` → `{ status: "unknown" \| "signed" \| "no-telegram" \| "guest" \| "error", error, name, role }`, `signInWithTelegram`, `signOut`, `retryRole`; used by both apps) + `currentUserId()` and `withTimeout()` for `src/bookings.js`. `initAuth()` signs in from `initData` on every launch. Every export must survive `supabase === null` (env vars unset). |
-| [supabase/functions/api/](supabase/functions/api/index.ts) | **The whole server — one Edge Function `api`**, routed by the last path segment (`index.ts`): `/api/auth`, `/api/reminders`, `/api/bot`, `/api/invite`, one file each, shared env/clients/CORS/`sameSecret`/`clientBotToken` in `common.ts`. Deployed with `--no-verify-jwt` because sign-in, cron and Telegram arrive without a JWT — **every route guards itself** (initData signature, cron secret, the salon's webhook secret, or the caller's JWT checked by the database); a new route must too. Secrets are listed in `common.ts`. |
+| [supabase/functions/api/](supabase/functions/api/index.ts) | **The app's server — one Edge Function `api`**, routed by the last path segment (`index.ts`): `/api/auth`, `/api/bot`, `/api/invite`, one file each; env/clients/CORS/`sameSecret`/`clientBotToken` live in `_shared/server.ts` (Deno-only, shared with `send-reminders`). Deployed with `--no-verify-jwt` because sign-in and Telegram arrive without a JWT — **every route guards itself** (initData signature, the salon's webhook secret, or the caller's JWT checked by the database); a new route must too. Secrets are listed in `_shared/server.ts`. |
 | [api/auth.ts](supabase/functions/api/auth.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_CABINET_BOT_TOKEN`, optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Logs no initData, tokens or e-mails. |
-| [api/reminders.ts](supabase/functions/api/reminders.ts) | Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
 | [api/bot.ts](supabase/functions/api/bot.ts) | Webhook of the **client bot** (`…/api/bot?salon=<slug>`) — Russian info menu: `/start`/`/help` → greeting + inline buttons («Как записаться», «Перенос и отмена», «Напоминания», «Адрес и контакты», «Ваши данные», «Открыть запись» as `web_app`); a button edits the same message, «← Назад» returns. Any other text gets "this bot isn't read, write to @master". Texts, commands and the bot description live in `_shared/client-bot.js` (pure, `e2e/unit/client-bot.spec.js`); `scripts/setup-client-bot.mjs` pushes the description/commands/webhook to Telegram. Also answers master invitations (`/start c_<code>`, «Принять»/«Отклонить» → `bot_client_invite`/`bot_answer_client_invite`); stores nothing else, checks `X-Telegram-Bot-Api-Secret-Token` = `CLIENT_BOT_WEBHOOK_SECRET`, always answers 200. |
 | [api/invite.ts](supabase/functions/api/invite.ts) | «Пригласить в приложение» from the cabinet: `POST { client_id }` with the master's JWT → `create_client_invite` as her (all checks there) → if the card's client is already in the app, `sendMessage` of `inviteOffer` from the salon's client bot (403 → `mark_bot_unreachable`) → `{ code, sent }`. The JWT is checked by the database (the RPC runs as the caller), not by the platform. The answers arrive at `/api/bot`. Logs no token, chat id or code. |
+| [supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts) | **A separate function** (only pg_cron calls it; deploying `api` doesn't touch it), `--no-verify-jwt`, shares `_shared/server.ts` with `api`. Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
 | [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
 | [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |

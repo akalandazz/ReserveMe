@@ -14,7 +14,7 @@
 // …/api/bot?salon=<slug>. Токен бота и secret_token вебхука — из
 // salon_bots этого салона (kind = 'client'), настройки — его строка
 // settings. Без ?salon — салон 1, и для него пока работают секреты
-// TELEGRAM_CLIENT_BOT_TOKEN / CLIENT_BOT_WEBHOOK_SECRET (common.ts).
+// TELEGRAM_CLIENT_BOT_TOKEN / CLIENT_BOT_WEBHOOK_SECRET (_shared/server.ts).
 //
 // Приглашение — через bot_client_invite / bot_answer_client_invite
 // (schema.sql): база запоминает, кто ответил. Остальное бот не сохраняет.
@@ -36,7 +36,7 @@ import {
   clientBotToken,
   env,
   sameSecret,
-} from "./common.ts";
+} from "../_shared/server.ts";
 
 const ENV_WEBHOOK_SECRET = env("CLIENT_BOT_WEBHOOK_SECRET");
 const PRIVACY_URL = env("CLIENT_PRIVACY_URL");

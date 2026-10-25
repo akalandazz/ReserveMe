@@ -19,7 +19,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { inviteOffer } from "../_shared/client-bot.js";
-import { ANON_KEY, API_URL, CORS, NO_SESSION, SUPABASE_URL, admin, clientBotToken, json } from "./common.ts";
+import { ANON_KEY, API_URL, CORS, NO_SESSION, SUPABASE_URL, admin, clientBotToken, json } from "../_shared/server.ts";
 
 const SEND_TIMEOUT_MS = 10_000;
 

@@ -1,7 +1,8 @@
-// POST /api/reminders — бот клиента напоминает о записи (бывшая функция
-// send-reminders).
+// Edge Function send-reminders — бот клиента напоминает о записи.
+// Отдельно от функции api: её зовёт только pg_cron, и деплой api её не
+// задевает. Общее с api — _shared/server.ts.
 //
-// Без тела, с заголовком x-cron-secret → claim_due_reminders()
+// POST без тела, с заголовком x-cron-secret → claim_due_reminders()
 // (supabase/schema.sql: подтверждённые записи клиентов мини-аппа, до
 // начала которых осталось не больше settings.reminder_hours) → sendMessage
 // от бота клиента на profiles.telegram_id → { claimed, sent, unreachable,
@@ -20,9 +21,13 @@
 //
 // В логи не пишется ни токен, ни telegram_id, ни текст — только счётчики
 // и коды ошибок.
+//
+// Деплой — без проверки JWT (доступ закрыт секретом, а service-role ключ
+// в базу класть незачем):
+//   supabase functions deploy send-reminders --no-verify-jwt
 
 import { deliverReminders } from "../_shared/reminders.js";
-import { API_URL, SERVICE_KEY, admin, appUrlFor, clientBotToken, env, json, sameSecret } from "./common.ts";
+import { API_URL, SERVICE_KEY, admin, appUrlFor, clientBotToken, env, json, sameSecret } from "../_shared/server.ts";
 
 const CRON_SECRET = env("REMINDERS_CRON_SECRET");
 
@@ -66,10 +71,10 @@ async function loadSalons(ids: number[]): Promise<Map<number, Salon>> {
   return out;
 }
 
-export async function handleReminders(req: Request): Promise<Response> {
+Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
   if (!SERVICE_KEY || !CRON_SECRET) {
-    console.error("reminders: not configured");
+    console.error("send-reminders: not configured");
     return json(500, { error: "not_configured" });
   }
   if (!(await sameSecret(req.headers.get("x-cron-secret") ?? "", CRON_SECRET))) {
@@ -78,7 +83,7 @@ export async function handleReminders(req: Request): Promise<Response> {
 
   const claimed = await admin.rpc("claim_due_reminders", { p_limit: BATCH });
   if (claimed.error) {
-    console.error("reminders: claim:", claimed.error.code ?? "error");
+    console.error("send-reminders: claim:", claimed.error.code ?? "error");
     return json(500, { error: "server_error" });
   }
 
@@ -91,7 +96,7 @@ export async function handleReminders(req: Request): Promise<Response> {
     salons = bySalon.size ? await loadSalons([...bySalon.keys()]) : new Map();
   } catch (e) {
     // Без токенов не шлём ничего — всё взятое обратно в очередь.
-    console.error("reminders:", e instanceof Error ? e.message : "salons");
+    console.error("send-reminders:", e instanceof Error ? e.message : "salons");
     for (const r of rows) await rpc("release_reminder", { p_id: r.booking_id }).catch(() => {});
     return json(500, { error: "server_error" });
   }
@@ -101,7 +106,7 @@ export async function handleReminders(req: Request): Promise<Response> {
   for (const [salonId, salonRows] of bySalon) {
     const salon = salons.get(salonId);
     if (!salon) {
-      console.error("reminders: salon without client bot");
+      console.error("send-reminders: salon without client bot");
       for (const r of salonRows) await release(r.booking_id).catch(() => {});
       counts.retry += salonRows.length;
       continue;
@@ -115,6 +120,6 @@ export async function handleReminders(req: Request): Promise<Response> {
     });
     for (const k of ["sent", "unreachable", "retry", "drop"] as const) counts[k] += part[k];
   }
-  if (counts.claimed) console.log("reminders:", JSON.stringify(counts));
+  if (counts.claimed) console.log("send-reminders:", JSON.stringify(counts));
   return json(200, counts);
-}
+});

@@ -93,7 +93,7 @@ function beforeLabel(hours) {
 
 /**
  * Напоминания о подтверждённой записи от бота (Edge Function
- * api/reminders). Включение сначала просит у Telegram разрешение боту
+ * send-reminders). Включение сначала просит у Telegram разрешение боту
  * писать — без него сообщение не дойдёт. Отказ — не включаем.
  */
 function RemindersRow({ hours, onToast }) {

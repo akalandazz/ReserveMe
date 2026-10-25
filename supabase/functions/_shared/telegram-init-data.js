@@ -117,7 +117,7 @@ export async function validateInitData(initData, botToken, { maxAgeSeconds, now 
       firstName: text(user.first_name, 64),
       lastName: text(user.last_name, 64),
       // Пользователь разрешил боту писать ему в личку — для напоминаний
-      // (api/reminders). Нет поля — не разрешал.
+      // (send-reminders). Нет поля — не разрешал.
       allowsWriteToPm: user.allows_write_to_pm === true,
     },
   };

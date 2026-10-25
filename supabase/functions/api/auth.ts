@@ -42,7 +42,7 @@ import {
   admin,
   env,
   json,
-} from "./common.ts";
+} from "../_shared/server.ts";
 
 const ENV_TOKENS = [env("TELEGRAM_CLIENT_BOT_TOKEN"), env("TELEGRAM_CABINET_BOT_TOKEN")].filter(Boolean);
 const MAX_AGE = Number(env("INITDATA_MAX_AGE_SECONDS")) || 3600;

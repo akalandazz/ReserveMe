@@ -61,7 +61,7 @@ create table if not exists public.settings (
 );
 
 -- За сколько часов до начала бот напоминает клиенту о подтверждённой
--- записи (claim_due_reminders, Edge Function api/reminders). 0 —
+-- записи (claim_due_reminders, Edge Function send-reminders). 0 —
 -- напоминания выключены для всего салона. Правит мастер в кабинете.
 alter table public.settings add column if not exists reminder_hours integer not null default 24;
 alter table public.settings drop constraint if exists settings_reminder_hours_check;
@@ -217,7 +217,7 @@ alter table public.profiles add column if not exists first_name        text not 
 alter table public.profiles add column if not exists last_name         text not null default '';
 alter table public.profiles add column if not exists updated_at        timestamptz not null default now();
 alter table public.profiles add column if not exists last_login_at     timestamptz;
--- Напоминания о записи от бота клиента (api/reminders). reminders —
+-- Напоминания о записи от бота клиента (send-reminders). reminders —
 -- выбор самого клиента: пишет только set_reminders() (своя строка, одна
 -- колонка). bot_unreachable_at — Telegram ответил 403 (бота заблокировали
 -- или не разрешили ему писать): больше не пытаемся, пока api/auth не
@@ -416,7 +416,7 @@ insert into public.salons (id, slug) values (1, 'main') on conflict (id) do noth
 -- Боты салона: бот мини-аппа клиента и бот кабинета (токены могут
 -- совпадать). Токены лежат здесь, а не в секретах функций: салонов
 -- сколько угодно, секретов на каждый не заведёшь. Читает таблицу только
--- service role (api/auth, api/reminders, api/bot) — у anon и
+-- service role (api/auth, send-reminders, api/bot) — у anon и
 -- authenticated нет на неё никаких прав. webhook_secret — secret_token
 -- вебхука бота клиента (api/bot), у бота кабинета пусто.
 create table if not exists public.salon_bots (
@@ -1391,7 +1391,7 @@ grant execute on function public.reschedule_own_booking(bigint, date, integer) t
 --
 --  Единственное место, где сервер пишет клиенту без его действия.
 --  pg_cron (supabase/reminders-cron.sql) раз в несколько минут дёргает
---  Edge Function api/reminders, та берёт подошедшие записи через
+--  Edge Function send-reminders, та берёт подошедшие записи через
 --  claim_due_reminders() и шлёт sendMessage от бота клиента на
 --  profiles.telegram_id. Токен бота живёт только в секретах функции,
 --  в базу он не попадает.

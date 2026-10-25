@@ -1,5 +1,7 @@
-// Общее для маршрутов Edge Function api (index.ts): окружение, клиент
+// Общее для Edge Functions api и send-reminders: окружение, клиент
 // service role, CORS, ответы, сравнение секретов и бот клиента салона.
+// Только Deno (Deno.env, npm:-импорт) — в отличие от остальных модулей
+// _shared, которые исполняет и Node (e2e/unit, scripts/).
 //
 // Секреты (Dashboard → Edge Functions → Secrets — никогда не через
 // `supabase secrets set` из репозитория, см. CLAUDE.md):
@@ -8,7 +10,7 @@
 //   TELEGRAM_CABINET_BOT_TOKEN — то же для бота кабинета салона 1 (auth);
 //   CLIENT_BOT_WEBHOOK_SECRET  — secret_token вебхука бота клиента салона 1,
 //                                пока его нет в salon_bots (bot);
-//   REMINDERS_CRON_SECRET      — общий с cron-задачей (reminders);
+//   REMINDERS_CRON_SECRET      — общий с cron-задачей (send-reminders);
 //   CLIENT_APP_URL             — необязательно: https-адрес мини-аппа, тогда
 //                                у сообщений бота кнопка в приложение;
 //   CLIENT_PRIVACY_URL         — необязательно: https-адрес privacy.html (bot);
