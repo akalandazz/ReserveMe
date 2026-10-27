@@ -32,6 +32,13 @@ const STEP_INDEX = { client: 0, service: 1, day: 2, time: 2, confirm: 3 };
 const WD_SHORT = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const fDayMonth = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" });
 
+/** Сколько дней от сегодня до "ГГГГ-ММ-ДД" (в полдень — без сдвигов DST). */
+function daysFromToday(key) {
+  const t = new Date();
+  t.setHours(12, 0, 0, 0);
+  return Math.round((new Date(`${key}T12:00:00`) - t) / 86400000);
+}
+
 const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
 const digits = (s) => String(s ?? "").replace(/\D/g, "");
 const channelLabel = (id) => CHANNELS.find((c) => c.id === id)?.label ?? "";
@@ -110,7 +117,7 @@ export default function BookingSheet({
       newCh: "wa",
       s: "",
       d: "",
-      od: "",
+      more: 0,
       t: null,
       cm: "",
       copied: false,
@@ -147,9 +154,10 @@ export default function BookingSheet({
     };
   });
 
-  // { key, map } / { key, list } — key отличает свежий ответ от ответа на
-  // прошлый выбор: пока они не совпали, идёт загрузка.
-  const [counts, setCounts] = useState({ key: "", map: new Map() });
+  // { key, list } — key отличает свежий ответ от ответа на прошлый выбор:
+  // пока они не совпали, идёт загрузка. counts — то же по кускам списка
+  // дней: ключ куска → Map день → число; куска нет — он грузится.
+  const [counts, setCounts] = useState(() => new Map());
   const [slots, setSlots] = useState({ key: "", list: [] });
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -189,9 +197,18 @@ export default function BookingSheet({
   const sv = isEdit && st.s === st.orig.s ? origView : svc;
 
   const slotsKey = st.step === "time" && st.d && st.s ? `${st.d}|${st.s}|${editId ?? ""}` : "";
-  const countsKey = st.step === "day" && st.s ? `${today}|${st.s}|${editId ?? ""}` : "";
+  // Список дней — кусками по DAYS_AHEAD: «Показать ещё» добавляет кусок.
+  // Переносимая запись дальше первого куска — список сразу до её дня.
+  const chunkCount = Math.max(
+    1 + st.more,
+    st.d ? Math.floor(daysFromToday(st.d) / DAYS_AHEAD) + 1 : 1
+  );
+  const chunkKeys =
+    st.step === "day" && st.s
+      ? Array.from({ length: chunkCount }, (_, i) => `${today}|${st.s}|${editId ?? ""}|${i}`)
+      : [];
+  const chunksKey = chunkKeys.join(";");
   const slotsLoading = slotsKey !== "" && slots.key !== slotsKey;
-  const countsLoading = countsKey !== "" && counts.key !== countsKey;
 
   useEffect(() => {
     if (!slotsKey) return;
@@ -208,18 +225,22 @@ export default function BookingSheet({
   }, [slotsKey, editId]);
 
   useEffect(() => {
-    if (!countsKey) return;
+    if (!chunksKey) return;
     let cancelled = false;
-    const [from, s] = countsKey.split("|");
-    fetchFreeSlotCounts(from, DAYS_AHEAD, splitIds(s), editId).then((res) => {
-      if (cancelled) return;
-      if (!res.ok) setError(res.error);
-      setCounts({ key: countsKey, map: res.counts });
-    });
+    for (const key of chunksKey.split(";")) {
+      const [, s, , i] = key.split("|");
+      const from = new Date();
+      from.setDate(from.getDate() + Number(i) * DAYS_AHEAD);
+      fetchFreeSlotCounts(dateKey(from), DAYS_AHEAD, splitIds(s), editId).then((res) => {
+        if (cancelled) return;
+        if (!res.ok) setError(res.error);
+        setCounts((prev) => new Map(prev).set(key, res.counts));
+      });
+    }
     return () => {
       cancelled = true;
     };
-  }, [countsKey, editId]);
+  }, [chunksKey, editId]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -676,12 +697,14 @@ export default function BookingSheet({
 
   const renderDayStep = () => {
     const days = [];
-    for (let i = 0; i < DAYS_AHEAD; i++) {
+    for (let i = 0; i < chunkCount * DAYS_AHEAD; i++) {
       const date = new Date();
       date.setDate(date.getDate() + i);
       const k = dateKey(date);
       const closed = isDayClosed(settings, daysOff, daysOpen, k);
-      const n = counts.map.get(k) ?? 0;
+      const chunk = counts.get(chunkKeys[Math.floor(i / DAYS_AHEAD)]);
+      const countsLoading = !chunk;
+      const n = chunk?.get(k) ?? 0;
       const state = closed
         ? "выходной"
         : countsLoading
@@ -726,31 +749,15 @@ export default function BookingSheet({
             </button>
           ))}
         </div>
-        {/* Дата — в состоянии, переход — только по кнопке: на iOS пикер
-            шлёт change на каждый поворот колеса, и переход по onChange
-            уводил на первую же тронутую дату. */}
-        <div className="bk-other-date">
-          <label htmlFor="bk-other-date">Другая дата</label>
-          <input
-            id="bk-other-date"
-            type="date"
-            className="field compact sunk"
-            min={today}
-            value={st.od}
-            onChange={(e) => patch({ od: e.target.value })}
-          />
-        </div>
-        {st.od && (
-          <button
-            className="bk-save"
-            type="button"
-            data-ready={st.od >= today ? "true" : "false"}
-            disabled={st.od < today}
-            onClick={() => go("time", { d: st.od, t: null })}
-          >
-            {st.od < today ? "Дата уже прошла" : `Показать время · ${labelForKey(st.od)}`}
-          </button>
-        )}
+        {/* Не <input type="date">: в Telegram на iOS его пикер сразу
+            подставляет дату и закрывается — выбрать день им нельзя. */}
+        <button
+          className="link-btn bk-more-days"
+          type="button"
+          onClick={() => patch({ more: chunkCount })}
+        >
+          Показать ещё 3 недели
+        </button>
       </div>
     );
   };
