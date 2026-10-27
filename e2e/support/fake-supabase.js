@@ -563,6 +563,20 @@ async function handle(route, state) {
     for (let m = open; m + dur <= close; m += 30) out.push({ start_min: m });
     return json(200, out);
   }
+  // Счётчики шага «Выберите день» — ровно p_days дней от p_from, у
+  // каждого одно окошко: выходные лист всё равно гасит сам.
+  if (rpc === "free_slot_counts" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    const out = [];
+    for (let i = 0; i < body.p_days; i++) {
+      const d = new Date(`${body.p_from}T12:00:00`);
+      d.setDate(d.getDate() + i);
+      const p = (n) => String(n).padStart(2, "0");
+      out.push({ day: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`, free_count: 1 });
+    }
+    return json(200, out);
+  }
   if (rpc === "update_master_booking" && method === "POST") {
     const body = req.postDataJSON();
     state.rpcs.push({ name: rpc, body });
