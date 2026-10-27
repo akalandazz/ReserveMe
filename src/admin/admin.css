@@ -2496,7 +2496,7 @@ input:focus {
   color: var(--muted);
 }
 
-.bk-other-date span {
+.bk-other-date label {
   flex: 1;
 }
 

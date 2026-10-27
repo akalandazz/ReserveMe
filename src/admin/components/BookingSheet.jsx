@@ -110,6 +110,7 @@ export default function BookingSheet({
       newCh: "wa",
       s: "",
       d: "",
+      od: "",
       t: null,
       cm: "",
       copied: false,
@@ -725,16 +726,31 @@ export default function BookingSheet({
             </button>
           ))}
         </div>
-        <label className="bk-other-date">
-          <span>Другая дата</span>
+        {/* Дата — в состоянии, переход — только по кнопке: на iOS пикер
+            шлёт change на каждый поворот колеса, и переход по onChange
+            уводил на первую же тронутую дату. */}
+        <div className="bk-other-date">
+          <label htmlFor="bk-other-date">Другая дата</label>
           <input
+            id="bk-other-date"
             type="date"
             className="field compact sunk"
             min={today}
-            value=""
-            onChange={(e) => e.target.value && go("time", { d: e.target.value, t: null })}
+            value={st.od}
+            onChange={(e) => patch({ od: e.target.value })}
           />
-        </label>
+        </div>
+        {st.od && (
+          <button
+            className="bk-save"
+            type="button"
+            data-ready={st.od >= today ? "true" : "false"}
+            disabled={st.od < today}
+            onClick={() => go("time", { d: st.od, t: null })}
+          >
+            {st.od < today ? "Дата уже прошла" : `Показать время · ${labelForKey(st.od)}`}
+          </button>
+        )}
       </div>
     );
   };
