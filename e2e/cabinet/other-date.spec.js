@@ -1,9 +1,9 @@
 import { bookingRow } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
-// «Другая дата» на шаге «Выберите день»: дата за пределами списка из трёх
-// недель. На iOS пикер шлёт change на каждый поворот колеса — лист не
-// должен уходить на время по первой же тронутой дате, только по кнопке.
+// Шаг «Выберите день»: список из трёх недель и «Показать ещё 3 недели»
+// вместо <input type="date"> — его пикер в Telegram на iOS закрывается
+// сам, и мастер не могла записать дальше трёх недель.
 
 function dayKey(daysAhead) {
   const d = new Date();
@@ -12,23 +12,44 @@ function dayKey(daysAhead) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-test.use({ bookings: [bookingRow(1, { day: dayKey(3) })] });
+const rpcs = (backend, name) => backend.rpcs.filter((r) => r.name === name);
 
-test("другая дата — переход только по кнопке, на последнюю выбранную", async ({ cabinet }) => {
-  const { page, backend, openTab } = cabinet;
+async function openDayStep({ page, openTab }) {
   await openTab("Заявки");
   await page.getByRole("button", { name: "Изменить" }).click();
   await page.locator(".bk-summary").getByRole("button", { name: "Перенести" }).click();
+}
 
-  const input = page.getByLabel("Другая дата");
-  // Две «прокрутки» пикера подряд: первая дата — промежуточная.
-  await input.fill(dayKey(30));
-  await input.fill(dayKey(40));
-  await expect(page.locator(".bk-days")).toBeVisible();
-  expect(backend.rpcs.filter((r) => r.name === "free_slots")).toHaveLength(0);
+test.describe("ближняя запись", () => {
+  test.use({ bookings: [bookingRow(1, { day: dayKey(3) })] });
 
-  await page.getByRole("button", { name: /^Показать время/ }).click();
-  await expect
-    .poll(() => backend.rpcs.filter((r) => r.name === "free_slots").map((r) => r.body.p_day))
-    .toEqual([dayKey(40)]);
+  test("«Показать ещё» добавляет три недели, их день открывает время", async ({ cabinet }) => {
+    const { page, backend } = cabinet;
+    await openDayStep(cabinet);
+    const days = page.locator(".bk-day");
+    await expect(days).toHaveCount(21);
+    await expect(page.getByRole("button", { name: "Другая дата" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Показать ещё 3 недели" }).click();
+    await expect(days).toHaveCount(42);
+    await expect
+      .poll(() => rpcs(backend, "free_slot_counts").map((r) => r.body.p_from))
+      .toContain(dayKey(21));
+
+    // Последний открытый день — уже из второго куска (неделя повторяется).
+    await page.locator(".bk-day:not([disabled])").last().click();
+    await expect.poll(() => rpcs(backend, "free_slots").length).toBe(1);
+    expect(rpcs(backend, "free_slots")[0].body.p_day >= dayKey(21)).toBe(true);
+  });
+});
+
+test.describe("дальняя запись", () => {
+  test.use({ bookings: [bookingRow(1, { day: dayKey(30) })] });
+
+  test("перенос записи дальше трёх недель — список сразу до её дня", async ({ cabinet }) => {
+    const { page } = cabinet;
+    await openDayStep(cabinet);
+    await expect(page.locator(".bk-day")).toHaveCount(42);
+    await expect(page.locator(".bk-day", { hasText: "текущий день" })).toHaveCount(1);
+  });
 });
