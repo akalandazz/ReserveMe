@@ -241,21 +241,22 @@ export function buildDayRows(settings, daysOff, daysOpen, bookings, blockedSlots
   const list = bookingsForDay(bookings, key);
   const blocked = blockedMinutesForDay(blockedSlots, key);
 
+  const end = (x) => x.start_min + (x.duration || step);
   const rows = [];
   let freeCount = 0;
+  let next = 0; // первая ещё не показанная запись (list отсортирован по началу)
   let t = open;
   while (t < close) {
-    const b = list.find(
-      (x) => x.start_min <= t && t < x.start_min + (x.duration || step)
-    );
-    if (b && b.start_min === t) {
-      rows.push({ type: "booking", time: toHHMM(b.start_min), booking: b });
-      t = b.start_min + (b.duration || step);
-      continue;
-    }
-    if (b) {
-      // середина уже показанной записи — пропускаем до следующего шага
-      t += step;
+    if (next < list.length && list[next].start_min <= t) {
+      // Запись и всё, что начинается до её конца (заявки на один слот),
+      // показываются подряд; сетка продолжается с конца последней.
+      let until = end(list[next]);
+      while (next < list.length && list[next].start_min < until) {
+        const b = list[next++];
+        rows.push({ type: "booking", time: toHHMM(b.start_min), booking: b });
+        until = Math.max(until, end(b));
+      }
+      t = Math.max(t, until);
       continue;
     }
     const isBlocked = blocked.includes(t);
@@ -270,7 +271,9 @@ export function buildDayRows(settings, daysOff, daysOpen, bookings, blockedSlots
       isBlockedSlot: isBlocked,
       minute: t,
     });
-    t += step;
+    // Запись не на сетке (18:00 при шаге от 17:15) не перешагиваем:
+    // следующая строка — её начало.
+    t = next < list.length ? Math.min(t + step, list[next].start_min) : t + step;
   }
   return { closed: false, closedByOff: false, rows, freeCount };
 }
