@@ -4,7 +4,7 @@ import {
   refreshAll,
   useContent,
 } from "../content.js";
-import { createBooking, rescheduleMyBooking } from "../bookings.js";
+import { createBooking, notifyMaster, rescheduleMyBooking } from "../bookings.js";
 import { formatPrice } from "../money.js";
 import {
   MAX_SERVICES,
@@ -19,7 +19,6 @@ import {
   toMinutes,
 } from "../schedule.js";
 import {
-  bookingMessage,
   copyText,
   haptic,
   rescheduleMessage,
@@ -38,7 +37,7 @@ import {
 const CRUMB = "Запись";
 
 const SAVED_TOAST =
-  "Заявка сохранена. Откройте Telegram, чтобы отправить сообщение.";
+  "Заявка отправлена мастеру — она подтвердит запись.";
 const MOVED_TOAST =
   "Запрос на перенос сохранён — мастер подтвердит новое время.";
 
@@ -60,6 +59,9 @@ function withoutOwn(busy, was) {
 // кнопку; не дождались — сохраняем как есть (сверку сеть не блокирует,
 // а саму заявку — да: без строки в базе её нет, см. submit()).
 const FRESH_CHECK_MS = 2_000;
+// Сколько ждать уведомления мастеру (api/master-notify) перед уходом на
+// главную. Не дождались — не страшно: заявка уже в базе.
+const NOTIFY_MS = 2_000;
 
 /** 1 → "услуга", 2 → "услуги", 5 → "услуг". */
 function servicesWord(n) {
@@ -136,27 +138,18 @@ export default function BookingScreen({
     [day, service, busyOn, settings]
   );
 
+  // Текст клиента мастеру — только у переноса: о новой заявке мастеру
+  // пишет бот (api/master-notify), чат клиент не открывает.
   const message = useMemo(() => {
-    if (!service || !day || !draft.time) return "";
-    if (moving) {
-      return rescheduleMessage({
-        serviceName: service.name,
-        wasLabel: labelForKey(moving.day),
-        wasTime: moving.time,
-        dateLabel: dayLabel(day),
-        time: draft.time,
-      });
-    }
-    return bookingMessage({
+    if (!moving || !service || !day || !draft.time) return "";
+    return rescheduleMessage({
       serviceName: service.name,
-      services: picked,
+      wasLabel: labelForKey(moving.day),
+      wasTime: moving.time,
       dateLabel: dayLabel(day),
       time: draft.time,
-      duration: service.duration,
-      price: service.price,
-      comment: draft.comment.trim(),
     });
-  }, [service, picked, day, draft.time, draft.comment, moving]);
+  }, [service, day, draft.time, moving]);
 
   // Предупреждения шага подтверждения. Считаются здесь, а не в его
   // ветке рендера: submit() сравнивает с ними свежий ответ базы.
@@ -241,7 +234,8 @@ export default function BookingScreen({
     setOutdated(false);
     setSaveError("");
 
-    // Последняя сверка с базой — ДО сохранения и до openTelegramLink.
+    // Последняя сверка с базой — ДО сохранения (и, у переноса, до
+    // openTelegramLink).
     // Мастер могла поменять цену, закрыть день или окошко, пока клиент
     // дописывал комментарий: тогда не отправляем, а показываем свежие
     // данные (экран перерисуется из стора) и просим проверить ещё раз.
@@ -254,11 +248,12 @@ export default function BookingScreen({
       return;
     }
 
-    // Сохраняем на сервере ДО отправки: openTelegramLink закрывает
-    // мини-апп. Строка в bookings — единственная запись о заявке: её видит
-    // мастер в кабинете и сам клиент в «Мои записи». Не сохранилась —
-    // сообщение не уходит, клиент видит ошибку и повторяет. Перенос — то
-    // же самое: сначала сервер, потом сообщение.
+    // Сохраняем на сервере ДО сообщения. Строка в bookings — единственная
+    // запись о заявке: её видит мастер в кабинете и сам клиент в «Мои
+    // записи». Не сохранилась — сообщение не уходит, клиент видит ошибку и
+    // повторяет. О новой заявке мастеру пишет бот (notifyMaster); перенос
+    // клиент по-прежнему отправляет сам — openTelegramLink закрывает
+    // мини-апп, поэтому сначала сервер, потом sendToMaster.
     const res = moving
       ? await rescheduleMyBooking({ id: moving.id, day: day.key, time: draft.time })
       : await createBooking({
@@ -274,9 +269,16 @@ export default function BookingScreen({
       return;
     }
 
+    if (!moving) {
+      await withTimeout(notifyMaster(res.id), NOTIFY_MS);
+      haptic("success");
+      home(SAVED_TOAST);
+      return;
+    }
+
     haptic("success");
     const text = message;
-    home(moving ? MOVED_TOAST : SAVED_TOAST);
+    home(MOVED_TOAST);
     sendToMaster(text);
   };
 
@@ -431,9 +433,11 @@ export default function BookingScreen({
                   ? "Перенести запись"
                   : "Отправить заявку"}
           </PrimaryButton>
-          <TextButton onClick={copy}>
-            {copied ? "Текст скопирован" : "Скопировать текст"}
-          </TextButton>
+          {moving && (
+            <TextButton onClick={copy}>
+              {copied ? "Текст скопирован" : "Скопировать текст"}
+            </TextButton>
+          )}
         </>
       }
     >
@@ -552,12 +556,18 @@ export default function BookingScreen({
         могла увидеть и подтвердить запись в своём кабинете.
       </p>
 
-      <p className="eyebrow">Текст сообщения</p>
-      <pre className="msg-preview">{message}</pre>
-      <p className="note">
-        Если текст не подставился в чат автоматически — нажмите «Скопировать
-        текст» и вставьте его вручную.
-      </p>
+      {/* Новую заявку мастеру отправляет бот — превью и «Скопировать»
+          нужны только переносу, который клиент пишет сам. */}
+      {moving && (
+        <>
+          <p className="eyebrow">Текст сообщения</p>
+          <pre className="msg-preview">{message}</pre>
+          <p className="note">
+            Если текст не подставился в чат автоматически — нажмите «Скопировать
+            текст» и вставьте его вручную.
+          </p>
+        </>
+      )}
     </Screen>
   );
 }

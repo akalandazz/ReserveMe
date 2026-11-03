@@ -541,6 +541,18 @@ async function handle(route, state) {
     return json(200, { code, sent });
   }
 
+  // ─── Уведомление мастеру о новой заявке (Edge Function api/master-notify) ─
+  //  Как настоящая: только своя строка (иначе 404) и только свежая заявка
+  //  клиента; «бот написал» — sent: true. Сам текст и Bot API —
+  //  e2e/integration/master-notify.spec.js.
+  if (url.pathname === "/functions/v1/api/master-notify" && method === "POST") {
+    const body = req.postDataJSON() ?? {};
+    state.rpcs.push({ name: "api/master-notify", body });
+    const b = bookings.find((x) => x.id === body.booking_id && x.user_id === requester(req));
+    if (!b) return json(404, { error: "not_found" });
+    return json(200, { sent: b.status === "new" && b.source === "client" });
+  }
+
   // ─── RPC кабинета (schema.sql) — без перепроверок времени ───────
   if (rpc === "approve_booking" && method === "POST") {
     const body = req.postDataJSON();

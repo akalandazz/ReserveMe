@@ -3,7 +3,8 @@ import { expect, test } from "../support/fixtures.js";
 
 // Записи клиента живут только на сервере (src/bookings.js): «Мои записи»
 // и главная читают свои строки bookings по user_id, заявка сохраняется
-// в базе ДО сообщения мастеру, отмена — cancel_own_booking(id). Решение
+// в базе ДО сообщения мастеру (о новой пишет бот — api/master-notify,
+// о переносе — сам клиент), отмена — cancel_own_booking(id). Решение
 // мастера клиент узнаёт тостом — по сравнению с тем, что уже видел.
 
 /** Ключ "ГГГГ-ММ-ДД" через несколько дней — с запасом от смены суток. */
@@ -20,6 +21,10 @@ const OTHER_USER = "00000000-0000-4000-8000-000000000099";
 const mine = (id, fields = {}) => bookingRow(id, { day: DAY, user_id: CLIENT.id, ...fields });
 
 const openMyBookings = (page) => page.getByRole("button", { name: /Мои записи/ }).click();
+
+/** Тела вызовов api/master-notify — уведомление мастеру о новой заявке. */
+const notifyCalls = (backend) =>
+  backend.rpcs.filter((r) => r.name === "api/master-notify").map((r) => r.body);
 
 /** Вместо чата с мастером (sendToMaster → window.open без Telegram) — счётчик. */
 async function stubChat(page) {
@@ -127,14 +132,22 @@ test.describe("Мини-апп: записи с сервера", () => {
     });
   });
 
-  test("заявка сохраняется в базе до сообщения мастеру", async ({ miniapp }) => {
+  test("заявка сохраняется в базе, мастеру пишет бот — чат не открывается", async ({
+    miniapp,
+  }) => {
     const { page, backend } = miniapp;
     await stubChat(page);
     await reachConfirm(page);
+    // Сообщение мастеру отправляет бот — превью и «Скопировать» не нужны.
+    await expect(page.locator(".msg-preview")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Скопировать текст" })).toHaveCount(0);
     await page.getByRole("button", { name: "Отправить заявку" }).click();
 
-    await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
+    await expect.poll(() => notifyCalls(backend)).toHaveLength(1);
     expect(backend.tables.bookings).toHaveLength(1);
+    // Уведомление — о только что сохранённой строке, по её id.
+    expect(notifyCalls(backend)[0]).toEqual({ booking_id: backend.tables.bookings[0].id });
+    expect(await page.evaluate(() => window.__chats)).toBe(0);
     expect(backend.tables.bookings[0]).toMatchObject({
       user_id: CLIENT.id,
       service_id: "manicure",
@@ -148,10 +161,10 @@ test.describe("Мини-апп: записи с сервера", () => {
     expect(sent).not.toHaveProperty("user_id");
     // Главная берёт запись из ответа вставки — без лишнего запроса.
     await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
-    await expect(page.getByText("Заявка сохранена")).toBeVisible();
+    await expect(page.getByText("Заявка отправлена мастеру")).toBeVisible();
   });
 
-  test("сервер отказал — сообщение не уходит, «Повторить» отправляет", async ({ miniapp }) => {
+  test("сервер отказал — мастеру не пишем, «Повторить» отправляет", async ({ miniapp }) => {
     const { page, backend } = miniapp;
     await stubChat(page);
     await reachConfirm(page);
@@ -160,12 +173,13 @@ test.describe("Мини-апп: записи с сервера", () => {
     await page.getByRole("button", { name: "Отправить заявку" }).click();
     await expect(page.getByRole("alert")).toContainText("Слишком много заявок");
     expect(backend.tables.bookings).toHaveLength(0);
-    expect(await page.evaluate(() => window.__chats)).toBe(0);
+    expect(notifyCalls(backend)).toHaveLength(0);
 
     backend.failBookingInsert = null;
     await page.getByRole("button", { name: "Повторить" }).click();
-    await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
+    await expect.poll(() => notifyCalls(backend)).toHaveLength(1);
     expect(backend.tables.bookings).toHaveLength(1);
+    expect(await page.evaluate(() => window.__chats)).toBe(0);
   });
 
   test.describe("клиент отменяет сам", () => {

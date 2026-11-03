@@ -257,14 +257,14 @@ function storeRow(uid, row) {
 }
 
 /**
- * Новая заявка. Вызывается из BookingScreen.submit() ДО sendToMaster
- * (openTelegramLink закрывает мини-апп) и ждёт ответа: без строки в
- * базе заявки нет — ни у мастера в кабинете, ни у клиента в «Мои записи».
+ * Новая заявка. Вызывается из BookingScreen.submit() и ждёт ответа: без
+ * строки в базе заявки нет — ни у мастера в кабинете, ни у клиента в «Мои
+ * записи». Мастеру о ней пишет сервер — notifyMaster(id) ниже.
  * services — одна или несколько услуг подряд (pickServices). Длительность,
  * цену, название, снимок услуг, имя, юзернейм и user_id ставит сервер
  * (guard_client_booking): от услуг уходят одни id, остальное — только
  * чтобы строка прошла not null до триггера.
- * @returns {Promise<{ ok: boolean, error: string|null }>}
+ * @returns {Promise<{ ok: boolean, error: string|null, id?: number }>}
  */
 export async function createBooking({ services, day, time, comment }) {
   const uid = currentUserId();
@@ -292,7 +292,27 @@ export async function createBooking({ services, day, time, comment }) {
   );
   if (!res || res.error || !res.data) return { ok: false, error: writeError(res) };
   storeRow(uid, res.data);
-  return { ok: true, error: null };
+  return { ok: true, error: null, id: res.data.id };
+}
+
+/**
+ * Сообщение мастеру о только что сохранённой заявке — его пишет и шлёт
+ * бот (Edge Function api/master-notify), клиент чат не открывает. Не
+ * дошло — заявка всё равно в «Заявках» кабинета, поэтому ошибка здесь
+ * ничего не ломает и не показывается.
+ * @returns {Promise<boolean>} true — бот отправил сообщение.
+ */
+export async function notifyMaster(id) {
+  if (!supabase || id == null) return false;
+  try {
+    const res = await withTimeout(
+      supabase.functions.invoke("api/master-notify", { body: { booking_id: id } }),
+      TIMEOUT_MS
+    );
+    return res?.data?.sent === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
