@@ -5,7 +5,6 @@
 // Контент читаем во время вызова, а не при загрузке модуля: имя и логин
 // мастера лежат в базе и меняются из админки прямо во время работы.
 import { contentSnapshot } from "./content.js";
-import { formatPrice } from "./money.js";
 
 export const tg = () => window.Telegram?.WebApp;
 
@@ -186,28 +185,7 @@ function signature() {
   return `\n\n👤 ${name}${uname}`;
 }
 
-/** b.services — [{ name, duration, price }]: при нескольких услугах каждая
- *  своей строкой, а длительность и стоимость ниже — общие. */
-export function bookingMessage(b) {
-  const several = (b.services?.length ?? 0) > 1;
-  return (
-    `Здравствуйте, ${masterName()}! 🌸\n` +
-    `Хочу записаться:\n\n` +
-    (several
-      ? `💅 Услуги:\n` +
-        b.services
-          .map((s) => `• ${s.name} — ${s.duration} мин, ${formatPrice(s.price)}`)
-          .join("\n") +
-        "\n"
-      : `💅 Услуга: ${b.serviceName}\n`) +
-    `📅 Дата: ${b.dateLabel}\n` +
-    `🕒 Время: ${b.time}\n` +
-    `⏳ Длительность: ${b.duration} мин\n` +
-    `💰 Стоимость: ${formatPrice(b.price)}` +
-    (b.comment ? `\n\n💬 Комментарий: ${b.comment}` : "") +
-    signature()
-  );
-}
+// О новой заявке мастеру пишет бот (supabase/functions/_shared/master-notify.js).
 
 export function waitlistMessage(w) {
   return (

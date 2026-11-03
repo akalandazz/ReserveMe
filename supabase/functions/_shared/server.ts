@@ -82,6 +82,12 @@ export function clientBotToken(slug: string) {
   return salonBots(slug)?.client ?? "";
 }
 
+/** Токен бота, которым салон открывает кабинет (без своего — бот клиента), или "". */
+export function cabinetBotToken(slug: string) {
+  const bots = salonBots(slug);
+  return bots?.cabinet || bots?.client || "";
+}
+
 const APP_URL = env("CLIENT_APP_URL");
 
 /** Адрес мини-аппа этого салона (кнопка в сообщениях бота) или "". */

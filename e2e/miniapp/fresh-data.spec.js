@@ -39,18 +39,9 @@ async function reachConfirm(page) {
   return time;
 }
 
-/** Вместо чата с мастером (sendToMaster → window.open без Telegram) — счётчик. */
-async function stubChat(page) {
-  await page.evaluate(() => {
-    window.__chats = 0;
-    window.open = () => {
-      window.__chats += 1;
-      return null;
-    };
-  });
-}
-
 const bookingInserts = (backend) => backend.inserts.filter((i) => i.table === "bookings");
+/** Уведомления мастеру о новой заявке (api/master-notify). */
+const notifyCalls = (backend) => backend.rpcs.filter((r) => r.name === "api/master-notify");
 
 test.describe("Мини-апп: свежие данные", () => {
   test("цена, поменянная в базе, видна на следующем же экране", async ({ miniapp }) => {
@@ -65,7 +56,6 @@ test.describe("Мини-апп: свежие данные", () => {
     miniapp,
   }) => {
     const { page, backend } = miniapp;
-    await stubChat(page);
     await reachConfirm(page);
     await expect(page.locator(".summary")).toContainText("60 ₽");
 
@@ -74,14 +64,13 @@ test.describe("Мини-апп: свежие данные", () => {
 
     await expect(page.getByRole("alert")).toContainText("данные обновились");
     await expect(page.locator(".summary")).toContainText("75 ₽");
-    await expect(page.locator(".msg-preview")).toContainText("75");
     expect(bookingInserts(backend)).toHaveLength(0);
-    expect(await page.evaluate(() => window.__chats)).toBe(0);
+    expect(notifyCalls(backend)).toHaveLength(0);
 
     // Клиент увидел новую цену — второе нажатие отправляет.
     await page.getByRole("button", { name: "Отправить заявку" }).click();
     await expect.poll(() => bookingInserts(backend).length).toBe(1);
-    await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
+    await expect.poll(() => notifyCalls(backend).length).toBe(1);
     expect(backend.tables.bookings).toHaveLength(1);
     expect(backend.tables.bookings[0]).toMatchObject({ price: 75, status: "new" });
   });
@@ -90,7 +79,6 @@ test.describe("Мини-апп: свежие данные", () => {
     miniapp,
   }) => {
     const { page, backend } = miniapp;
-    await stubChat(page);
     const time = await reachConfirm(page);
 
     occupy(backend, time);
@@ -99,7 +87,7 @@ test.describe("Мини-апп: свежие данные", () => {
     await expect(page.getByRole("alert")).toContainText("данные обновились");
     await expect(page.getByText("Это время только что стало занято")).toBeVisible();
     expect(bookingInserts(backend)).toHaveLength(0);
-    expect(await page.evaluate(() => window.__chats)).toBe(0);
+    expect(notifyCalls(backend)).toHaveLength(0);
   });
 
   test.describe("опрос", () => {

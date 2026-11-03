@@ -27,7 +27,7 @@ All tests are Playwright, in three projects (`playwright.config.js`):
   doesn't handle; extend it when a new flow reads or writes a new table.
 - **`unit`** (`e2e/unit`) — `supabase/functions/_shared/telegram-init-data.js`, signing its
   fixtures with its own `node:crypto` code (never with the module under test).
-- **`integration`** (`e2e/integration`) — the real Edge Functions (`api`: `/api/auth`, `/api/bot`, `/api/invite`; `send-reminders`), PostgREST and
+- **`integration`** (`e2e/integration`) — the real Edge Functions (`api`: `/api/auth`, `/api/bot`, `/api/invite`, `/api/master-notify`; `send-reminders`), PostgREST and
   the RLS from `schema.sql`, on a **local** Supabase in Docker (`npx supabase start …`,
   then `SUPABASE_IT_URL`/`SUPABASE_IT_ANON_KEY`/`SUPABASE_IT_SERVICE_KEY` from
   `npx supabase status -o env`; exact commands in `e2e/integration/support.js`). Skipped
@@ -71,8 +71,25 @@ A booking is a *request*, never a confirmed appointment. When a client submits o
    the client's «Мои записи». If the insert fails or times out, nothing is sent — the
    confirm step shows the error (the trigger's Russian message when it rejects) and
    the button turns into «Повторить».
-2. [`sendToMaster`](src/telegram.js) opens `https://t.me/<логин мастера>?text=…`
-   through `WebApp.openTelegramLink`, and the client sends the message themselves.
+2. [`notifyMaster(id)`](src/bookings.js) calls the `/api/master-notify` route
+   ([supabase/functions/api/master-notify.ts](supabase/functions/api/master-notify.ts))
+   with the client's JWT (2 s cap, result ignored), and the app returns home with a
+   toast. The route reads the row **as the caller** (RLS — someone else's id is 404),
+   writes only about a fresh (`created_at` < 5 min) `status = 'new'`,
+   `source = 'client'` row, and the salon's **cabinet bot** (the client bot when
+   `SALON_BOTS` has no `cabinet`) sends `masterNotifyMessage()`
+   ([_shared/master-notify.js](supabase/functions/_shared/master-notify.js), unit-tested)
+   to every `role = 'master'` profile of the salon. **No database state**: no
+   "notified" column, no retry, no write-access prompt in the cabinet (the master owns
+   the bot and has started it) — a failed send (403, network) is only logged, and the
+   request is still in «Заявки». Repeats of one id are dropped per function instance. The client no
+   longer opens a chat for a **new** booking: no `sendToMaster`, no preview, no
+   «Скопировать текст».
+
+Reschedules (`rescheduleMyBooking`) and the client's own cancellations still go the old
+way — saved first, then [`sendToMaster`](src/telegram.js) opens
+`https://t.me/<логин мастера>?text=…` through `WebApp.openTelegramLink`, and the client
+sends the message themselves.
 
 Consequences that constrain every change here:
 
@@ -80,8 +97,9 @@ Consequences that constrain every change here:
   *before* the call — never after it, never in a `.then()` chained onto it. See
   `submit()` in [src/screens/BookingScreen.jsx](src/screens/BookingScreen.jsx).
 - **`?text=` prefill is deep-link behavior, not a documented Mini App API**, and can
-  silently fail. Every send screen therefore also renders the exact message in a
-  `.msg-preview` block with a «Скопировать текст» fallback. Don't remove that.
+  silently fail. Every screen that still sends through it (reschedule, cancel, waitlist)
+  therefore also renders the exact message in a `.msg-preview` block with a
+  «Скопировать текст» fallback. Don't remove that.
 - **A decision travels back, but only as a status — there is no push.** The master
   approves (`status` → `'ok'`), moves, or declines/cancels (`'cancelled'`,
   `cancelled_by = 'master'`) in the cabinet. The client reads its own rows directly
@@ -343,7 +361,7 @@ seed, kept in the repo because the content is no longer in git otherwise.
     bots in the `SALON_BOTS` secret (every further salon via `npm run add-master` or
     `supabase/add-salon.sql`) → the rest of the secrets: `REMINDERS_CRON_SECRET`,
     `CLIENT_APP_URL` (+ optional `CLIENT_PRIVACY_URL`) → **two functions**: `supabase functions deploy
-    api --no-verify-jwt` (sign-in, client bot, invitations) and `supabase functions
+    api --no-verify-jwt` (sign-in, client bot, invitations, master notifications) and `supabase functions
     deploy send-reminders --no-verify-jwt` (kept separate: only pg_cron calls it) →
     in the dashboard turn off sign-ups, the Email provider and Anonymous sign-ins
     (neither needs any of them) → raise *Authentication → Rate Limits → token
@@ -571,10 +589,11 @@ month/week/day is showing) and each section's own edit-in-place state.
 | [api/auth.ts](supabase/functions/api/auth.ts) | The only way in: `POST { initData }` → validate (`_shared/telegram-init-data.js`, also used by `e2e/unit`) → find/create the account by `telegram_id` → Supabase session. Secrets `SALON_BOTS` (the salon's `client` + `cabinet` tokens), optional `INITDATA_MAX_AGE_SECONDS` (3600), `AUTH_EMAIL_DOMAIN`. Logs no initData, tokens or e-mails. |
 | [api/bot.ts](supabase/functions/api/bot.ts) | Webhook of the **client bot** (`…/api/bot?salon=<slug>`) — Russian info menu: `/start`/`/help` → greeting + inline buttons («Как записаться», «Перенос и отмена», «Напоминания», «Адрес и контакты», «Ваши данные», «Открыть запись» as `web_app`); a button edits the same message, «← Назад» returns. Any other text gets "this bot isn't read, write to @master". Texts, commands and the bot description live in `_shared/client-bot.js` (pure, `e2e/unit/client-bot.spec.js`); `scripts/setup-client-bot.mjs` pushes the description/commands/webhook to Telegram. Also answers master invitations (`/start c_<code>`, «Принять»/«Отклонить» → `bot_client_invite`/`bot_answer_client_invite`); stores nothing else, checks `X-Telegram-Bot-Api-Secret-Token` = the salon's `webhook_secret` in `SALON_BOTS`, always answers 200. |
 | [api/invite.ts](supabase/functions/api/invite.ts) | «Пригласить в приложение» from the cabinet: `POST { client_id }` with the master's JWT → `create_client_invite` as her (all checks there) → if the card's client is already in the app, `sendMessage` of `inviteOffer` from the salon's client bot (403 → `mark_bot_unreachable`) → `{ code, sent }`. The JWT is checked by the database (the RPC runs as the caller), not by the platform. The answers arrive at `/api/bot`. Logs no token, chat id or code. |
+| [api/master-notify.ts](supabase/functions/api/master-notify.ts) | New-request notification: `POST { booking_id }` with the **client's** JWT (`notifyMaster` in `src/bookings.js`, right after `createBooking`) → the row read as the caller (someone else's → 404) → only if fresh `new`/`client` → `sendMessage` of `masterNotifyMessage` (`_shared/master-notify.js`) from the salon's cabinet bot (`cabinetBotToken`) to each master of that salon → `{ sent }`. Stores nothing, retries nothing. Logs no token or chat id. |
 | [supabase/functions/send-reminders/](supabase/functions/send-reminders/index.ts) | **A separate function** (only pg_cron calls it; deploying `api` doesn't touch it), `--no-verify-jwt`, shares `_shared/server.ts` with `api`. Reminder sender, called only by pg_cron (`x-cron-secret`). `claim_due_reminders()` → `sendMessage` from the client bot → `release_reminder`/`mark_bot_unreachable`. Text and outcome rules live in `_shared/reminders.js` (also used by `e2e/unit`). Secrets `REMINDERS_CRON_SECRET`, optional `CLIENT_APP_URL` (button «Мои записи»), `TELEGRAM_API_URL` (tests). Logs counts only. |
 | [src/bookings.js](src/bookings.js) | Client-only store of the client's own bookings — the server rows, nothing on the device. Same `useSyncExternalStore` idiom as `content.js` (`useMyBookings()` → `{ status, error, stale, list }`, list sorted by time, client-cancelled and past master-cancelled rows filtered out in one place). `refreshMyBookings()` (joined by an in-flight promise, returns `{ ok, changes }`), `createBooking()` (awaited insert with `.select().single()`, the row goes straight into the store; sends no name/username/owner — the server sets them), `rescheduleMyBooking({ id, day, time })` (same, through the RPC), `cancelMyBooking(id)`, `resetMyBookings()` on sign-out, and `changesToast()`. The "seen" map in `localStorage` exists only to decide toasts. |
 | [src/schedule.js](src/schedule.js) | Pure date/slot functions, no React, no Telegram, no content import — settings arrive as a parameter (`buildDays(settings, daysOff)`, `buildSlots(day, service, busy, settings)`, `serverBusyFor(busy, key, settings)`, `isPast({ day, time })`) and every function must survive `settings == null`. `serverBusyFor` turns the `busy_slots` rows (the client's own requests included) into intervals for `buildSlots`, and a `busy_slots` row with `duration === 0` is a blocked slot one grid step long. **Never use `toISOString()`** to build a date key — it converts to UTC and shifts the day in Tbilisi (UTC+4). Client-only beyond the plain date helpers (see "Two apps"). |
-| [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`bookingMessage`/etc. are used by the client only — the cabinet must never call `sendToMaster`. |
+| [src/telegram.js](src/telegram.js) | SDK wrapper + the Russian message templates, shared by both apps. Reads the master's name and username from `contentSnapshot()` **inside each function**, never at module load. `sendToMaster`/`rescheduleMessage`/etc. are used by the client only (a new booking's message is written by the server — `_shared/master-notify.js`) — the cabinet must never call `sendToMaster`. |
 | [src/theme.js](src/theme.js) | Light/dark resolution and the manual override, shared by both apps. No React. |
 | [src/ui.jsx](src/ui.jsx) | Client-only presentational primitives. `<Screen>` owns the whole chrome — sticky crumb bar, toast slot, sticky footer. The footer is `position: sticky` inside a `100dvh` flex column, which is what keeps the last list row from hiding under the button without a padding hack. |
 | [src/admin/store.js](src/admin/store.js) | Cabinet's data store — same `useSyncExternalStore` idiom as `content.js`, but reads `bookings`/`blocked_slots` too, and only after `useSession()` is `"signed"` (RLS blocks `anon` from `bookings` entirely). `resetAdminData()` clears it on sign-out. `loadAdminData(parts)` reloads only the named parts (keys of `LOADERS`; all of them by default, and always all while the snapshot isn't `"ready"`), each with its own stale-response counter. `pollAdminData()` re-reads `bookings`/`clients` on a timer while the tab is visible — the cabinet's only channel for client-side changes. |

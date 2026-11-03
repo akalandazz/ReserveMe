@@ -56,13 +56,13 @@ test("две услуги — одна заявка подряд, в поряд�
   await expect(summary).toContainText("Маникюр · 90 мин");
   await expect(summary).toContainText("180 мин");
   await expect(summary).toContainText("140 ₽");
-  const preview = page.locator(".msg-preview");
-  await expect(preview).toContainText("Услуги:");
-  await expect(preview).toContainText("• Педикюр — 90 мин");
-  await expect(preview).toContainText("• Маникюр — 90 мин");
 
+  // Мастеру пишет бот (api/master-notify), клиент чат не открывает.
   await page.getByRole("button", { name: "Отправить заявку" }).click();
-  await expect.poll(() => page.evaluate(() => window.__chats)).toBe(1);
+  await expect
+    .poll(() => backend.rpcs.filter((r) => r.name === "api/master-notify").length)
+    .toBe(1);
+  expect(await page.evaluate(() => window.__chats)).toBe(0);
 
   // От услуг уходят одни id, по прайсу; итог считает сервер.
   const sent = backend.inserts.find((i) => i.table === "bookings").body;
