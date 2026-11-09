@@ -22,7 +22,17 @@ const HOME = "menu";
 // новая заявка. Сбрасывается вместе со всем черновиком (home()) и при
 // старте новой записи.
 // services — одна или несколько услуг в порядке прайса (pickServices).
-const EMPTY_DRAFT = { services: [], dateKey: null, time: null, comment: "", reschedule: null };
+// requestKey — ключ идемпотентности заявки (bookings.request_key): ставит
+// первая отправка, «Повторить» шлёт тот же, и база не создаёт вторую строку,
+// если первая дошла, а ответ — нет. Новая запись — новый ключ.
+const EMPTY_DRAFT = {
+  services: [],
+  dateKey: null,
+  time: null,
+  comment: "",
+  reschedule: null,
+  requestKey: null,
+};
 // Период опроса — VITE_CLIENT_POLL_SECONDS (.env.example), по умолчанию 20 с.
 const POLL_MS = (Number(import.meta.env.VITE_CLIENT_POLL_SECONDS) || 20) * 1000;
 
@@ -147,9 +157,15 @@ function App() {
     (service) => {
       if (service) {
         // смена услуг обнуляет время: слот на 90 мин может не существовать для 120
-        setDraft((d) => ({ ...d, services: [service], time: null, reschedule: null }));
+        setDraft((d) => ({
+          ...d,
+          services: [service],
+          time: null,
+          reschedule: null,
+          requestKey: null,
+        }));
       } else {
-        setDraft((d) => ({ ...d, reschedule: null }));
+        setDraft((d) => ({ ...d, reschedule: null, requestKey: null }));
       }
       push("book:service");
     },

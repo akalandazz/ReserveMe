@@ -359,6 +359,17 @@ alter table public.bookings drop constraint if exists bookings_price_check;
 alter table public.bookings add constraint bookings_price_check
   check (price between 0 and 99999);
 
+-- Ключ идемпотентности заявки из мини-аппа: uuid, который клиент ставит
+-- один раз на черновик (newRequestKey в src/bookings.js) и повторяет при
+-- «Повторить». Ответ на вставку теряется (сеть, таймаут клиента 5 с), а
+-- строка уже в базе — без ключа повтор создавал вторую такую же заявку и
+-- второе уведомление мастеру. Уникален в паре с аккаунтом: повтор получает
+-- 23505, и клиент читает свою уже сохранённую строку. null (старый бандл,
+-- записи мастера) — без ограничения.
+alter table public.bookings add column if not exists request_key uuid;
+create unique index if not exists bookings_user_request_uq
+  on public.bookings (user_id, request_key);
+
 -- «Мои записи»: select по user_id = auth.uid(). Индексы по дню, клиенту и
 -- услуге — с salon_id, в блоке «Салоны» ниже (услуга — для on delete set
 -- null при её удалении, иначе полный проход по bookings).
