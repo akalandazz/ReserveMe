@@ -168,6 +168,7 @@ export function bookingRow(id, fields) {
     status: fields.status ?? "new",
     source: fields.source ?? "client",
     user_id: fields.user_id ?? null,
+    request_key: fields.request_key ?? null,
     cancelled_by: fields.cancelled_by ?? "",
     cancel_seen: fields.cancel_seen ?? false,
     created_at: new Date().toISOString(),
@@ -210,6 +211,8 @@ export function clientRow(id, fields) {
  *  - sessions  — выданные сессии (sid → user id); logout удаляет свою;
  *  - failBookingInsert — текст отказа guard_client_booking для вставки заявки
  *    (null — вставка проходит);
+ *  - loseBookingInsertResponse — вставка заявки сохраняет строку, но ответ
+ *    обрывается (как потерянный ответ / таймаут на стороне клиента);
  *  - otherSalon — Telegram id, чей аккаунт принадлежит другому салону:
  *    api/auth отвечает 403 other_salon, как настоящая;
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
@@ -226,6 +229,7 @@ export async function installFakeSupabase(page) {
     changes: [],
     rpcs: [],
     failBookingInsert: null,
+    loseBookingInsertResponse: false,
     otherSalon: new Set(),
     unhandled: [],
     nextId: 100,
@@ -350,7 +354,9 @@ async function handle(route, state) {
   // (bookings_select_own, user_id = auth.uid()).
   if (table === "bookings" && method === "GET" && requester(req) !== MASTER.id) {
     const uid = requester(req);
-    return json(200, uid ? rows.filter((b) => b.user_id === uid) : []);
+    const key = url.searchParams.get("request_key")?.replace(/^eq\./, "");
+    const own = uid ? rows.filter((b) => b.user_id === uid && (!key || b.request_key === key)) : [];
+    return json(200, wantsObject ? (own[0] ?? null) : own);
   }
 
   // services — как order by sort, id в store.js и content.js: тест порядка
@@ -398,6 +404,19 @@ async function handle(route, state) {
     if (state.failBookingInsert) {
       return json(400, { code: "P0001", message: state.failBookingInsert, details: null, hint: null });
     }
+    // Уникальный индекс bookings_user_request_uq (schema.sql): повтор той же
+    // заявки (тот же request_key у того же аккаунта) второй строки не создаёт.
+    if (
+      body.request_key &&
+      rows.some((b) => b.user_id === requester(req) && b.request_key === body.request_key)
+    ) {
+      return json(409, {
+        code: "23505",
+        message: 'duplicate key value violates unique constraint "bookings_user_request_uq"',
+        details: null,
+        hint: null,
+      });
+    }
     // Как guard_client_booking(): услуги — по присланным id (services, или
     // один service_id), длительность, цена и подпись — их сумма из
     // services, в порядке прайса; имя и юзернейм — из профиля, не от
@@ -422,6 +441,8 @@ async function handle(route, state) {
     };
     const row = bookingRow(state.nextId++, { ...body, ...guarded, user_id: requester(req) });
     rows.push(row);
+    // Строка сохранена, а ответ до клиента не дошёл (сеть, таймаут).
+    if (state.loseBookingInsertResponse) return route.abort("failed");
     return json(201, wantsObject ? row : [row]);
   }
 

@@ -70,7 +70,14 @@ A booking is a *request*, never a confirmed appointment. When a client submits o
    There is no client-side copy: that row *is* the booking, for the cabinet and for
    the client's «Мои записи». If the insert fails or times out, nothing is sent — the
    confirm step shows the error (the trigger's Russian message when it rejects) and
-   the button turns into «Повторить».
+   the button turns into «Повторить». **A retry never makes a second row**: the draft
+   carries one `requestKey` (uuid, `newRequestKey()`, reset by `home()`/a new booking),
+   sent as `bookings.request_key`, unique per account (`bookings_user_request_uq`). A
+   retry first asks `findSavedRequest(key)` (the lost-response case: the row is there,
+   and fresh `busy_slots` already show its slot as taken), and an insert that still
+   hits 23505 reads the saved row instead. `submit()` is also locked by a ref, not
+   only by `sending` state. Without this a 5 s timeout + «Повторить» gave the master
+   two identical requests and two notifications.
 2. [`notifyMaster(id)`](src/bookings.js) calls the `/api/master-notify` route
    ([supabase/functions/api/master-notify.ts](supabase/functions/api/master-notify.ts))
    with the client's JWT (2 s cap, result ignored), and the app returns home with a
