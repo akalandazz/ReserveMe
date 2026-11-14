@@ -2,14 +2,12 @@ import { useMemo, useState } from "react";
 import { CURRENCY, formatAmount, formatPrice } from "../../money.js";
 import { toHHMM } from "../../schedule.js";
 import {
-  PRESETS,
   analyticsFor,
+  currentMonthRange,
   deltaLabel,
   monthEntries,
   monthTitle,
   monthTotals,
-  presetOf,
-  presetRange,
   rangeLabel,
   sumPrice,
 } from "../analytics.js";
@@ -29,11 +27,10 @@ const BAR_MAX = 60;
 
 const visitsLabel = (n) => `${n} ${pluralVisits(n)}`;
 const lastLabel = (day) => (day ? `была ${relativeVisit(day)}` : "ещё не была");
-const periodText = (range) => (range.from || range.to ? `за ${rangeLabel(range)}` : "за всё время");
 
 /**
- * «Аналитика» за выбранный период (по умолчанию — этот месяц; быстрый
- * выбор или свои даты): заработано на визитах и ожидается от
+ * «Аналитика» за выбранный период (по умолчанию — этот месяц, иначе
+ * свои даты в календаре): заработано на визитах и ожидается от
  * подтверждённых будущих записей, шесть месяцев столбиками с историей
  * месяца по тапу, популярные услуги, постоянные клиенты и те, кто
  * приходит редко. Всё считается в analytics.js из уже загруженных записей.
@@ -42,7 +39,7 @@ const periodText = (range) => (range.from || range.to ? `за ${rangeLabel(range
  * «Новая запись» с этим клиентом.
  */
 export default function AnalyticsSection({ bookings, clients, onOpenClient, onBook }) {
-  const [range, setRange] = useState(() => presetRange("month"));
+  const [range, setRange] = useState(() => currentMonthRange());
   const [picking, setPicking] = useState(false);
   const [month, setMonth] = useState(null);
 
@@ -56,8 +53,7 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
   const openedDone = opened.filter((b) => !b.upcoming);
   const openedAhead = opened.filter((b) => b.upcoming);
 
-  const preset = presetOf(range);
-  const label = periodText(range);
+  const label = `за ${rangeLabel(range)}`;
   const delta = deltaLabel(a.delta);
 
   const choose = (next) => {
@@ -72,28 +68,17 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
         <span className="header-name">{label}</span>
       </div>
 
-      <div className="view-toggle an-periods" role="group" aria-label="Период">
-        {PRESETS.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            className="view-btn"
-            aria-pressed={!picking && preset === p.id ? "true" : "false"}
-            onClick={() => choose(presetRange(p.id))}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      {/* Период — сама кнопка: «1 – 30 нояб.» открывает календарь. */}
       <button
         type="button"
-        className="link-btn an-custom-btn"
+        className="an-range-btn"
         aria-expanded={picking ? "true" : "false"}
-        data-active={!preset ? "true" : "false"}
+        aria-label={`Период: ${rangeLabel(range)}. Выбрать даты`}
         onClick={() => setPicking((v) => !v)}
       >
-        <Icon name="calendar" size={14} />
-        {preset ? "Свои даты" : `Свои даты: ${rangeLabel(range)}`}
+        <Icon name="calendar" size={16} />
+        <span className="an-range-btn-label">{rangeLabel(range)}</span>
+        <span className="an-range-btn-action">{picking ? "Скрыть" : "Изменить"}</span>
       </button>
 
       {picking && (
@@ -101,7 +86,7 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
           from={range.from}
           to={range.to}
           onApply={choose}
-          onReset={() => choose(presetRange("month"))}
+          onReset={() => choose(currentMonthRange())}
         />
       )}
 
