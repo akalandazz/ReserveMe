@@ -2879,12 +2879,147 @@ input:focus {
   margin-top: 16px;
 }
 
+/* «Прошлый месяц» длиннее «Всё»: ширина по тексту, а не поровну. */
+.an-periods .view-btn {
+  flex: 1 1 auto;
+  padding: 0 8px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.an-custom-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  margin-top: 4px;
+}
+
+.an-custom-btn[data-active="true"] {
+  font-weight: 500;
+}
+
+.an-range .rdp-day-btn {
+  aspect-ratio: 1 / 1;
+}
+
+.rdp-day-btn.is-in-range {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+}
+
+.an-range-hint {
+  margin: 12px 2px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.an-range-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.an-range-actions > * {
+  flex: 1;
+}
+
 .an-card {
   margin-top: 12px;
   padding: 18px 18px 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--card);
+}
+
+/* Две суммы рядом; длинные числа сами переносят вторую под первую. */
+.an-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+}
+
+.an-figure {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.an-figure .an-revenue {
+  font-size: 32px;
+  white-space: nowrap;
+}
+
+.an-figure.is-expected .an-revenue {
+  color: var(--muted);
+}
+
+.an-figure-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.an-total {
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.an-total .an-money {
+  font-size: 16px;
+}
+
+.an-col-bar {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Верхняя часть столбика — то, что ещё впереди (подтверждённые записи). */
+.an-col-expected {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Непрозрачная смесь: --accent-soft поверх сплошного --accent не видна. */
+  background: color-mix(in srgb, var(--accent) 22%, var(--card));
+  border-bottom: 1px dashed var(--accent);
+}
+
+.an-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.an-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.an-legend-box {
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.an-legend-box.is-expected {
+  background: color-mix(in srgb, var(--accent) 22%, var(--card));
+  border: 1px dashed var(--accent);
+}
+
+/* Рядом две кнопки — подпись переносится, а не обрезается многоточием. */
+.an-rare .an-client-meta {
+  white-space: normal;
+}
+
+.an-month-row[data-upcoming="true"] .an-money {
+  color: var(--muted);
 }
 
 .an-kicker {

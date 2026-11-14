@@ -1,4 +1,4 @@
-import { monthTitle } from "../../src/admin/analytics.js";
+import { monthTitle, presetRange, rangeLabel } from "../../src/admin/analytics.js";
 import { bookingRow, clientRow } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
@@ -36,20 +36,56 @@ test.use({
 });
 
 test.describe("Кабинет: аналитика", () => {
-  test("заработано и плитки — только по визитам периода", async ({ cabinet }) => {
+  test("по умолчанию — этот месяц", async ({ cabinet }) => {
     const { page, openTab } = cabinet;
     await openTab("Аналитика");
 
     await expect(page.getByRole("heading", { name: "Аналитика" })).toBeVisible();
-    await expect(page.locator(".header-name")).toHaveText("за 30 дней");
-    await expect(page.locator(".an-revenue")).toHaveText(/^150\s₽$/);
-    const tiles = page.locator(".an-tiles .stat-tile");
-    await expect(tiles.nth(0)).toContainText("2Визитов");
-    await expect(tiles.nth(1)).toContainText(/75\s₽/);
-    await expect(tiles.nth(2)).toContainText("1Клиентов");
+    await expect(page.getByRole("button", { name: "Этот месяц" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".header-name")).toHaveText(`за ${rangeLabel(presetRange("month"))}`);
+  });
 
+  test("заработано, ожидается и плитки — только подтверждённые", async ({ cabinet }) => {
+    const { page, openTab } = cabinet;
+    await openTab("Аналитика");
     await page.getByRole("button", { name: "Всё" }).click();
     await expect(page.locator(".header-name")).toHaveText("за всё время");
+
+    const figures = page.locator(".an-figure");
+    await expect(figures.nth(0)).toContainText(/Заработано150\s₽2 визита/);
+    await expect(figures.nth(1)).toContainText(/Ожидается500\s₽1 запись впереди/);
+    await expect(page.locator(".an-total")).toContainText(/650\s₽/);
+    const tiles = page.locator(".an-tiles .stat-tile");
+    await expect(tiles.nth(0)).toContainText("2Визитов");
+    await expect(tiles.nth(1)).toContainText("1Впереди");
+    await expect(tiles.nth(2)).toContainText(/75\s₽/);
+  });
+
+  test("свои даты: один день, затем «Сбросить»", async ({ cabinet }) => {
+    const { page, openTab } = cabinet;
+    await openTab("Аналитика");
+
+    await page.getByRole("button", { name: "Свои даты" }).click();
+    const picker = page.locator(".an-range");
+    // День PAST может быть в прошлом месяце — листаем к нему.
+    if (PAST.slice(0, 7) !== dayKey(0).slice(0, 7)) {
+      await picker.getByRole("button", { name: "Предыдущий месяц" }).click();
+    }
+    await picker
+      .locator(".rdp-day-btn:not(.is-outside)", { hasText: new RegExp(`^${Number(PAST.slice(8))}$`) })
+      .click();
+    await picker.getByRole("button", { name: "Применить" }).click();
+
+    const one = rangeLabel({ from: PAST, to: PAST });
+    await expect(picker).toBeHidden();
+    await expect(page.locator(".header-name")).toHaveText(`за ${one}`);
+    await expect(page.getByRole("button", { name: `Свои даты: ${one}` })).toBeVisible();
+    await expect(page.locator(".an-figure").nth(0)).toContainText(/60\s₽1 визит/);
+    await expect(page.locator(".an-figure").nth(1)).toContainText(/0\s₽/);
+
+    await page.getByRole("button", { name: `Свои даты: ${one}` }).click();
+    await picker.getByRole("button", { name: "Сбросить" }).click();
+    await expect(page.getByRole("button", { name: "Этот месяц" })).toHaveAttribute("aria-pressed", "true");
   });
 
   test("месяц открывает свою историю и закрывается «Скрыть»", async ({ cabinet }) => {
@@ -64,7 +100,11 @@ test.describe("Кабинет: аналитика", () => {
 
     const history = page.locator(".an-month");
     await expect(history.locator(".an-month-title")).toHaveText(title);
-    await expect(history.locator(".an-month-row").first()).toContainText("Анна");
+    await expect(history.locator('.an-month-row[data-upcoming="false"]').first()).toContainText("Анна");
+    // Будущая подтверждённая запись того же месяца — с пометкой «впереди».
+    if (dayKey(5).slice(0, 7) === PAST.slice(0, 7)) {
+      await expect(history.locator('.an-month-row[data-upcoming="true"]')).toContainText("Веравпереди");
+    }
 
     await history.getByRole("button", { name: "Скрыть" }).click();
     await expect(history).toBeHidden();
@@ -103,7 +143,9 @@ test.describe("Кабинет: аналитика", () => {
       const { page, openTab } = cabinet;
       await page.setViewportSize({ width, height: 800 });
       await openTab("Аналитика");
-      await expect(page.locator(".an-revenue")).toBeVisible();
+      await expect(page.locator(".an-card")).toBeVisible();
+      await page.getByRole("button", { name: "Свои даты" }).click();
+      await expect(page.locator(".an-range")).toBeVisible();
 
       const clipped = await page.$$eval(".bottom-nav-label", (els) =>
         els.filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent)

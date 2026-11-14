@@ -2,22 +2,25 @@
 // Supabase — считается из записей, которые store.js уже загрузил целиком
 // (selectAll), так что отдельного запроса к серверу нет.
 //
-// Визит — подтверждённая запись (status "ok"), которая уже началась.
-// Заявки, отменённые (store.js их и так отсекает) и будущие записи —
-// не визиты и денег не приносят. Деньги — цена, сохранённая на самой
-// записи (bookings.price), а не нынешняя цена услуги.
+// Считаются только подтверждённые записи (status "ok"):
+//  - визит — уже началась: «Заработано»;
+//  - впереди — ещё не началась: «Ожидается».
+// Заявки и отменённые (store.js их и так отсекает) не считаются нигде.
+// Деньги — цена, сохранённая на самой записи (bookings.price), а не
+// нынешняя цена услуги.
 //
 // Даты — по часам устройства, как и весь кабинет (dateKey, parseKey),
-// никогда не через toISOString().
+// никогда не через toISOString(). Период — { from, to }, ключи
+// ГГГГ-ММ-ДД, оба дня включительно; null — без границы с этой стороны.
 
 import { dateKey } from "../schedule.js";
 import { parseKey } from "./calendar.js";
 
-export const PERIODS = [
-  { id: "m", tab: "Месяц", label: "за 30 дней", days: 30 },
-  { id: "q", tab: "3 мес.", label: "за 90 дней", days: 90 },
-  { id: "y", tab: "Год", label: "за год", days: 365 },
-  { id: "all", tab: "Всё", label: "за всё время", days: null },
+export const PRESETS = [
+  { id: "month", label: "Этот месяц" },
+  { id: "prev", label: "Прошлый месяц" },
+  { id: "year", label: "Год" },
+  { id: "all", label: "Всё" },
 ];
 
 export const TOP_CLIENTS = 5;
@@ -25,12 +28,16 @@ export const RARE_CLIENTS = 4;
 export const CHART_MONTHS = 6;
 
 const pad = (n) => String(n).padStart(2, "0");
+const DAY_MS = 86400000;
 
 function addDays(key, n) {
   const d = parseKey(key);
   d.setDate(d.getDate() + n);
   return dateKey(d);
 }
+
+const firstOfMonth = (y, m) => dateKey(new Date(y, m, 1));
+const lastOfMonth = (y, m) => dateKey(new Date(y, m + 1, 0));
 
 /** Начало записи, мс по часам устройства. */
 export function bookingStart(b) {
@@ -42,23 +49,59 @@ export function isVisit(b, now = new Date()) {
   return b.status === "ok" && bookingStart(b) < now.getTime();
 }
 
-/**
- * Период целыми днями назад от сегодня, включая сегодня: { from, to } —
- * ключи ГГГГ-ММ-ДД, from === null — «всё время». prev — такой же отрезок
- * прямо перед ним (для «Всё» — null).
- */
-export function periodRange(periodId, now = new Date()) {
-  const p = PERIODS.find((x) => x.id === periodId) ?? PERIODS[0];
-  const today = dateKey(now);
-  if (!p.days) return { from: null, to: today, prev: null };
-  return {
-    from: addDays(today, -(p.days - 1)),
-    to: today,
-    prev: { from: addDays(today, -(2 * p.days - 1)), to: addDays(today, -p.days) },
-  };
+/** Впереди: подтверждена и ещё не началась. */
+export function isUpcoming(b, now = new Date()) {
+  return b.status === "ok" && bookingStart(b) >= now.getTime();
 }
 
-const inRange = (b, r) => (r.from == null || b.day >= r.from) && b.day <= r.to;
+/** Быстрый выбор: этот/прошлый месяц и год — календарные, «Всё» — без границ. */
+export function presetRange(id, now = new Date()) {
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  if (id === "prev") return { from: firstOfMonth(y, m - 1), to: lastOfMonth(y, m - 1) };
+  if (id === "year") return { from: firstOfMonth(y, 0), to: lastOfMonth(y, 11) };
+  if (id === "all") return { from: null, to: null };
+  return { from: firstOfMonth(y, m), to: lastOfMonth(y, m) };
+}
+
+/** Какой быстрый выбор совпадает с периодом (или null — свои даты). */
+export function presetOf(range, now = new Date()) {
+  return (
+    PRESETS.find((p) => {
+      const r = presetRange(p.id, now);
+      return r.from === range.from && r.to === range.to;
+    })?.id ?? null
+  );
+}
+
+/** Период — целые календарные месяцы (с 1-го по последний день)? Тогда сколько. */
+function wholeMonths(from, to) {
+  const a = parseKey(from);
+  const b = parseKey(to);
+  if (a.getDate() !== 1 || addDays(to, 1).slice(8) !== "01") return 0;
+  return (b.getFullYear() - a.getFullYear()) * 12 + b.getMonth() - a.getMonth() + 1;
+}
+
+/**
+ * Такой же отрезок прямо перед периодом: для целых месяцев — столько же
+ * месяцев до него (ноябрь → октябрь, а не «30 дней до 1 ноября»), иначе —
+ * столько же дней. Без одной из границ — null.
+ */
+export function previousRange({ from, to }) {
+  if (!from || !to) return null;
+  const months = wholeMonths(from, to);
+  if (months) {
+    const a = parseKey(from);
+    return {
+      from: firstOfMonth(a.getFullYear(), a.getMonth() - months),
+      to: addDays(from, -1),
+    };
+  }
+  const days = Math.round((parseKey(to) - parseKey(from)) / DAY_MS) + 1;
+  return { from: addDays(from, -days), to: addDays(from, -1) };
+}
+
+const inRange = (b, r) => (r.from == null || b.day >= r.from) && (r.to == null || b.day <= r.to);
 
 export const sumPrice = (list) => list.reduce((s, b) => s + (Number(b.price) || 0), 0);
 
@@ -66,6 +109,30 @@ const byNewest = (a, b) => b.day.localeCompare(a.day) || b.start_min - a.start_m
 
 const fMonthShort = new Intl.DateTimeFormat("ru-RU", { month: "short" });
 const fMonthLong = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" });
+const fDayMonth = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
+const fDayMonthYear = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
+
+/**
+ * Подпись периода: «1 – 30 нояб.», «5 окт. – 12 нояб.»,
+ * «5 окт. 2025 г. – 12 янв. 2026 г.», «14 нояб.»; без границ — «всё время».
+ */
+export function rangeLabel({ from, to }) {
+  if (!from && !to) return "всё время";
+  if (!from) return `по ${fDayMonth.format(parseKey(to))}`;
+  if (!to) return `с ${fDayMonth.format(parseKey(from))}`;
+  const a = parseKey(from);
+  const b = parseKey(to);
+  if (from === to) return fDayMonth.format(a);
+  if (a.getFullYear() !== b.getFullYear()) {
+    return `${fDayMonthYear.format(a)} – ${fDayMonthYear.format(b)}`;
+  }
+  if (a.getMonth() === b.getMonth()) return `${a.getDate()} – ${fDayMonth.format(b)}`;
+  return `${fDayMonth.format(a)} – ${fDayMonth.format(b)}`;
+}
 
 /** Ключ месяца "ГГГГ-ММ" и подпись столбика «нояб» для месяца back назад. */
 function monthAt(now, back) {
@@ -76,20 +143,39 @@ function monthAt(now, back) {
   };
 }
 
-/** Шесть столбиков: текущий месяц и пять до него, старые слева. Период на них не влияет. */
-export function monthTotals(visits, now = new Date()) {
+const inMonth = (mk) => (b) => b.day.startsWith(`${mk}-`);
+
+/**
+ * Шесть столбиков: текущий месяц и пять до него, старые слева. Период на
+ * них не влияет. earned — визиты месяца, expected — его подтверждённые
+ * записи, которые ещё впереди.
+ */
+export function monthTotals(bookings, now = new Date()) {
+  const visits = bookings.filter((b) => isVisit(b, now));
+  const upcoming = bookings.filter((b) => isUpcoming(b, now));
   const months = [];
   for (let back = CHART_MONTHS - 1; back >= 0; back--) {
     const { mk, label } = monthAt(now, back);
-    const total = sumPrice(visits.filter((b) => b.day.startsWith(`${mk}-`)));
-    months.push({ mk, label, total, current: back === 0 });
+    months.push({
+      mk,
+      label,
+      earned: sumPrice(visits.filter(inMonth(mk))),
+      expected: sumPrice(upcoming.filter(inMonth(mk))),
+      current: back === 0,
+    });
   }
   return months;
 }
 
-/** Визиты месяца "ГГГГ-ММ", новые сверху. */
-export function monthVisits(visits, mk) {
-  return visits.filter((b) => b.day.startsWith(`${mk}-`)).sort(byNewest);
+/**
+ * Записи месяца "ГГГГ-ММ" для истории под графиком: визиты и
+ * подтверждённые будущие (upcoming: true), поздние сверху.
+ */
+export function monthEntries(bookings, mk, now = new Date()) {
+  return bookings
+    .filter((b) => inMonth(mk)(b) && b.status === "ok")
+    .map((b) => ({ ...b, upcoming: isUpcoming(b, now) }))
+    .sort(byNewest);
 }
 
 /** "2026-11" → «Ноябрь 2026 г.» */
@@ -135,26 +221,34 @@ export function popularServices(list) {
 }
 
 /**
- * Всё, что показывает вкладка, кроме графика по месяцам:
- *  visits (все визиты — для графика), revenue, delta (процент к прошлому
- *  периоду или null — скрыть), visitCount, avg (null, если визитов нет),
+ * Всё, что показывает вкладка за период { from, to }, кроме графика:
+ *  earned (визиты), expected (подтверждённые впереди), total, delta
+ *  (процент total к такому же отрезку перед периодом или null — скрыть),
+ *  visitCount, upcomingCount, avg (средний чек визитов или null),
  *  clientCount, services, top, rare.
  *
- * top — до 5 клиентов с наибольшим числом визитов за период (при
- * равенстве — по деньгам). rare — до 4 остальных клиентов базы: сначала те,
- * кто ни разу не был, затем по числу визитов за период (меньше — выше),
- * затем по давности последнего визита (дольше — выше). У каждого — next,
- * ближайшая будущая запись или заявка (или null).
+ * Услуги и клиенты — только по визитам: ещё не случившаяся запись — не
+ * визит. top — до 5 клиентов с наибольшим числом визитов (при равенстве —
+ * по деньгам). rare — до 4 остальных клиентов базы: сначала те, кто ни
+ * разу не был, затем по числу визитов за период (меньше — выше), затем по
+ * давности последнего визита (дольше — выше). У каждого — next, ближайшая
+ * будущая запись или заявка (или null).
  */
-export function analyticsFor({ bookings, clients, period, now = new Date() }) {
+export function analyticsFor({ bookings, clients, from = null, to = null, now = new Date() }) {
+  const range = { from, to };
   const visits = bookings.filter((b) => isVisit(b, now));
-  const range = periodRange(period, now);
   const inPeriod = visits.filter((b) => inRange(b, range));
+  const ahead = bookings.filter((b) => isUpcoming(b, now) && inRange(b, range));
 
-  const revenue = sumPrice(inPeriod);
-  const prevRevenue = range.prev ? sumPrice(visits.filter((b) => inRange(b, range.prev))) : 0;
-  const delta =
-    range.prev && prevRevenue > 0 ? Math.round(((revenue - prevRevenue) / prevRevenue) * 100) : null;
+  const earned = sumPrice(inPeriod);
+  const expected = sumPrice(ahead);
+  const total = earned + expected;
+
+  const prev = previousRange(range);
+  const prevTotal = prev
+    ? sumPrice(bookings.filter((b) => b.status === "ok" && inRange(b, prev)))
+    : 0;
+  const delta = prev && prevTotal > 0 ? Math.round(((total - prevTotal) / prevTotal) * 100) : null;
 
   // Последний визит клиента — за всё время, не только за период.
   const lastVisit = new Map();
@@ -210,12 +304,14 @@ export function analyticsFor({ bookings, clients, period, now = new Date() }) {
     .slice(0, RARE_CLIENTS);
 
   return {
-    visits,
-    revenue,
+    earned,
+    expected,
+    total,
     delta,
     visitCount: inPeriod.length,
-    avg: inPeriod.length ? revenue / inPeriod.length : null,
-    clientCount: new Set(inPeriod.map((b) => b.client_id).filter((id) => id != null)).size,
+    upcomingCount: ahead.length,
+    avg: inPeriod.length ? earned / inPeriod.length : null,
+    clientCount: perClient.size,
     services: popularServices(inPeriod),
     top,
     rare,
