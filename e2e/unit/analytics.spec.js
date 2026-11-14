@@ -2,19 +2,25 @@ import { expect, test } from "@playwright/test";
 import {
   analyticsFor,
   deltaLabel,
+  isUpcoming,
   isVisit,
+  monthEntries,
   monthTitle,
   monthTotals,
-  monthVisits,
-  periodRange,
   popularServices,
+  presetOf,
+  presetRange,
+  previousRange,
+  rangeLabel,
 } from "../../src/admin/analytics.js";
 
-// Аналитика кабинета (src/admin/analytics.js): визит — подтверждённая и
-// уже начавшаяся запись, деньги — цена на самой записи. Часы — устройства,
-// поэтому «сейчас» здесь всегда задано явно, в местном времени.
+// Аналитика кабинета (src/admin/analytics.js): считаются только
+// подтверждённые записи — прошедшие («Заработано») и будущие
+// («Ожидается»), по цене на самой записи. Часы — устройства, поэтому
+// «сейчас» здесь всегда задано явно, в местном времени.
 
 const NOW = new Date(2026, 10, 14, 12, 0); // 14 ноября 2026, 12:00
+const NOV = { from: "2026-11-01", to: "2026-11-30" };
 
 let nextId = 1;
 function b(day, fields = {}) {
@@ -35,79 +41,126 @@ function b(day, fields = {}) {
 
 const client = (id, name, extra = {}) => ({ id, name, ...extra });
 
-test.describe("что считается визитом", () => {
-  test("подтверждённая и прошедшая", () => {
+test.describe("что считается", () => {
+  test("визит — подтверждённая и уже начавшаяся", () => {
     expect(isVisit(b("2026-11-13"), NOW)).toBe(true);
-  });
-
-  test("заявка и будущая запись — не визиты", () => {
-    expect(isVisit(b("2026-11-13", { status: "new" }), NOW)).toBe(false);
-    expect(isVisit(b("2026-11-15"), NOW)).toBe(false);
-    // Сегодня: в 10:00 уже была, в 13:00 ещё нет.
     expect(isVisit(b("2026-11-14", { start_min: 600 }), NOW)).toBe(true);
     expect(isVisit(b("2026-11-14", { start_min: 780 }), NOW)).toBe(false);
   });
 
-  test("отменённая — не визит", () => {
-    expect(isVisit(b("2026-11-13", { status: "cancelled" }), NOW)).toBe(false);
+  test("впереди — подтверждённая и ещё не начавшаяся", () => {
+    expect(isUpcoming(b("2026-11-14", { start_min: 780 }), NOW)).toBe(true);
+    expect(isUpcoming(b("2026-11-20"), NOW)).toBe(true);
+    expect(isUpcoming(b("2026-11-13"), NOW)).toBe(false);
+  });
+
+  test("заявки и отменённые — ни то, ни другое", () => {
+    for (const status of ["new", "cancelled"]) {
+      expect(isVisit(b("2026-11-13", { status }), NOW)).toBe(false);
+      expect(isUpcoming(b("2026-11-20", { status }), NOW)).toBe(false);
+    }
   });
 });
 
 test.describe("периоды", () => {
-  test("30 дней включая сегодня и такой же отрезок перед ними", () => {
-    expect(periodRange("m", NOW)).toEqual({
-      from: "2026-10-16",
-      to: "2026-11-14",
-      prev: { from: "2026-09-16", to: "2026-10-15" },
-    });
+  test("быстрый выбор — календарные месяцы и год", () => {
+    expect(presetRange("month", NOW)).toEqual(NOV);
+    expect(presetRange("prev", NOW)).toEqual({ from: "2026-10-01", to: "2026-10-31" });
+    expect(presetRange("year", NOW)).toEqual({ from: "2026-01-01", to: "2026-12-31" });
+    expect(presetRange("all", NOW)).toEqual({ from: null, to: null });
+    // Февраль и переход через год.
+    expect(presetRange("prev", new Date(2027, 2, 5))).toEqual({ from: "2027-02-01", to: "2027-02-28" });
+    expect(presetRange("prev", new Date(2027, 0, 5))).toEqual({ from: "2026-12-01", to: "2026-12-31" });
   });
 
-  test("«Всё» — без начала и без прошлого периода", () => {
-    expect(periodRange("all", NOW)).toEqual({ from: null, to: "2026-11-14", prev: null });
+  test("свои даты не совпадают ни с одним быстрым выбором", () => {
+    expect(presetOf(NOV, NOW)).toBe("month");
+    expect(presetOf({ from: "2026-11-03", to: "2026-11-10" }, NOW)).toBeNull();
+  });
+
+  test("прошлый период: целые месяцы — те же месяцы до, иначе — те же дни", () => {
+    expect(previousRange(NOV)).toEqual({ from: "2026-10-01", to: "2026-10-31" });
+    expect(previousRange({ from: "2026-01-01", to: "2026-03-31" })).toEqual({
+      from: "2025-10-01",
+      to: "2025-12-31",
+    });
+    expect(previousRange({ from: "2026-11-10", to: "2026-11-16" })).toEqual({
+      from: "2026-11-03",
+      to: "2026-11-09",
+    });
+    expect(previousRange({ from: null, to: null })).toBeNull();
+  });
+
+  test("подписи периода", () => {
+    expect(rangeLabel(NOV)).toBe("1 – 30 нояб.");
+    expect(rangeLabel({ from: "2026-10-05", to: "2026-11-12" })).toBe("5 окт. – 12 нояб.");
+    expect(rangeLabel({ from: "2026-11-14", to: "2026-11-14" })).toBe("14 нояб.");
+    expect(rangeLabel({ from: "2025-12-20", to: "2026-01-10" })).toMatch(/^20 дек\. 2025 г\. – 10 янв\. 2026 г\.$/);
+    expect(rangeLabel({ from: null, to: null })).toBe("всё время");
   });
 });
 
-test.describe("Заработано", () => {
-  test("цена записи, только визиты периода, изменение к прошлому", () => {
+test.describe("Заработано и Ожидается", () => {
+  test("обе границы включительно, будущие подтверждённые — в «Ожидается»", () => {
     const a = analyticsFor({
       now: NOW,
+      ...NOV,
       clients: [client(1, "Анна")],
       bookings: [
+        b("2026-11-01", { price: 50 }), // первый день
         b("2026-11-10", { price: 150 }),
-        b("2026-10-16", { price: 50 }), // первый день периода
-        b("2026-10-15", { price: 100 }), // уже прошлый период
+        b("2026-11-14", { start_min: 780, price: 70 }), // сегодня, но позже
+        b("2026-11-30", { price: 30 }), // последний день
+        b("2026-12-01", { price: 999 }), // уже не в периоде
         b("2026-11-12", { price: 999, status: "new" }),
-        b("2026-11-20", { price: 999 }),
+        b("2026-11-25", { price: 999, status: "new" }),
       ],
     });
-    expect(a.revenue).toBe(200);
+    expect(a.earned).toBe(200);
+    expect(a.expected).toBe(100);
+    expect(a.total).toBe(300);
     expect(a.visitCount).toBe(2);
+    expect(a.upcomingCount).toBe(2);
     expect(a.avg).toBe(100);
     expect(a.clientCount).toBe(1);
-    expect(a.delta).toBe(100);
-    expect(deltaLabel(a.delta)).toBe("+100% к прошлому периоду");
+  });
+
+  test("изменение — итог к итогу такого же прошлого периода", () => {
+    const a = analyticsFor({
+      now: NOW,
+      ...NOV,
+      clients: [],
+      bookings: [b("2026-10-10", { price: 200 }), b("2026-11-10", { price: 100 }), b("2026-11-20", { price: 200 })],
+    });
+    expect(a.delta).toBe(50);
+    expect(deltaLabel(a.delta)).toBe("+50% к прошлому периоду");
   });
 
   test("изменение скрыто для «Всё» и при пустом прошлом периоде", () => {
     const bookings = [b("2026-11-10")];
-    expect(analyticsFor({ now: NOW, clients: [], bookings, period: "m" }).delta).toBeNull();
-    expect(analyticsFor({ now: NOW, clients: [], bookings, period: "all" }).delta).toBeNull();
+    expect(analyticsFor({ now: NOW, ...NOV, clients: [], bookings }).delta).toBeNull();
+    expect(analyticsFor({ now: NOW, clients: [], bookings }).delta).toBeNull();
     expect(deltaLabel(null)).toBe("");
-  });
-
-  test("падение — со знаком минус", () => {
     expect(deltaLabel(-8)).toBe("−8% к прошлому периоду");
   });
 
   test("без визитов средний чек — null", () => {
-    expect(analyticsFor({ now: NOW, clients: [], bookings: [] }).avg).toBeNull();
+    expect(analyticsFor({ now: NOW, ...NOV, clients: [], bookings: [] }).avg).toBeNull();
   });
 });
 
 test.describe("по месяцам", () => {
-  test("шесть месяцев до текущего, период не влияет", () => {
-    const visits = [b("2026-11-01", { price: 70 }), b("2026-06-30", { price: 40 }), b("2026-05-31")];
-    const months = monthTotals(visits, NOW);
+  test("шесть месяцев до текущего; заработано и ожидается отдельно", () => {
+    const months = monthTotals(
+      [
+        b("2026-11-01", { price: 70 }),
+        b("2026-11-20", { price: 30 }),
+        b("2026-06-30", { price: 40 }),
+        b("2026-05-31"),
+        b("2026-11-21", { status: "new" }),
+      ],
+      NOW
+    );
     expect(months.map((m) => m.mk)).toEqual([
       "2026-06",
       "2026-07",
@@ -116,8 +169,8 @@ test.describe("по месяцам", () => {
       "2026-10",
       "2026-11",
     ]);
-    expect(months[0].total).toBe(40);
-    expect(months[5]).toMatchObject({ total: 70, current: true });
+    expect(months[0]).toMatchObject({ earned: 40, expected: 0 });
+    expect(months[5]).toMatchObject({ earned: 70, expected: 30, current: true });
   });
 
   test("переход через новый год", () => {
@@ -126,15 +179,21 @@ test.describe("по месяцам", () => {
     expect(months[5].mk).toBe("2027-02");
   });
 
-  test("история месяца — новые сверху", () => {
-    const list = monthVisits(
-      [b("2026-11-02", { start_min: 600 }), b("2026-11-09"), b("2026-11-02", { start_min: 900 })],
-      "2026-11"
+  test("история месяца: визиты и будущие подтверждённые, поздние сверху", () => {
+    const list = monthEntries(
+      [
+        b("2026-11-02", { start_min: 600 }),
+        b("2026-11-20"),
+        b("2026-11-02", { start_min: 900 }),
+        b("2026-11-21", { status: "new" }),
+      ],
+      "2026-11",
+      NOW
     );
-    expect(list.map((x) => [x.day, x.start_min])).toEqual([
-      ["2026-11-09", 600],
-      ["2026-11-02", 900],
-      ["2026-11-02", 600],
+    expect(list.map((x) => [x.day, x.start_min, x.upcoming])).toEqual([
+      ["2026-11-20", 600, true],
+      ["2026-11-02", 900, false],
+      ["2026-11-02", 600, false],
     ]);
     expect(monthTitle("2026-11")).toBe("Ноябрь 2026 г.");
   });
@@ -160,6 +219,11 @@ test.describe("Популярные услуги", () => {
       ["Брови", 1, 30],
     ]);
   });
+
+  test("будущие записи — не визиты услуги", () => {
+    const a = analyticsFor({ now: NOW, ...NOV, clients: [], bookings: [b("2026-11-20")] });
+    expect(a.services).toEqual([]);
+  });
 });
 
 test.describe("клиенты", () => {
@@ -184,7 +248,7 @@ test.describe("клиенты", () => {
     b("2026-06-01", { client_id: 7 }), // был давно — вне периода
     b("2026-11-20", { client_id: 8, status: "new", start_min: 840 }), // ещё не был, есть заявка
   ];
-  const a = analyticsFor({ now: NOW, clients, bookings });
+  const a = analyticsFor({ now: NOW, ...NOV, clients, bookings });
 
   test("постоянные: до пяти, по визитам, при равенстве — по деньгам", () => {
     expect(a.top.map((t) => t.client.name)).toEqual(["Анна", "Вера", "Галя", "Даша", "Ева"]);
