@@ -5,7 +5,6 @@ import {
   deltaLabel,
   isUpcoming,
   isVisit,
-  monthEntries,
   monthTitle,
   monthTotals,
   popularServices,
@@ -172,22 +171,7 @@ test.describe("по месяцам", () => {
     expect(months[5].mk).toBe("2027-02");
   });
 
-  test("история месяца: визиты и будущие подтверждённые, поздние сверху", () => {
-    const list = monthEntries(
-      [
-        b("2026-11-02", { start_min: 600 }),
-        b("2026-11-20"),
-        b("2026-11-02", { start_min: 900 }),
-        b("2026-11-21", { status: "new" }),
-      ],
-      "2026-11",
-      NOW
-    );
-    expect(list.map((x) => [x.day, x.start_min, x.upcoming])).toEqual([
-      ["2026-11-20", 600, true],
-      ["2026-11-02", 900, false],
-      ["2026-11-02", 600, false],
-    ]);
+  test("название месяца", () => {
     expect(monthTitle("2026-11")).toBe("Ноябрь 2026 г.");
   });
 });

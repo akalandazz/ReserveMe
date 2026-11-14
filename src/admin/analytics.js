@@ -85,8 +85,6 @@ const inRange = (b, r) => (r.from == null || b.day >= r.from) && (r.to == null |
 
 export const sumPrice = (list) => list.reduce((s, b) => s + (Number(b.price) || 0), 0);
 
-const byNewest = (a, b) => b.day.localeCompare(a.day) || b.start_min - a.start_min;
-
 const fMonthShort = new Intl.DateTimeFormat("ru-RU", { month: "short" });
 const fMonthLong = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" });
 const fDayMonth = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
@@ -145,17 +143,6 @@ export function monthTotals(bookings, now = new Date()) {
     });
   }
   return months;
-}
-
-/**
- * Записи месяца "ГГГГ-ММ" для истории под графиком: визиты и
- * подтверждённые будущие (upcoming: true), поздние сверху.
- */
-export function monthEntries(bookings, mk, now = new Date()) {
-  return bookings
-    .filter((b) => inMonth(mk)(b) && b.status === "ok")
-    .map((b) => ({ ...b, upcoming: isUpcoming(b, now) }))
-    .sort(byNewest);
 }
 
 /** "2026-11" → «Ноябрь 2026 г.» */
