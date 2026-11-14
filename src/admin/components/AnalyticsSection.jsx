@@ -5,11 +5,9 @@ import {
   analyticsFor,
   currentMonthRange,
   deltaLabel,
-  monthEntries,
   monthTitle,
   monthTotals,
   rangeLabel,
-  sumPrice,
 } from "../analytics.js";
 import {
   pluralBookings,
@@ -28,11 +26,22 @@ const BAR_MAX = 60;
 const visitsLabel = (n) => `${n} ${pluralVisits(n)}`;
 const lastLabel = (day) => (day ? `была ${relativeVisit(day)}` : "ещё не была");
 
+/** Что читает скринридер вместо столбиков: «Июнь 2026 г.: заработано 0 ₽; …». */
+const chartSummary = (months) =>
+  `По месяцам: ${months
+    .map(
+      (m) =>
+        `${monthTitle(m.mk)}: заработано ${formatPrice(m.earned)}${
+          m.expected ? `, ожидается ${formatPrice(m.expected)}` : ""
+        }`
+    )
+    .join("; ")}`;
+
 /**
  * «Аналитика» за выбранный период (по умолчанию — этот месяц, иначе
  * свои даты в календаре): заработано на визитах и ожидается от
- * подтверждённых будущих записей, шесть месяцев столбиками с историей
- * месяца по тапу, популярные услуги, постоянные клиенты и те, кто
+ * подтверждённых будущих записей, шесть месяцев столбиками (только
+ * для чтения), популярные услуги, постоянные клиенты и те, кто
  * приходит редко. Всё считается в analytics.js из уже загруженных записей.
  *
  * onOpenClient(id) — раскрыть карточку в «Клиентах»; onBook(id) — лист
@@ -41,7 +50,6 @@ const lastLabel = (day) => (day ? `была ${relativeVisit(day)}` : "ещё н�
 export default function AnalyticsSection({ bookings, clients, onOpenClient, onBook }) {
   const [range, setRange] = useState(() => currentMonthRange());
   const [picking, setPicking] = useState(false);
-  const [month, setMonth] = useState(null);
 
   const a = useMemo(
     () => analyticsFor({ bookings, clients, from: range.from, to: range.to }),
@@ -49,9 +57,6 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
   );
   const months = useMemo(() => monthTotals(bookings), [bookings]);
   const maxMonth = Math.max(0, ...months.map((m) => m.earned + m.expected));
-  const opened = useMemo(() => (month ? monthEntries(bookings, month) : []), [bookings, month]);
-  const openedDone = opened.filter((b) => !b.upcoming);
-  const openedAhead = opened.filter((b) => b.upcoming);
 
   const label = `за ${rangeLabel(range)}`;
   const delta = deltaLabel(a.delta);
@@ -110,26 +115,15 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
           {delta && <span className="an-delta"> · {delta}</span>}
         </p>
 
+        {/* Только для чтения: месяц выбирают периодом выше, не тапом по столбику. */}
         <p className="an-kicker an-chart-title">По месяцам, {CURRENCY}</p>
-        <div className="an-chart">
+        <div className="an-chart" role="img" aria-label={chartSummary(months)}>
           {months.map((m) => {
-            const on = month === m.mk;
-            const strong = month ? on : m.current;
             const sum = m.earned + m.expected;
             const h = sum ? Math.max(4, Math.round((sum / maxMonth) * BAR_MAX)) : 2;
             const hExpected = sum ? Math.round((h * m.expected) / sum) : 0;
             return (
-              <button
-                key={m.mk}
-                type="button"
-                className="an-col"
-                data-strong={strong ? "true" : "false"}
-                aria-pressed={on ? "true" : "false"}
-                aria-label={`${monthTitle(m.mk)}: заработано ${formatPrice(m.earned)}${
-                  m.expected ? `, ожидается ${formatPrice(m.expected)}` : ""
-                }`}
-                onClick={() => setMonth(on ? null : m.mk)}
-              >
+              <div key={m.mk} className="an-col" data-strong={m.current ? "true" : "false"}>
                 <span className="an-col-value">{sum ? formatAmount(sum) : "—"}</span>
                 <span className="an-col-bar" style={{ height: `${h}px` }}>
                   {hExpected > 0 && (
@@ -137,7 +131,7 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
                   )}
                 </span>
                 <span className="an-col-label">{m.label}</span>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -152,45 +146,6 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
               ожидается
             </span>
           </div>
-        )}
-
-        {month ? (
-          <div className="an-month">
-            <div className="an-month-head">
-              <span className="an-month-title">{monthTitle(month)}</span>
-              <button type="button" className="link-btn an-month-close" onClick={() => setMonth(null)}>
-                Скрыть
-              </button>
-            </div>
-            <p className="an-month-sub">
-              {visitsLabel(openedDone.length)} · {formatPrice(sumPrice(openedDone))}
-              {openedAhead.length > 0 && ` · ожидается ${formatPrice(sumPrice(openedAhead))}`}
-            </p>
-            <div className="an-month-list">
-              {opened.length === 0 ? (
-                <p className="an-month-empty">В этом месяце визитов не было</p>
-              ) : (
-                opened.map((b) => (
-                  <div className="an-month-row" key={b.id} data-upcoming={b.upcoming ? "true" : "false"}>
-                    <span className="an-month-when">
-                      <span>{shortDate(b.day)}</span>
-                      <span>{toHHMM(b.start_min)}</span>
-                    </span>
-                    <span className="an-month-main">
-                      <span className="an-month-name">
-                        {b.client_name || "Клиент"}
-                        {b.upcoming && <span className="visit-tag">впереди</span>}
-                      </span>
-                      <span className="an-month-service">{b.service_name || "Услуга"}</span>
-                    </span>
-                    <span className="an-money">{formatPrice(b.price)}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        ) : (
-          <p className="an-hint">Нажмите на месяц, чтобы увидеть визиты</p>
         )}
       </div>
 

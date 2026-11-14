@@ -3028,10 +3028,6 @@ input:focus {
   white-space: normal;
 }
 
-.an-month-row[data-upcoming="true"] .an-money {
-  color: var(--muted);
-}
-
 .an-kicker {
   margin: 0;
   font-size: 11px;
@@ -3085,10 +3081,6 @@ input:focus {
   align-items: center;
   justify-content: flex-end;
   gap: 5px;
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: pointer;
 }
 
 .an-col-value {
@@ -3120,103 +3112,6 @@ input:focus {
 
 .an-col[data-strong="true"] .an-col-bar {
   background: var(--accent);
-}
-
-.an-col[aria-pressed="true"] .an-col-label {
-  color: var(--accent);
-}
-
-.an-hint {
-  margin: 12px 0 0;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.an-month {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-  animation: fadeUp 0.2s ease both;
-}
-
-.an-month-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.an-month-title {
-  font-family: var(--serif);
-  font-size: 19px;
-}
-
-.an-month-close {
-  flex: none;
-  min-height: 32px;
-}
-
-.an-month-sub {
-  margin: 2px 0 10px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.an-month-list {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg);
-  overflow: hidden;
-}
-
-.an-month-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 11px;
-  border-bottom: 1px solid var(--line);
-  font-size: 13px;
-}
-
-.an-month-row:last-child {
-  border-bottom: 0;
-}
-
-.an-month-when {
-  flex: none;
-  width: 56px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.an-month-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.an-month-name {
-  font-size: 14px;
-  line-height: 1.3;
-}
-
-.an-month-service {
-  font-size: 12px;
-  line-height: 1.35;
-  color: var(--muted);
-}
-
-.an-month-empty {
-  margin: 0;
-  padding: 14px 11px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--muted);
 }
 
 .an-money {

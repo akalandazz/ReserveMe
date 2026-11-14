@@ -103,27 +103,20 @@ test.describe("Кабинет: аналитика", () => {
     await expect(page.locator(".header-name")).toHaveText(`за ${rangeLabel(currentMonthRange())}`);
   });
 
-  test("месяц открывает свою историю и закрывается «Скрыть»", async ({ cabinet }) => {
+  test("график по месяцам — только для чтения", async ({ cabinet }) => {
     const { page, openTab } = cabinet;
     await openTab("Аналитика");
 
-    await expect(page.getByText("Нажмите на месяц, чтобы увидеть визиты")).toBeVisible();
-    const title = monthTitle(PAST.slice(0, 7));
-    const col = page.getByRole("button", { name: new RegExp(`^${title}`) });
-    await col.click();
-    await expect(col).toHaveAttribute("aria-pressed", "true");
+    // Одна картинка с описанием для скринридера, без кнопок и истории месяца.
+    const chart = page.getByRole("img", { name: /^По месяцам:/ });
+    await expect(chart).toBeVisible();
+    await expect(chart).toHaveAttribute("aria-label", new RegExp(monthTitle(PAST.slice(0, 7))));
+    await expect(chart.locator(".an-col")).toHaveCount(6);
+    await expect(chart.getByRole("button")).toHaveCount(0);
+    await expect(page.getByText("Нажмите на месяц, чтобы увидеть визиты")).toHaveCount(0);
 
-    const history = page.locator(".an-month");
-    await expect(history.locator(".an-month-title")).toHaveText(title);
-    await expect(history.locator('.an-month-row[data-upcoming="false"]').first()).toContainText("Анна");
-    // Будущая подтверждённая запись того же месяца — с пометкой «впереди».
-    if (dayKey(5).slice(0, 7) === PAST.slice(0, 7)) {
-      await expect(history.locator('.an-month-row[data-upcoming="true"]')).toContainText("Веравпереди");
-    }
-
-    await history.getByRole("button", { name: "Скрыть" }).click();
-    await expect(history).toBeHidden();
-    await expect(col).toHaveAttribute("aria-pressed", "false");
+    await chart.locator(".an-col").last().click();
+    await expect(page.locator(".an-month")).toHaveCount(0);
   });
 
   test("постоянный клиент открывает карточку в «Клиентах»", async ({ cabinet }) => {
