@@ -16,3 +16,10 @@ export function formatPrice(n) {
   if (n == null || n === "" || !Number.isFinite(v)) return "";
   return `${fPrice.format(v)} ${CURRENCY}`;
 }
+
+/** 2500 → "2 500" — та же сумма без символа, для тесных подписей (столбики графика). Не число — "". */
+export function formatAmount(n) {
+  const v = Number(n);
+  if (n == null || n === "" || !Number.isFinite(v)) return "";
+  return fPrice.format(v);
+}
