@@ -8,7 +8,9 @@
 //   POST /api/invite  — «Пригласить в приложение» (invite.ts): кабинет,
 //                       JWT мастера;
 //   POST /api/master-notify — уведомление мастеру о новой заявке
-//                       (master-notify.ts): мини-апп, JWT клиента.
+//                       (master-notify.ts): мини-апп, JWT клиента;
+//   POST /api/analytics — вкладка «Аналитика» (analytics.ts): кабинет,
+//                       JWT мастера, считает _shared/analytics.js.
 //
 // Напоминания — отдельная функция send-reminders: её зовёт pg_cron, и
 // деплой api её не задевает. Общее у них — _shared/server.ts.
@@ -17,12 +19,13 @@
 // Проверка JWT платформой у функции одна на все маршруты, и её нет (вход
 // и Telegram приходят без JWT): каждый маршрут закрыт сам — подписью
 // initData, секретом вебхука салона или JWT, который проверяет база
-// (invite, master-notify). Новый маршрут обязан делать то же.
+// (invite, master-notify, analytics). Новый маршрут обязан делать то же.
 //
 // Деплой (локально то же задаёт supabase/config.toml):
 //   supabase functions deploy api --no-verify-jwt
 
 import { CORS, json } from "../_shared/server.ts";
+import { handleAnalytics } from "./analytics.ts";
 import { handleAuth } from "./auth.ts";
 import { handleBot } from "./bot.ts";
 import { handleInvite } from "./invite.ts";
@@ -33,6 +36,7 @@ const ROUTES: Record<string, (req: Request) => Promise<Response>> = {
   bot: handleBot,
   invite: handleInvite,
   "master-notify": handleMasterNotify,
+  analytics: handleAnalytics,
 };
 
 Deno.serve(async (req) => {

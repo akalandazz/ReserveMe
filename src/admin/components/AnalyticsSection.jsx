@@ -1,14 +1,14 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CURRENCY, formatAmount, formatPrice } from "../../money.js";
 import { toHHMM } from "../../schedule.js";
 import {
-  analyticsFor,
   currentMonthRange,
   deltaLabel,
+  monthLabel,
   monthTitle,
-  monthTotals,
   rangeLabel,
 } from "../analytics.js";
+import { fetchAnalytics } from "../api.js";
 import {
   pluralBookings,
   pluralClients,
@@ -38,11 +38,31 @@ const chartSummary = (months) =>
     .join("; ")}`;
 
 /**
+ * Отпечаток того, из чего сервер считает вкладку: меняется — значит,
+ * пора перезапросить. Опрос store.js каждый раз даёт новые массивы, даже
+ * если ничего не поменялось, поэтому сравниваем не ссылки, а содержимое.
+ */
+function dataStamp(bookings, clients) {
+  let s = "";
+  for (const b of bookings) {
+    s += `${b.id}:${b.status}:${b.day}:${b.start_min}:${b.price}:${b.client_id}:${b.service_name};`;
+  }
+  s += "|";
+  for (const c of clients) s += `${c.id}:${c.name}:${c.telegram_username}:${c.phone}:${c.channel};`;
+  return s;
+}
+
+/**
  * «Аналитика» за выбранный период (по умолчанию — этот месяц, иначе
  * свои даты в календаре): заработано на визитах и ожидается от
  * подтверждённых будущих записей, шесть месяцев столбиками (только
  * для чтения), популярные услуги, постоянные клиенты и те, кто
- * приходит редко. Всё считается в analytics.js из уже загруженных записей.
+ * приходит редко. Числа считает сервер (/api/analytics, fetchAnalytics),
+ * здесь — только подписи и разметка.
+ *
+ * bookings/clients из стора нужны лишь как сигнал «данные изменились»:
+ * опрос или правка в кабинете меняет отпечаток — вкладка перезапрашивает
+ * сервер; без изменений опрос новых запросов не порождает.
  *
  * onOpenClient(id) — раскрыть карточку в «Клиентах»; onBook(id) — лист
  * «Новая запись» с этим клиентом.
@@ -50,24 +70,46 @@ const chartSummary = (months) =>
 export default function AnalyticsSection({ bookings, clients, onOpenClient, onBook }) {
   const [range, setRange] = useState(() => currentMonthRange());
   const [picking, setPicking] = useState(false);
+  // «Повторить» — новый ключ запроса при тех же данных.
+  const [attempt, setAttempt] = useState(0);
+  // Ответ сервера и ключ запроса, на который он пришёл. Прошлый ответ
+  // остаётся на экране, пока идёт следующий; «идёт запрос» — это просто
+  // ключ ответа не совпадает с текущим.
+  const [result, setResult] = useState({ key: null, report: null, error: null });
 
-  const a = useMemo(
-    () => analyticsFor({ bookings, clients, from: range.from, to: range.to }),
-    [bookings, clients, range]
-  );
-  const months = useMemo(() => monthTotals(bookings), [bookings]);
-  const maxMonth = Math.max(0, ...months.map((m) => m.earned + m.expected));
+  const stamp = useMemo(() => dataStamp(bookings, clients), [bookings, clients]);
+  const key = `${range.from}|${range.to}|${attempt}|${stamp}`;
+
+  useEffect(() => {
+    let current = true; // ответ, который обогнал более свежий запрос, — мимо
+    fetchAnalytics(range).then((res) => {
+      if (!current) return;
+      setResult((prev) => ({
+        key,
+        report: res.ok ? res.data : prev.report,
+        error: res.ok ? null : res.error,
+      }));
+    });
+    return () => {
+      current = false;
+    };
+    // key включает range и отпечаток данных — по нему и перезапрашиваем.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const loading = result.key !== key;
+  const { report, error } = result;
+  const load = useCallback(() => setAttempt((n) => n + 1), []);
 
   const label = `за ${rangeLabel(range)}`;
-  const delta = deltaLabel(a.delta);
 
   const choose = (next) => {
     setRange(next);
     setPicking(false);
   };
 
-  return (
-    <div className="analytics">
+  const rangeButton = (
+    <>
       <div className="header-row">
         <h1 className="title">Аналитика</h1>
         <span className="header-name">{label}</span>
@@ -94,6 +136,38 @@ export default function AnalyticsSection({ bookings, clients, onOpenClient, onBo
           onReset={() => choose(currentMonthRange())}
         />
       )}
+    </>
+  );
+
+  const failure = error && (
+    <div className="an-error" role="alert">
+      <p className="form-error">{error}</p>
+      <button type="button" className="btn-primary inline" onClick={load} disabled={loading}>
+        Повторить
+      </button>
+    </div>
+  );
+
+  // Первый ответ ещё не пришёл (или не пришёл вовсе).
+  if (!report) {
+    return (
+      <div className="analytics" aria-busy={loading ? "true" : "false"}>
+        {rangeButton}
+        {failure || <div className="blank tall">Считаем…</div>}
+      </div>
+    );
+  }
+
+  const a = report.summary;
+  const months = report.months.map((m) => ({ ...m, label: monthLabel(m.mk) }));
+  const maxMonth = Math.max(0, ...months.map((m) => m.earned + m.expected));
+  const delta = deltaLabel(a.delta);
+
+  return (
+    // data-stale: на экране ещё прошлый ответ, новый в пути (admin.css гасит числа).
+    <div className="analytics" aria-busy={loading ? "true" : "false"} data-stale={loading ? "true" : "false"}>
+      {rangeButton}
+      {failure}
 
       <div className="an-card">
         <div className="an-split">

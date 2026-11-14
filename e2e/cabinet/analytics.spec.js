@@ -2,8 +2,9 @@ import { currentMonthRange, monthTitle, rangeLabel } from "../../src/admin/analy
 import { bookingRow, clientRow } from "../support/fake-supabase.js";
 import { expect, test } from "../support/fixtures.js";
 
-// Вкладка «Аналитика» (AnalyticsSection.jsx): считается из уже
-// загруженных записей — визит это подтверждённая прошедшая запись.
+// Вкладка «Аналитика» (AnalyticsSection.jsx): числа считает сервер —
+// /api/analytics (подделка гоняет тот же _shared/analytics.js); визит —
+// подтверждённая прошедшая запись.
 
 function dayKey(offset) {
   const d = new Date();
@@ -144,6 +145,37 @@ test.describe("Кабинет: аналитика", () => {
 
     await row.getByRole("button", { name: "Записать" }).click();
     await expect(page.getByRole("dialog")).toContainText("Вера");
+  });
+
+  test("числа приходят с сервера: запрос с периодом и JWT мастера", async ({ cabinet }) => {
+    const { page, openTab, backend: state } = cabinet;
+    await openTab("Аналитика");
+    await expect(page.locator(".an-card")).toBeVisible();
+
+    const calls = state.rpcs.filter((r) => r.name === "api/analytics");
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.at(-1).body).toEqual(currentMonthRange());
+
+    await pickRange(page, PAST, PAST);
+    await expect.poll(() => state.rpcs.filter((r) => r.name === "api/analytics").at(-1).body).toEqual({
+      from: PAST,
+      to: PAST,
+    });
+  });
+
+  test("сервер не ответил — ошибка и «Повторить»", async ({ cabinet }) => {
+    const { page, openTab, backend: state } = cabinet;
+    state.failAnalytics = "Не удалось загрузить аналитику";
+    await openTab("Аналитика");
+
+    const alert = page.getByRole("alert");
+    await expect(alert).toContainText("Не удалось загрузить аналитику");
+    await expect(page.locator(".an-card")).toHaveCount(0);
+
+    state.failAnalytics = null;
+    await alert.getByRole("button", { name: "Повторить" }).click();
+    await expect(page.locator(".an-card")).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
   });
 
   for (const width of [375, 393, 430]) {
