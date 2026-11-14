@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   analyticsFor,
+  currentMonthRange,
   deltaLabel,
   isUpcoming,
   isVisit,
@@ -8,8 +9,6 @@ import {
   monthTitle,
   monthTotals,
   popularServices,
-  presetOf,
-  presetRange,
   previousRange,
   rangeLabel,
 } from "../../src/admin/analytics.js";
@@ -63,19 +62,13 @@ test.describe("что считается", () => {
 });
 
 test.describe("периоды", () => {
-  test("быстрый выбор — календарные месяцы и год", () => {
-    expect(presetRange("month", NOW)).toEqual(NOV);
-    expect(presetRange("prev", NOW)).toEqual({ from: "2026-10-01", to: "2026-10-31" });
-    expect(presetRange("year", NOW)).toEqual({ from: "2026-01-01", to: "2026-12-31" });
-    expect(presetRange("all", NOW)).toEqual({ from: null, to: null });
-    // Февраль и переход через год.
-    expect(presetRange("prev", new Date(2027, 2, 5))).toEqual({ from: "2027-02-01", to: "2027-02-28" });
-    expect(presetRange("prev", new Date(2027, 0, 5))).toEqual({ from: "2026-12-01", to: "2026-12-31" });
-  });
-
-  test("свои даты не совпадают ни с одним быстрым выбором", () => {
-    expect(presetOf(NOV, NOW)).toBe("month");
-    expect(presetOf({ from: "2026-11-03", to: "2026-11-10" }, NOW)).toBeNull();
+  test("по умолчанию — этот календарный месяц целиком", () => {
+    expect(currentMonthRange(NOW)).toEqual(NOV);
+    expect(currentMonthRange(new Date(2027, 1, 28, 23, 59))).toEqual({
+      from: "2027-02-01",
+      to: "2027-02-28",
+    });
+    expect(currentMonthRange(new Date(2026, 11, 31))).toEqual({ from: "2026-12-01", to: "2026-12-31" });
   });
 
   test("прошлый период: целые месяцы — те же месяцы до, иначе — те же дни", () => {

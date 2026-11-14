@@ -16,13 +16,6 @@
 import { dateKey } from "../schedule.js";
 import { parseKey } from "./calendar.js";
 
-export const PRESETS = [
-  { id: "month", label: "Этот месяц" },
-  { id: "prev", label: "Прошлый месяц" },
-  { id: "year", label: "Год" },
-  { id: "all", label: "Всё" },
-];
-
 export const TOP_CLIENTS = 5;
 export const RARE_CLIENTS = 4;
 export const CHART_MONTHS = 6;
@@ -54,24 +47,11 @@ export function isUpcoming(b, now = new Date()) {
   return b.status === "ok" && bookingStart(b) >= now.getTime();
 }
 
-/** Быстрый выбор: этот/прошлый месяц и год — календарные, «Всё» — без границ. */
-export function presetRange(id, now = new Date()) {
+/** Период по умолчанию и после «Сбросить»: этот календарный месяц, с 1-го по последний день. */
+export function currentMonthRange(now = new Date()) {
   const y = now.getFullYear();
   const m = now.getMonth();
-  if (id === "prev") return { from: firstOfMonth(y, m - 1), to: lastOfMonth(y, m - 1) };
-  if (id === "year") return { from: firstOfMonth(y, 0), to: lastOfMonth(y, 11) };
-  if (id === "all") return { from: null, to: null };
   return { from: firstOfMonth(y, m), to: lastOfMonth(y, m) };
-}
-
-/** Какой быстрый выбор совпадает с периодом (или null — свои даты). */
-export function presetOf(range, now = new Date()) {
-  return (
-    PRESETS.find((p) => {
-      const r = presetRange(p.id, now);
-      return r.from === range.from && r.to === range.to;
-    })?.id ?? null
-  );
 }
 
 /** Период — целые календарные месяцы (с 1-го по последний день)? Тогда сколько. */

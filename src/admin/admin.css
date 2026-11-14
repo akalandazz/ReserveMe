@@ -2875,28 +2875,38 @@ input:focus {
 
 /* ─── Аналитика ───────────────────────────────────────────────── */
 
-.an-periods {
-  margin-top: 16px;
-}
-
-/* «Прошлый месяц» длиннее «Всё»: ширина по тексту, а не поровну. */
-.an-periods .view-btn {
-  flex: 1 1 auto;
-  padding: 0 8px;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.an-custom-btn {
-  display: inline-flex;
+/* Период — одна кнопка: иконка, «1 – 30 нояб.», «Изменить». */
+.an-range-btn {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  margin-top: 4px;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
-.an-custom-btn[data-active="true"] {
-  font-weight: 500;
+.an-range-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+
+.an-range-btn-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.an-range-btn-action {
+  flex: none;
+  font-size: 13px;
 }
 
 .an-range .rdp-day-btn {
