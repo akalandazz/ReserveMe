@@ -1,21 +1,29 @@
 import { expect, test } from "@playwright/test";
 import {
-  analyticsFor,
   currentMonthRange,
   deltaLabel,
-  isUpcoming,
-  isVisit,
+  monthLabel,
   monthTitle,
-  monthTotals,
-  popularServices,
-  previousRange,
   rangeLabel,
 } from "../../src/admin/analytics.js";
+import {
+  analyticsFor,
+  analyticsReport,
+  isUpcoming,
+  isVisit,
+  monthTotals,
+  parseRange,
+  popularServices,
+  previousRange,
+  wallClock,
+} from "../../supabase/functions/_shared/analytics.js";
 
-// Аналитика кабинета (src/admin/analytics.js): считаются только
-// подтверждённые записи — прошедшие («Заработано») и будущие
-// («Ожидается»), по цене на самой записи. Часы — устройства, поэтому
-// «сейчас» здесь всегда задано явно, в местном времени.
+// Аналитика кабинета: числа считает сервер (supabase/functions/_shared/
+// analytics.js, маршрут /api/analytics), подписи — кабинет
+// (src/admin/analytics.js). Считаются только подтверждённые записи —
+// прошедшие («Заработано») и будущие («Ожидается»), по цене на самой
+// записи. «Сейчас» здесь всегда задано явно: Date — по местным часам,
+// или уже настенное время салона { day, min }.
 
 const NOW = new Date(2026, 10, 14, 12, 0); // 14 ноября 2026, 12:00
 const NOV = { from: "2026-11-01", to: "2026-11-30" };
@@ -171,8 +179,61 @@ test.describe("по месяцам", () => {
     expect(months[5].mk).toBe("2027-02");
   });
 
-  test("название месяца", () => {
+  test("название месяца и подпись столбика", () => {
     expect(monthTitle("2026-11")).toBe("Ноябрь 2026 г.");
+    expect(monthLabel("2026-11")).toBe("нояб");
+  });
+});
+
+test.describe("сервер: часы салона и запрос", () => {
+  test("настенное время Тбилиси (UTC+4), а не UTC сервера", () => {
+    // 21:30 UTC 14 ноября — в Тбилиси уже 01:30 15 ноября.
+    const t = new Date(Date.UTC(2026, 10, 14, 21, 30));
+    expect(wallClock(t, "Asia/Tbilisi")).toEqual({ day: "2026-11-15", min: 90 });
+    expect(wallClock(new Date(2026, 10, 14, 12, 5))).toEqual({ day: "2026-11-14", min: 725 });
+  });
+
+  test("запись у полуночи — визит или впереди по часам салона", () => {
+    const wall = wallClock(new Date(Date.UTC(2026, 10, 14, 21, 30)), "Asia/Tbilisi");
+    expect(isVisit(b("2026-11-15", { start_min: 60 }), wall)).toBe(true);
+    expect(isUpcoming(b("2026-11-15", { start_min: 120 }), wall)).toBe(true);
+  });
+
+  test("период в теле запроса: даты или null, начало не позже конца", () => {
+    expect(parseRange({ from: "2026-11-01", to: "2026-11-30" })).toEqual(NOV);
+    expect(parseRange({})).toEqual({ from: null, to: null });
+    expect(parseRange({ from: "2026-11-30", to: "2026-11-01" })).toBeNull();
+    expect(parseRange({ from: "2026-02-30", to: null })).toBeNull();
+    expect(parseRange({ from: "1 ноября" })).toBeNull();
+    expect(parseRange({ from: 20261101 })).toBeNull();
+  });
+
+  test("ответ: отменённые не в счёт, имя — с карточки, наружу только контакты", () => {
+    const r = analyticsReport({
+      now: NOW,
+      ...NOV,
+      clients: [
+        client(1, "Анна (новое имя)", { telegram_username: "anna", phone: "", channel: "", visit_count: 9 }),
+        client(2, "Вера", { phone: "+995 555", channel: "wa" }),
+      ],
+      bookings: [
+        b("2026-11-10", { price: 100 }),
+        b("2026-11-11", { price: 999, status: "cancelled" }),
+        b("2026-11-20", { client_id: 2, status: "new", start_min: 840, comment: "секрет" }),
+      ],
+    });
+    expect(r.now).toEqual({ day: "2026-11-14", min: 720 });
+    expect(r.summary.earned).toBe(100);
+    expect(r.summary.top[0].client).toEqual({
+      id: 1,
+      name: "Анна (новое имя)",
+      telegram_username: "anna",
+      phone: "",
+      channel: "",
+    });
+    expect(r.summary.rare[0].next).toEqual({ day: "2026-11-20", start_min: 840 });
+    expect(r.months).toHaveLength(6);
+    expect(r.months[5]).toEqual({ mk: "2026-11", earned: 100, expected: 0, current: true });
   });
 });
 

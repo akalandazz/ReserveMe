@@ -15,6 +15,7 @@
 // (telegram-web-app.js, Google Fonts), обрывается — как в браузере без
 // сети, где window.Telegram и так undefined.
 
+import { analyticsReport, parseRange } from "../../supabase/functions/_shared/analytics.js";
 import { POLICY_VERSION } from "../../supabase/functions/_shared/consent.js";
 
 export const SUPABASE_URL = "https://e2e-project.supabase.invalid";
@@ -213,6 +214,7 @@ export function clientRow(id, fields) {
  *    (null — вставка проходит);
  *  - loseBookingInsertResponse — вставка заявки сохраняет строку, но ответ
  *    обрывается (как потерянный ответ / таймаут на стороне клиента);
+ *  - failAnalytics — текст отказа api/analytics (500; null — считает);
  *  - otherSalon — Telegram id, чей аккаунт принадлежит другому салону:
  *    api/auth отвечает 403 other_salon, как настоящая;
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
@@ -230,6 +232,7 @@ export async function installFakeSupabase(page) {
     rpcs: [],
     failBookingInsert: null,
     loseBookingInsertResponse: false,
+    failAnalytics: null,
     otherSalon: new Set(),
     unhandled: [],
     nextId: 100,
@@ -572,6 +575,28 @@ async function handle(route, state) {
     const b = bookings.find((x) => x.id === body.booking_id && x.user_id === requester(req));
     if (!b) return json(404, { error: "not_found" });
     return json(200, { sent: b.status === "new" && b.source === "client" });
+  }
+
+  // ─── «Аналитика» кабинета (Edge Function api/analytics) ─────────
+  //  Тот же расчёт, что у настоящей (_shared/analytics.js), по таблицам
+  //  подделки. «Сейчас» — часы этой машины, как и dayKey в тестах (у
+  //  настоящей — Asia/Tbilisi). failAnalytics — текст отказа (500).
+  if (url.pathname === "/functions/v1/api/analytics" && method === "POST") {
+    const body = req.postDataJSON() ?? {};
+    state.rpcs.push({ name: "api/analytics", body });
+    if (requester(req) !== MASTER.id) return json(403, { error: "Нет доступа" });
+    if (state.failAnalytics) return json(500, { error: state.failAnalytics });
+    const range = parseRange(body);
+    if (!range) return json(400, { error: "bad_request" });
+    return json(
+      200,
+      analyticsReport({
+        bookings: state.tables.bookings,
+        clients: state.tables.client_stats,
+        ...range,
+        now: new Date(),
+      })
+    );
   }
 
   // ─── RPC кабинета (schema.sql) — без перепроверок времени ───────

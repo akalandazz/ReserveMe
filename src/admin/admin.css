@@ -3129,6 +3129,17 @@ input:focus {
   margin-top: 8px;
 }
 
+/* Числа считает сервер (/api/analytics): ошибка запроса — с «Повторить»,
+   а пока идёт новый запрос, прошлый ответ остаётся, но приглушён. */
+.an-error {
+  margin-top: 12px;
+}
+
+.analytics[data-stale="true"] :is(.an-card, .an-tiles, .an-panel) {
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+
 .an-eyebrow {
   margin-top: 28px;
 }
