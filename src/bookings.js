@@ -266,12 +266,12 @@ function storeRow(uid, row) {
  * чтобы строка прошла not null до триггера.
  * @returns {Promise<{ ok: boolean, error: string|null, id?: number }>}
  */
-export async function createBooking({ services, day, time, comment }) {
+export async function createBooking({ services, day, time, comment, requestKey }) {
   const uid = currentUserId();
   if (!supabase || !uid) return { ok: false, error: NOT_CONFIGURED };
   const total = combineServices(services);
   if (!total) return { ok: false, error: "Выберите услугу." };
-  const res = await withTimeout(
+  let res = await withTimeout(
     supabase
       .from("bookings")
       .insert({
@@ -285,14 +285,57 @@ export async function createBooking({ services, day, time, comment }) {
         comment,
         status: "new",
         source: "client",
+        request_key: requestKey ?? null,
       })
       .select(COLS)
       .single(),
     TIMEOUT_MS
   );
+  // 23505 по bookings_user_request_uq: эта заявка уже в базе — прошлая
+  // попытка дошла, а ответ на неё потерялся. Берём сохранённую строку, а не
+  // создаём вторую.
+  if (requestKey && res?.error?.code === "23505") res = await selectByKey(requestKey);
   if (!res || res.error || !res.data) return { ok: false, error: writeError(res) };
   storeRow(uid, res.data);
   return { ok: true, error: null, id: res.data.id };
+}
+
+function selectByKey(requestKey) {
+  return withTimeout(
+    supabase.from("bookings").select(COLS).eq("request_key", requestKey).maybeSingle(),
+    TIMEOUT_MS
+  );
+}
+
+/**
+ * Уже сохранённая заявка с этим ключом — прошлая попытка дошла до базы, а
+ * ответ нет. Повтор («Повторить») спрашивает это ДО сверки и вставки:
+ * свежая занятость уже содержит эту заявку, и сверка приняла бы своё же
+ * окошко за занятое.
+ * @returns {Promise<{ id: number } | null>} null — не найдена или нет связи.
+ */
+export async function findSavedRequest(requestKey) {
+  const uid = currentUserId();
+  if (!supabase || !uid || !requestKey) return null;
+  const res = await selectByKey(requestKey);
+  if (!res || res.error || !res.data) return null;
+  storeRow(uid, res.data);
+  return { id: res.data.id };
+}
+
+/**
+ * Ключ идемпотентности новой заявки (bookings.request_key, uuid). Один на
+ * черновик: повтор отправки шлёт тот же — см. createBooking.
+ */
+export function newRequestKey() {
+  const c = globalThis.crypto;
+  if (typeof c?.randomUUID === "function") return c.randomUUID();
+  // Старые вебвью без randomUUID: тот же UUID v4 из getRandomValues.
+  const b = c.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 /**

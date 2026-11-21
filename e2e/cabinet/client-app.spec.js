@@ -19,7 +19,7 @@ const DAY = dayKey(3);
 
 async function openCard({ page, openTab }, name) {
   await openTab("Клиенты");
-  await page.getByRole("button", { name: "Все", exact: true }).click();
+  await page.getByRole("button", { name: /^Все · \d+$/ }).click();
   const row = page.locator(".client-row", { hasText: name });
   await row.locator(".client-row-head").click();
   await expect(row).toHaveAttribute("data-expanded", "true");

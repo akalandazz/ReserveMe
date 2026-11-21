@@ -426,6 +426,35 @@ test.describe("мастер видит и правит только свой с�
     expect(one).not.toContain(660);
     expect(one).toContain(690);
   });
+
+  test("аналитика (/api/analytics) — только по своему салону", async () => {
+    const report = async (token) => {
+      const res = await api("/functions/v1/api/analytics", {
+        method: "POST",
+        token,
+        body: { from: null, to: null },
+      });
+      expect(res.status, JSON.stringify(res.data)).toBe(200);
+      return res.data.summary;
+    };
+    const ids = async (salon) =>
+      (await admin(`/rest/v1/clients?salon_id=eq.${salon}&select=id`)).data.map((c) => c.id);
+    const [one, beta] = [await ids(1), await ids(BETA.id)];
+
+    // «Редко приходят» — карточки салона; чужая не попадает ни к кому.
+    const r1 = (await report(M1.token)).rare.map((r) => r.client.id);
+    const r2 = (await report(M2.token)).rare.map((r) => r.client.id);
+    // Не больше четырёх — b1/b2 могли не войти; важно, что список не пуст
+    // и в нём нет чужих.
+    expect(r1.length).toBeGreaterThan(0);
+    expect(r1.filter((id) => !one.includes(id))).toEqual([]);
+    expect(r2.length).toBeGreaterThan(0);
+    expect(r2.filter((id) => !beta.includes(id))).toEqual([]);
+
+    // Клиенту чужого салона — как и своему: 403.
+    const asClient = await api("/functions/v1/api/analytics", { method: "POST", token: C2.token, body: {} });
+    expect(asClient.status).toBe(403);
+  });
 });
 
 test.describe("контент и комментарии чужого салона", () => {

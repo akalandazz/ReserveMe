@@ -1,0 +1,355 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CURRENCY, formatAmount, formatPrice } from "../../money.js";
+import { toHHMM } from "../../schedule.js";
+import {
+  currentMonthRange,
+  deltaLabel,
+  monthLabel,
+  monthTitle,
+  rangeLabel,
+} from "../analytics.js";
+import { fetchAnalytics } from "../api.js";
+import {
+  pluralBookings,
+  pluralClients,
+  pluralVisits,
+  relativeVisit,
+  shortDate,
+} from "../calendar.js";
+import { contactLink, monogram } from "../contact.js";
+import { Icon } from "./Icons.jsx";
+import RangePicker from "./RangePicker.jsx";
+
+// Высота самого высокого столбика, px; пустой месяц — тонкая черта.
+const BAR_MAX = 60;
+
+const visitsLabel = (n) => `${n} ${pluralVisits(n)}`;
+const lastLabel = (day) => (day ? `была ${relativeVisit(day)}` : "ещё не была");
+
+/** Что читает скринридер вместо столбиков: «Июнь 2026 г.: заработано 0 ₽; …». */
+const chartSummary = (months) =>
+  `По месяцам: ${months
+    .map(
+      (m) =>
+        `${monthTitle(m.mk)}: заработано ${formatPrice(m.earned)}${
+          m.expected ? `, ожидается ${formatPrice(m.expected)}` : ""
+        }`
+    )
+    .join("; ")}`;
+
+/**
+ * Отпечаток того, из чего сервер считает вкладку: меняется — значит,
+ * пора перезапросить. Опрос store.js каждый раз даёт новые массивы, даже
+ * если ничего не поменялось, поэтому сравниваем не ссылки, а содержимое.
+ */
+function dataStamp(bookings, clients) {
+  let s = "";
+  for (const b of bookings) {
+    s += `${b.id}:${b.status}:${b.day}:${b.start_min}:${b.price}:${b.client_id}:${b.service_name};`;
+  }
+  s += "|";
+  for (const c of clients) s += `${c.id}:${c.name}:${c.telegram_username}:${c.phone}:${c.channel};`;
+  return s;
+}
+
+/**
+ * «Аналитика» за выбранный период (по умолчанию — этот месяц, иначе
+ * свои даты в календаре): заработано на визитах и ожидается от
+ * подтверждённых будущих записей, шесть месяцев столбиками (только
+ * для чтения), популярные услуги, постоянные клиенты и те, кто
+ * приходит редко. Числа считает сервер (/api/analytics, fetchAnalytics),
+ * здесь — только подписи и разметка.
+ *
+ * bookings/clients из стора нужны лишь как сигнал «данные изменились»:
+ * опрос или правка в кабинете меняет отпечаток — вкладка перезапрашивает
+ * сервер; без изменений опрос новых запросов не порождает.
+ *
+ * onOpenClient(id) — раскрыть карточку в «Клиентах»; onBook(id) — лист
+ * «Новая запись» с этим клиентом.
+ */
+export default function AnalyticsSection({ bookings, clients, onOpenClient, onBook }) {
+  const [range, setRange] = useState(() => currentMonthRange());
+  const [picking, setPicking] = useState(false);
+  // «Повторить» — новый ключ запроса при тех же данных.
+  const [attempt, setAttempt] = useState(0);
+  // Ответ сервера и ключ запроса, на который он пришёл. Прошлый ответ
+  // остаётся на экране, пока идёт следующий; «идёт запрос» — это просто
+  // ключ ответа не совпадает с текущим.
+  const [result, setResult] = useState({ key: null, report: null, error: null });
+
+  const stamp = useMemo(() => dataStamp(bookings, clients), [bookings, clients]);
+  const key = `${range.from}|${range.to}|${attempt}|${stamp}`;
+
+  useEffect(() => {
+    let current = true; // ответ, который обогнал более свежий запрос, — мимо
+    fetchAnalytics(range).then((res) => {
+      if (!current) return;
+      setResult((prev) => ({
+        key,
+        report: res.ok ? res.data : prev.report,
+        error: res.ok ? null : res.error,
+      }));
+    });
+    return () => {
+      current = false;
+    };
+    // key включает range и отпечаток данных — по нему и перезапрашиваем.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const loading = result.key !== key;
+  const { report, error } = result;
+  const load = useCallback(() => setAttempt((n) => n + 1), []);
+
+  const label = `за ${rangeLabel(range)}`;
+
+  const choose = (next) => {
+    setRange(next);
+    setPicking(false);
+  };
+
+  const rangeButton = (
+    <>
+      <div className="header-row">
+        <h1 className="title">Аналитика</h1>
+        <span className="header-name">{label}</span>
+      </div>
+
+      {/* Период — сама кнопка: «1 – 30 нояб.» открывает календарь. */}
+      <button
+        type="button"
+        className="an-range-btn"
+        aria-expanded={picking ? "true" : "false"}
+        aria-label={`Период: ${rangeLabel(range)}. Выбрать даты`}
+        onClick={() => setPicking((v) => !v)}
+      >
+        <Icon name="calendar" size={16} />
+        <span className="an-range-btn-label">{rangeLabel(range)}</span>
+        <span className="an-range-btn-action">{picking ? "Скрыть" : "Изменить"}</span>
+      </button>
+
+      {picking && (
+        <RangePicker
+          from={range.from}
+          to={range.to}
+          onApply={choose}
+          onReset={() => choose(currentMonthRange())}
+        />
+      )}
+    </>
+  );
+
+  const failure = error && (
+    <div className="an-error" role="alert">
+      <p className="form-error">{error}</p>
+      <button type="button" className="btn-primary inline" onClick={load} disabled={loading}>
+        Повторить
+      </button>
+    </div>
+  );
+
+  // Первый ответ ещё не пришёл (или не пришёл вовсе).
+  if (!report) {
+    return (
+      <div className="analytics" aria-busy={loading ? "true" : "false"}>
+        {rangeButton}
+        {failure || <div className="blank tall">Считаем…</div>}
+      </div>
+    );
+  }
+
+  const a = report.summary;
+  const months = report.months.map((m) => ({ ...m, label: monthLabel(m.mk) }));
+  const maxMonth = Math.max(0, ...months.map((m) => m.earned + m.expected));
+  const delta = deltaLabel(a.delta);
+
+  return (
+    // data-stale: на экране ещё прошлый ответ, новый в пути (admin.css гасит числа).
+    <div className="analytics" aria-busy={loading ? "true" : "false"} data-stale={loading ? "true" : "false"}>
+      {rangeButton}
+      {failure}
+
+      <div className="an-card">
+        <div className="an-split">
+          <div className="an-figure">
+            <p className="an-kicker">Заработано</p>
+            <span className="an-revenue">{formatPrice(a.earned)}</span>
+            <span className="an-figure-sub">{visitsLabel(a.visitCount)}</span>
+          </div>
+          <div className="an-figure is-expected">
+            <p className="an-kicker">Ожидается</p>
+            <span className="an-revenue">{formatPrice(a.expected)}</span>
+            <span className="an-figure-sub">
+              {a.upcomingCount} {pluralBookings(a.upcomingCount)} впереди
+            </span>
+          </div>
+        </div>
+        <p className="an-total">
+          Итого за период: <span className="an-money">{formatPrice(a.total)}</span>
+          {delta && <span className="an-delta"> · {delta}</span>}
+        </p>
+
+        {/* Только для чтения: месяц выбирают периодом выше, не тапом по столбику. */}
+        <p className="an-kicker an-chart-title">По месяцам, {CURRENCY}</p>
+        <div className="an-chart" role="img" aria-label={chartSummary(months)}>
+          {months.map((m) => {
+            const sum = m.earned + m.expected;
+            const h = sum ? Math.max(4, Math.round((sum / maxMonth) * BAR_MAX)) : 2;
+            const hExpected = sum ? Math.round((h * m.expected) / sum) : 0;
+            return (
+              <div key={m.mk} className="an-col" data-strong={m.current ? "true" : "false"}>
+                <span className="an-col-value">{sum ? formatAmount(sum) : "—"}</span>
+                <span className="an-col-bar" style={{ height: `${h}px` }}>
+                  {hExpected > 0 && (
+                    <span className="an-col-expected" style={{ height: `${hExpected}px` }} />
+                  )}
+                </span>
+                <span className="an-col-label">{m.label}</span>
+              </div>
+            );
+          })}
+        </div>
+        {months.some((m) => m.expected) && (
+          <div className="an-legend" aria-hidden="true">
+            <span className="an-legend-item">
+              <span className="an-legend-box" />
+              заработано
+            </span>
+            <span className="an-legend-item">
+              <span className="an-legend-box is-expected" />
+              ожидается
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="stats-grid an-tiles">
+        <div className="stat-tile">
+          <span className="stat-value">{a.visitCount}</span>
+          <span className="stat-label">Визитов</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-value">{a.upcomingCount}</span>
+          <span className="stat-label">Впереди</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-value">{a.avg == null ? "—" : formatPrice(Math.round(a.avg))}</span>
+          <span className="stat-label">Средний чек</span>
+        </div>
+      </div>
+
+      <p className="eyebrow an-eyebrow">Популярные услуги</p>
+      <div className="an-panel">
+        {a.services.length === 0 ? (
+          <p className="an-empty">За этот период визитов не было</p>
+        ) : (
+          a.services.map((s) => (
+            <div className="an-svc" key={s.id}>
+              <div className="an-svc-head">
+                <span className="an-svc-name">{s.name}</span>
+                <span className="an-money lg">{formatPrice(s.sum)}</span>
+              </div>
+              <div className="an-svc-track">
+                <div
+                  className="an-svc-fill"
+                  style={{ width: `${Math.max(4, Math.round((s.visits / a.services[0].visits) * 100))}%` }}
+                />
+              </div>
+              <p className="an-svc-meta">
+                {visitsLabel(s.visits)} · {Math.round((s.visits / a.visitCount) * 100)}% всех визитов
+              </p>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="section-head an-section-head">
+        <span className="eyebrow">Постоянные клиенты</span>
+        {a.clientCount > 0 && (
+          <span className="section-head-note">
+            {a.clientCount} {pluralClients(a.clientCount)} с визитами
+          </span>
+        )}
+      </div>
+      <div className="an-panel">
+        {a.top.length === 0 ? (
+          <p className="an-empty">За этот период визитов не было</p>
+        ) : (
+          a.top.map((t, i) => (
+            <button
+              type="button"
+              className="an-client an-top"
+              key={t.client.id}
+              onClick={() => onOpenClient(t.client.id)}
+            >
+              <span className="an-rank">{i + 1}</span>
+              <span className="client-monogram">{monogram(t.client.name)}</span>
+              <span className="an-client-main">
+                <span className="an-client-name">{t.client.name || "Без имени"}</span>
+                <span className="an-client-meta">
+                  {visitsLabel(t.visits)} · {lastLabel(t.lastVisit)}
+                </span>
+              </span>
+              <span className="an-money lg">{formatPrice(t.sum)}</span>
+            </button>
+          ))
+        )}
+      </div>
+
+      <div className="section-head an-section-head">
+        <span className="eyebrow">Редко приходят</span>
+        <span className="section-head-note">стоит написать</span>
+      </div>
+      <div className="an-panel">
+        {a.rare.length === 0 ? (
+          <p className="an-empty">Пока некого показать</p>
+        ) : (
+          a.rare.map((r) => {
+            const link = contactLink(r.client);
+            return (
+              <div className="an-client an-rare" key={r.client.id}>
+                <button
+                  type="button"
+                  className="an-rare-open"
+                  onClick={() => onOpenClient(r.client.id)}
+                >
+                  <span className="client-monogram is-muted">{monogram(r.client.name)}</span>
+                  <span className="an-client-main">
+                    <span className="an-client-name">{r.client.name || "Без имени"}</span>
+                    <span className="an-client-meta">
+                      {visitsLabel(r.visits)} · {lastLabel(r.lastVisit)}
+                    </span>
+                    {r.next ? (
+                      <span className="an-client-meta">
+                        Запись: {shortDate(r.next.day)}, {toHHMM(r.next.start_min)}
+                      </span>
+                    ) : (
+                      <span className="an-client-meta is-danger">Нет будущей записи</span>
+                    )}
+                  </span>
+                </button>
+                {link && (
+                  <a
+                    className="round-btn contact-btn"
+                    href={link.href}
+                    target="_blank"
+                    rel="noopener"
+                    aria-label={link.label}
+                  >
+                    <Icon name={link.icon} size={16} />
+                  </a>
+                )}
+                <button type="button" className="an-book" onClick={() => onBook(r.client.id)}>
+                  Записать
+                </button>
+              </div>
+            );
+          })
+        )}
+        <p className="an-note">
+          Клиенты с наименьшим числом визитов {label}; сначала те, кто не был дольше всех.
+        </p>
+      </div>
+    </div>
+  );
+}

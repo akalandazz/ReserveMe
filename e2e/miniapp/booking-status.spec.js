@@ -182,6 +182,61 @@ test.describe("Мини-апп: записи с сервера", () => {
     expect(await page.evaluate(() => window.__chats)).toBe(0);
   });
 
+  // Заявка дошла до базы, а ответ — нет (сеть, таймаут 5 с): клиент видит
+  // ошибку и жмёт «Повторить». Повтор несёт тот же request_key, база
+  // (bookings_user_request_uq) вторую строку не создаёт — клиент получает
+  // уже сохранённую, мастеру — одно уведомление.
+  test("ответ на вставку потерялся — «Повторить» не создаёт вторую заявку", async ({
+    miniapp,
+  }) => {
+    const { page, backend } = miniapp;
+    await stubChat(page);
+    await reachConfirm(page);
+
+    backend.loseBookingInsertResponse = true;
+    await page.getByRole("button", { name: "Отправить заявку" }).click();
+    await expect(page.getByRole("button", { name: "Повторить" })).toBeVisible();
+    expect(backend.tables.bookings).toHaveLength(1);
+    expect(notifyCalls(backend)).toHaveLength(0);
+
+    // Как busy_slots на живой базе: сохранённая заявка уже занимает окошко —
+    // повтор не должен принять его за чужое («данные обновились»).
+    const saved = backend.tables.bookings[0];
+    backend.tables.busy_slots.push({
+      day: saved.day,
+      start_min: saved.start_min,
+      duration: saved.duration,
+    });
+
+    backend.loseBookingInsertResponse = false;
+    await page.getByRole("button", { name: "Повторить" }).click();
+    await expect.poll(() => notifyCalls(backend)).toHaveLength(1);
+    expect(backend.tables.bookings).toHaveLength(1);
+    expect(notifyCalls(backend)[0]).toEqual({ booking_id: saved.id });
+
+    const keys = backend.inserts.filter((i) => i.table === "bookings").map((i) => i.body.request_key);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(saved.request_key).toBe(keys[0]);
+    await expect(page.getByText("Заявка отправлена мастеру")).toBeVisible();
+    await expect(page.getByText("Ближайшая запись · ожидает подтверждения")).toBeVisible();
+  });
+
+  test("новая заявка после отправленной — с новым ключом", async ({ miniapp }) => {
+    const { page, backend } = miniapp;
+    await stubChat(page);
+    await reachConfirm(page);
+    await page.getByRole("button", { name: "Отправить заявку" }).click();
+    await expect(page.getByText("Заявка отправлена мастеру")).toBeVisible();
+
+    await reachConfirm(page);
+    await page.getByRole("button", { name: "Отправить заявку" }).click();
+    await expect.poll(() => notifyCalls(backend)).toHaveLength(2);
+    expect(backend.tables.bookings).toHaveLength(2);
+    const keys = backend.inserts.filter((i) => i.table === "bookings").map((i) => i.body.request_key);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
   test.describe("клиент отменяет сам", () => {
     test.use({ bookings: [mine(7)] });
 

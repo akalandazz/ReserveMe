@@ -15,6 +15,7 @@
 // (telegram-web-app.js, Google Fonts), обрывается — как в браузере без
 // сети, где window.Telegram и так undefined.
 
+import { analyticsReport, parseRange } from "../../supabase/functions/_shared/analytics.js";
 import { POLICY_VERSION } from "../../supabase/functions/_shared/consent.js";
 
 export const SUPABASE_URL = "https://e2e-project.supabase.invalid";
@@ -168,6 +169,7 @@ export function bookingRow(id, fields) {
     status: fields.status ?? "new",
     source: fields.source ?? "client",
     user_id: fields.user_id ?? null,
+    request_key: fields.request_key ?? null,
     cancelled_by: fields.cancelled_by ?? "",
     cancel_seen: fields.cancel_seen ?? false,
     created_at: new Date().toISOString(),
@@ -210,6 +212,9 @@ export function clientRow(id, fields) {
  *  - sessions  — выданные сессии (sid → user id); logout удаляет свою;
  *  - failBookingInsert — текст отказа guard_client_booking для вставки заявки
  *    (null — вставка проходит);
+ *  - loseBookingInsertResponse — вставка заявки сохраняет строку, но ответ
+ *    обрывается (как потерянный ответ / таймаут на стороне клиента);
+ *  - failAnalytics — текст отказа api/analytics (500; null — считает);
  *  - otherSalon — Telegram id, чей аккаунт принадлежит другому салону:
  *    api/auth отвечает 403 other_salon, как настоящая;
  *  - unhandled — запросы, которых подделка не знает (тест обязан упасть).
@@ -226,6 +231,8 @@ export async function installFakeSupabase(page) {
     changes: [],
     rpcs: [],
     failBookingInsert: null,
+    loseBookingInsertResponse: false,
+    failAnalytics: null,
     otherSalon: new Set(),
     unhandled: [],
     nextId: 100,
@@ -350,7 +357,9 @@ async function handle(route, state) {
   // (bookings_select_own, user_id = auth.uid()).
   if (table === "bookings" && method === "GET" && requester(req) !== MASTER.id) {
     const uid = requester(req);
-    return json(200, uid ? rows.filter((b) => b.user_id === uid) : []);
+    const key = url.searchParams.get("request_key")?.replace(/^eq\./, "");
+    const own = uid ? rows.filter((b) => b.user_id === uid && (!key || b.request_key === key)) : [];
+    return json(200, wantsObject ? (own[0] ?? null) : own);
   }
 
   // services — как order by sort, id в store.js и content.js: тест порядка
@@ -398,6 +407,19 @@ async function handle(route, state) {
     if (state.failBookingInsert) {
       return json(400, { code: "P0001", message: state.failBookingInsert, details: null, hint: null });
     }
+    // Уникальный индекс bookings_user_request_uq (schema.sql): повтор той же
+    // заявки (тот же request_key у того же аккаунта) второй строки не создаёт.
+    if (
+      body.request_key &&
+      rows.some((b) => b.user_id === requester(req) && b.request_key === body.request_key)
+    ) {
+      return json(409, {
+        code: "23505",
+        message: 'duplicate key value violates unique constraint "bookings_user_request_uq"',
+        details: null,
+        hint: null,
+      });
+    }
     // Как guard_client_booking(): услуги — по присланным id (services, или
     // один service_id), длительность, цена и подпись — их сумма из
     // services, в порядке прайса; имя и юзернейм — из профиля, не от
@@ -422,6 +444,8 @@ async function handle(route, state) {
     };
     const row = bookingRow(state.nextId++, { ...body, ...guarded, user_id: requester(req) });
     rows.push(row);
+    // Строка сохранена, а ответ до клиента не дошёл (сеть, таймаут).
+    if (state.loseBookingInsertResponse) return route.abort("failed");
     return json(201, wantsObject ? row : [row]);
   }
 
@@ -551,6 +575,28 @@ async function handle(route, state) {
     const b = bookings.find((x) => x.id === body.booking_id && x.user_id === requester(req));
     if (!b) return json(404, { error: "not_found" });
     return json(200, { sent: b.status === "new" && b.source === "client" });
+  }
+
+  // ─── «Аналитика» кабинета (Edge Function api/analytics) ─────────
+  //  Тот же расчёт, что у настоящей (_shared/analytics.js), по таблицам
+  //  подделки. «Сейчас» — часы этой машины, как и dayKey в тестах (у
+  //  настоящей — Asia/Tbilisi). failAnalytics — текст отказа (500).
+  if (url.pathname === "/functions/v1/api/analytics" && method === "POST") {
+    const body = req.postDataJSON() ?? {};
+    state.rpcs.push({ name: "api/analytics", body });
+    if (requester(req) !== MASTER.id) return json(403, { error: "Нет доступа" });
+    if (state.failAnalytics) return json(500, { error: state.failAnalytics });
+    const range = parseRange(body);
+    if (!range) return json(400, { error: "bad_request" });
+    return json(
+      200,
+      analyticsReport({
+        bookings: state.tables.bookings,
+        clients: state.tables.client_stats,
+        ...range,
+        now: new Date(),
+      })
+    );
   }
 
   // ─── RPC кабинета (schema.sql) — без перепроверок времени ───────

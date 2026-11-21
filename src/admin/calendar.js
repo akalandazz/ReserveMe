@@ -83,6 +83,10 @@ export function pluralBookings(n) {
   return pluralRu(n, ["запись", "записи", "записей"]);
 }
 
+export function pluralClients(n) {
+  return pluralRu(n, ["клиент", "клиента", "клиентов"]);
+}
+
 export function pluralComments(n) {
   return pluralRu(n, ["комментарий", "комментария", "комментариев"]);
 }

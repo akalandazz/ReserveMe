@@ -4,7 +4,7 @@
 // подписанные компоненты обновляются сами, как в src/content.js.
 // Никогда не бросает — всегда { ok, error }.
 
-import { NOT_CONFIGURED, supabase } from "../supabase.js";
+import { NOT_CONFIGURED, supabase, withTimeout } from "../supabase.js";
 import { loadAdminData } from "./store.js";
 
 function fail(error) {
@@ -459,6 +459,33 @@ export async function sendClientInvite(clientId) {
     return { ok: true, error: null, code: data?.code ?? null, sent: data?.sent === true };
   } catch (e) {
     return { ...fail(e), code: null, sent: false };
+  }
+}
+
+// Сервер читает все записи салона — даём ему время, но не бесконечно.
+const ANALYTICS_TIMEOUT_MS = 10_000;
+
+/**
+ * «Аналитика» за период { from, to } — считает сервер (Edge Function
+ * api/analytics, supabase/functions/_shared/analytics.js), кабинет только
+ * рисует. Ничего не меняет и ничего не перечитывает.
+ * → { ok, error, data: { now, summary, months } | null }.
+ */
+export async function fetchAnalytics({ from, to }) {
+  if (!supabase) return { ok: false, error: NOT_CONFIGURED, data: null };
+  try {
+    const res = await withTimeout(
+      supabase.functions.invoke("api/analytics", { body: { from, to } }),
+      ANALYTICS_TIMEOUT_MS
+    );
+    if (!res) return { ok: false, error: "Сервер не ответил — попробуйте ещё раз", data: null };
+    if (res.error || !res.data?.summary) {
+      const body = await res.error?.context?.json?.().catch(() => null);
+      return { ok: false, error: body?.error || "Не удалось загрузить аналитику", data: null };
+    }
+    return { ok: true, error: null, data: res.data };
+  } catch {
+    return { ok: false, error: "Нет связи с сервером", data: null };
   }
 }
 

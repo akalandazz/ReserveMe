@@ -42,7 +42,7 @@ test.describe("Кабинет: новый клиент", () => {
     expect(insert.headers.authorization).toMatch(/^Bearer .+\..+\..+/);
 
     // Кабинет переключился на «Все» и раскрыл нового клиента.
-    await expect(page.getByRole("button", { name: "Все", exact: true })).toHaveAttribute(
+    await expect(page.getByRole("button", { name: /^Все · \d+$/ })).toHaveAttribute(
       "aria-pressed",
       "true"
     );

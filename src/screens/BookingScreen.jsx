@@ -1,10 +1,16 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   contentSnapshot,
   refreshAll,
   useContent,
 } from "../content.js";
-import { createBooking, notifyMaster, rescheduleMyBooking } from "../bookings.js";
+import {
+  createBooking,
+  findSavedRequest,
+  newRequestKey,
+  notifyMaster,
+  rescheduleMyBooking,
+} from "../bookings.js";
 import { formatPrice } from "../money.js";
 import {
   MAX_SERVICES,
@@ -89,6 +95,7 @@ export default function BookingScreen({
   home,
 }) {
   const [sending, setSending] = useState(false);
+  const inFlight = useRef(false);
   // Заявка не сохранилась на сервере — текст ошибки, кнопка «Повторить».
   const [saveError, setSaveError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -229,10 +236,37 @@ export default function BookingScreen({
   const submit = async () => {
     // day может исчезнуть, если клиент завис на подтверждении до полуночи
     // и выбранная дата вышла из окна записи.
-    if (sending || !service || !day || !draft.time) return;
+    // inFlight — синхронный замок: sending из замыкания устаревает, и второй
+    // быстрый тап успевал запустить вторую отправку до перерисовки кнопки.
+    if (inFlight.current || sending || !service || !day || !draft.time) return;
+    inFlight.current = true;
+    try {
+      await doSubmit();
+    } finally {
+      inFlight.current = false;
+    }
+  };
+
+  const doSubmit = async () => {
     setSending(true);
     setOutdated(false);
     setSaveError("");
+    // Один ключ на черновик: «Повторить» после потерянного ответа шлёт тот
+    // же, и база вернёт уже сохранённую заявку вместо второй (createBooking).
+    const requestKey = draft.requestKey ?? newRequestKey();
+    if (!draft.requestKey) setDraft((d) => (d.requestKey ? d : { ...d, requestKey }));
+
+    // Повтор: прошлая попытка могла дойти до базы, потеряв ответ. Тогда
+    // заявка уже есть — не сверяем и не вставляем, только уведомляем.
+    if (!moving && draft.requestKey) {
+      const saved = await findSavedRequest(requestKey);
+      if (saved) {
+        await withTimeout(notifyMaster(saved.id), NOTIFY_MS);
+        haptic("success");
+        home(SAVED_TOAST);
+        return;
+      }
+    }
 
     // Последняя сверка с базой — ДО сохранения (и, у переноса, до
     // openTelegramLink).
@@ -261,6 +295,7 @@ export default function BookingScreen({
           day: day.key,
           time: draft.time,
           comment: draft.comment.trim(),
+          requestKey,
         });
     if (!res.ok) {
       haptic("error");

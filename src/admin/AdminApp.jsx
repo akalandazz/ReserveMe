@@ -7,6 +7,7 @@ import { canMessageClient, cancelBooking, clientSeesStatus } from "./api.js";
 import { isBookingPast, weekStart } from "./calendar.js";
 import { dropKind, notifyClient } from "./messages.js";
 import { loadAdminData, pollAdminData, resetAdminData, useAdminData } from "./store.js";
+import AnalyticsSection from "./components/AnalyticsSection.jsx";
 import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
 import ClientsSection from "./components/ClientsSection.jsx";
@@ -149,9 +150,20 @@ export default function AdminApp() {
     }, ms);
   };
 
+  // focus «Клиентов» сбрасывается при смене вкладки: ClientsSection
+  // раскрывает клиента из focus и при монтировании (см. там), и старый
+  // focus не должен раскрыть его снова при каждом возврате во вкладку.
   const switchTab = (next) => {
     setTab(next);
     setConfirmDel(null);
+    setClientFocus(null);
+  };
+
+  // «Аналитика» → карточка клиента: «Клиенты», «Все», поиск пуст,
+  // клиент раскрыт (focus в ClientsSection делает всё это сам).
+  const openClientCard = (clientId) => {
+    switchTab("clients");
+    setClientFocus({ id: clientId });
   };
 
   // Лист модальный, так что открытым над удаляемым он быть не должен, —
@@ -293,7 +305,8 @@ export default function AdminApp() {
       {toast && <div className="toast">{toast}</div>}
 
       <div className="page-body">
-        {tab !== "clients" && (
+        {/* «Клиенты» и «Аналитика» рисуют шапку сами: в ней их состояние. */}
+        {tab !== "clients" && tab !== "analytics" && (
           <div className="header-row">
             <h1 className="title">{TAB_TITLES[tab]}</h1>
             {tab === "schedule" && data.settings && (
@@ -372,6 +385,15 @@ export default function AdminApp() {
                 setConfirmDel={setConfirmDel}
                 onDeleteBooking={removeBooking}
                 onClientDeleted={forgetClient}
+              />
+            )}
+
+            {tab === "analytics" && (
+              <AnalyticsSection
+                bookings={data.bookings}
+                clients={data.clients}
+                onOpenClient={openClientCard}
+                onBook={openBooking}
               />
             )}
 

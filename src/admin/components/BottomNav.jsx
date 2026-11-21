@@ -4,6 +4,7 @@ const TABS = [
   { id: "schedule", label: "Расписание", icon: "calendar" },
   { id: "requests", label: "Заявки", icon: "inbox" },
   { id: "clients", label: "Клиенты", icon: "users" },
+  { id: "analytics", label: "Аналитика", icon: "chart" },
   { id: "settings", label: "Настройки", icon: "settings" },
 ];
 
