@@ -2,6 +2,8 @@
   "enabledPlugins": {
     "playwright@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
-    "supabase@claude-plugins-official": true
+    "supabase@claude-plugins-official": true,
+    "taste-skill@taste-skill": true,
+    "impeccable@impeccable": true
   }
 }
