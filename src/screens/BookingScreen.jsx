@@ -105,7 +105,8 @@ export default function BookingScreen({
   const [tooMany, setTooMany] = useState(false);
   const { settings, services, activeServices, daysOff, daysOpen, busy: allBusy } = useContent();
   // Перенос своей записи («Перенести» в «Мои записи»): { id, day, time,
-  // duration } — какая запись и где она сейчас. null — новая заявка.
+  // duration, price } — какая запись, где она сейчас и её согласованная
+  // цена (перенос её не меняет). null — новая заявка.
   const moving = draft.reschedule ?? null;
   const busy = useMemo(() => withoutOwn(allBusy, moving), [allBusy, moving]);
 
@@ -181,7 +182,12 @@ export default function BookingScreen({
 
     if (fresh.content) {
       if (!now && !gone) return true;
-      if (now && (now.price !== service.price || now.duration !== service.duration)) {
+      // У переноса цена — со строки записи (прайс её не меняет), сверять её
+      // с прайсом незачем; длительность — по прайсу, под неё ищется окно.
+      if (
+        now &&
+        ((!moving && now.price !== service.price) || now.duration !== service.duration)
+      ) {
         return true;
       }
     }
@@ -556,7 +562,7 @@ export default function BookingScreen({
         </div>
         <div className="summary-row">
           <dt>Стоимость</dt>
-          <dd>{formatPrice(service?.price)}</dd>
+          <dd>{formatPrice(moving?.price ?? service?.price)}</dd>
         </div>
       </dl>
 

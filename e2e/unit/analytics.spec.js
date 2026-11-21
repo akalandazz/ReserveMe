@@ -15,6 +15,7 @@ import {
   parseRange,
   popularServices,
   previousRange,
+  servicesOf,
   wallClock,
 } from "../../supabase/functions/_shared/analytics.js";
 
@@ -256,6 +257,40 @@ test.describe("Популярные услуги", () => {
       ["Маникюр", 2, 120],
       ["Брови", 1, 30],
     ]);
+  });
+
+  test("своя цена записи из нескольких услуг делится пропорционально прайсу", () => {
+    const snap = [
+      { id: "manicure", name: "Маникюр", price: 60 },
+      { id: "pedicure", name: "Педикюр", price: 80 },
+    ];
+    // Скидка: 140 по прайсу, договорились на 70 — каждой половина её цены.
+    expect(servicesOf(b("2026-11-03", { price: 70, services: snap })).map((s) => s.price)).toEqual([
+      30, 40,
+    ]);
+    // Неровное деление: доли вниз, остаток — последней, сумма = цене записи.
+    const odd = servicesOf(
+      b("2026-11-03", {
+        price: 100,
+        services: [
+          { id: "a", name: "A", price: 1 },
+          { id: "b", name: "B", price: 1 },
+          { id: "c", name: "C", price: 1 },
+        ],
+      })
+    ).map((s) => s.price);
+    expect(odd).toEqual([33, 33, 34]);
+    // Снимок без цен — поровну; ни одна доля не уходит в минус.
+    const zero = servicesOf(
+      b("2026-11-03", {
+        price: 3,
+        services: [
+          { id: "a", name: "A", price: 0 },
+          { id: "b", name: "B", price: 0 },
+        ],
+      })
+    ).map((s) => s.price);
+    expect(zero).toEqual([1, 2]);
   });
 
   test("будущие записи — не визиты услуги", () => {

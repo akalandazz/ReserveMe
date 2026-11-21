@@ -148,23 +148,33 @@ export function monthTotals(bookings, now = new Date()) {
 
 /**
  * Услуги записи для «Популярных услуг». Запись из нескольких услуг —
- * визит каждой из них по цене её снимка (bookings.services); у записи из
- * одной услуги — её собственная цена. Старые строки без снимка — по
+ * визит каждой из них; деньги записи (bookings.price — мастер могла
+ * поставить свою цену, не по прайсу) делятся между ними пропорционально
+ * ценам снимка (bookings.services), остаток округления — последней, так
+ * что сумма по услугам всегда равна цене записи. У записи из одной
+ * услуги — её собственная цена. Старые строки без снимка — по
  * service_id/service_name.
  */
-function servicesOf(b) {
+export function servicesOf(b) {
   const snap = Array.isArray(b.services) && b.services.length ? b.services : null;
+  const total = Number(b.price) || 0;
   if (!snap || snap.length === 1) {
     const s = snap?.[0];
-    return [
-      {
-        id: s?.id ?? b.service_id,
-        name: s?.name || b.service_name || "Услуга",
-        price: Number(b.price) || 0,
-      },
-    ];
+    return [{ id: s?.id ?? b.service_id, name: s?.name || b.service_name || "Услуга", price: total }];
   }
-  return snap.map((s) => ({ id: s.id, name: s.name || "Услуга", price: Number(s.price) || 0 }));
+  const listed = snap.map((s) => Number(s.price) || 0);
+  const listSum = listed.reduce((a, p) => a + p, 0);
+  let left = total;
+  return snap.map((s, i) => {
+    const last = i === snap.length - 1;
+    // Снимок весь по нулям — поровну.
+    const share = listSum > 0 ? listed[i] / listSum : 1 / snap.length;
+    // Вниз, а не round: сумма долей не превысит total, и остаток
+    // последней не уйдёт в минус.
+    const price = last ? left : Math.floor(total * share);
+    left -= price;
+    return { id: s.id, name: s.name || "Услуга", price };
+  });
 }
 
 /** Услуги с визитами, по числу визитов, при равенстве — по деньгам. */

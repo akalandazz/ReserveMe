@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { formatPrice } from "../../money.js";
+import { CURRENCY, formatPrice } from "../../money.js";
 import {
   MAX_SERVICES,
   combineServices,
@@ -20,6 +20,7 @@ import {
   fetchFreeSlots,
   updateClient,
   updateMasterBooking,
+  validatePrice,
 } from "../api.js";
 import { isBookingPast, isDayClosed } from "../calendar.js";
 import { clientMessage, dropKind, notifyClient } from "../messages.js";
@@ -120,6 +121,10 @@ export default function BookingSheet({
       more: 0,
       t: null,
       cm: "",
+      // Цена, которую мастер вписала на проверке (строка из поля); null —
+      // своей нет: по прайсу, у правки с теми же услугами — согласованная.
+      // Сбрасывается, когда меняется набор услуг.
+      p: null,
       copied: false,
       askCancel: false,
     };
@@ -196,6 +201,15 @@ export default function BookingSheet({
   const origView = bk ? { name: bk.service_name, duration: bk.duration, price: bk.price } : null;
   const sv = isEdit && st.s === st.orig.s ? origView : svc;
 
+  // Цена записи: своя (st.p), если мастер её вписала, иначе sv.price.
+  // Своя уходит на сервер, только когда отличается от sv.price, — иначе
+  // null, и цену считает сервер (create/update_master_booking).
+  const basePrice = sv?.price ?? 0;
+  const priceError = st.p != null ? validatePrice(st.p) : null;
+  const price = st.p != null && !priceError ? Number(st.p) : basePrice;
+  const customPrice = st.p != null && !priceError && price !== basePrice;
+  const priceChanged = isEdit && origView != null && price !== origView.price;
+
   const slotsKey = st.step === "time" && st.d && st.s ? `${st.d}|${st.s}|${editId ?? ""}` : "";
   // Список дней — кусками по DAYS_AHEAD: «Показать ещё» добавляет кусок.
   // Переносимая запись дальше первого куска — список сразу до её дня.
@@ -268,22 +282,25 @@ export default function BookingSheet({
     isEdit &&
     (slotChanged ||
       st.s !== st.orig.s ||
+      priceChanged ||
       st.c !== st.orig.c ||
       st.cm.trim() !== st.orig.cm.trim() ||
       cfChanged);
   const wasNew = isEdit && bk.status === "new";
   // Клиенту из мини-аппа с логином кабинет сам откроет чат с сообщением
   // (как клиент — мастеру), но только когда для клиента что-то поменялось:
-  // подтверждение, перенос, другая услуга. Логин — из формы: мастер могла
-  // его поправить или сменить клиента.
+  // подтверждение, перенос, другая услуга или цена. Логин — из формы:
+  // мастер могла его поправить или сменить клиента.
   const clientTg = isEdit ? st.cf.telegram_username : "";
   const notifies =
     isEdit &&
     canMessageClient({ user_id: bk.user_id, client_username: clientTg }) &&
-    (wasNew || slotChanged || st.s !== st.orig.s);
+    (wasNew || slotChanged || st.s !== st.orig.s || priceChanged);
   const dirty = clientOnly ? cfChanged || st.c === NEW : !isEdit || changed || wasNew;
   const ready =
-    dirty && name !== "" && (clientOnly || (st.s !== "" && st.d !== "" && st.t != null));
+    dirty &&
+    name !== "" &&
+    (clientOnly || (st.s !== "" && st.d !== "" && st.t != null && !priceError));
 
   /* ─── Переходы ──────────────────────────────────────────────── */
 
@@ -326,8 +343,11 @@ export default function BookingSheet({
   const pickService = async () => {
     const sid = st.sp ?? st.s;
     if (checking || !sid) return;
+    // Другой набор услуг — другая сумма: своя цена прежнего набора к нему
+    // не относится.
+    const p = sid === st.s ? st.p : null;
     if (!(st.d && st.t != null)) {
-      go("day", { s: sid });
+      go("day", { s: sid, p });
       return;
     }
     // Время уже выбрано — проверяем, влезают ли в него новые услуги.
@@ -335,8 +355,8 @@ export default function BookingSheet({
     const res = await fetchFreeSlots(st.d, splitIds(sid), editId);
     setChecking(false);
     setSlots({ key: `${st.d}|${sid}|${editId ?? ""}`, list: res.slots });
-    if (res.slots.includes(st.t)) go("confirm", { s: sid });
-    else go("time", { s: sid, t: null });
+    if (res.slots.includes(st.t)) go("confirm", { s: sid, p });
+    else go("time", { s: sid, t: null, p });
   };
 
   /* ─── Сохранение ────────────────────────────────────────────── */
@@ -355,6 +375,10 @@ export default function BookingSheet({
     if (saving || !dirty) return;
     if (!name) {
       setError("Укажите имя клиента.");
+      return;
+    }
+    if (!clientOnly && priceError) {
+      setError(priceError);
       return;
     }
     if (!ready) return;
@@ -388,6 +412,7 @@ export default function BookingSheet({
         day: st.d,
         startMin: st.t,
         comment: st.cm,
+        price: customPrice ? price : null,
       });
       finish(res, () =>
         onDone({
@@ -406,6 +431,7 @@ export default function BookingSheet({
       day: st.d,
       startMin: st.t,
       comment: st.cm,
+      price: customPrice ? price : null,
     });
     const moved = `Запись перенесена на ${lower(labelForKey(st.d))}, ${toHHMM(st.t)}`;
     const toast = notifies
@@ -492,7 +518,7 @@ export default function BookingSheet({
           serviceName: sv.name,
           day: st.d,
           startMin: st.t,
-          price: sv.price,
+          price,
         })
       : "";
 
@@ -814,22 +840,51 @@ export default function BookingSheet({
           act: "Перенести",
           to: () => go("day"),
         },
-        {
-          k: "Стоимость",
-          v: formatPrice(sv.price),
-          old: formatPrice(origView.price),
-          changed: sv.price !== origView.price,
-        },
+        { k: "Стоимость", price: true, old: formatPrice(origView.price), changed: priceChanged },
       ];
     }
     return [
-      { k: "Клиент", v: name + (st.c === NEW ? " (новый)" : ""), to: () => go("client") },
-      { k: splitIds(st.s).length > 1 ? "Услуги" : "Услуга", v: sv.name, to: () => go("service") },
-      { k: "Дата", v: labelForKey(st.d), to: () => go("day") },
-      { k: "Время", v: `${toHHMM(st.t)}–${toHHMM(st.t + sv.duration)}`, to: () => go("time") },
-      { k: "Стоимость", v: formatPrice(sv.price), to: () => go("service") },
-    ].map((r) => ({ ...r, act: "изм." }));
+      ...[
+        { k: "Клиент", v: name + (st.c === NEW ? " (новый)" : ""), to: () => go("client") },
+        { k: splitIds(st.s).length > 1 ? "Услуги" : "Услуга", v: sv.name, to: () => go("service") },
+        { k: "Дата", v: labelForKey(st.d), to: () => go("day") },
+        { k: "Время", v: `${toHHMM(st.t)}–${toHHMM(st.t + sv.duration)}`, to: () => go("time") },
+      ].map((r) => ({ ...r, act: "изм." })),
+      { k: "Стоимость", price: true },
+    ];
   };
+
+  // «Стоимость» на проверке — поле: мастер может поставить свою цену (скидка,
+  // доплата). Рядом — от чего она отличается и «Вернуть».
+  const renderPrice = (r) => (
+    <>
+      <span className="bk-sum-vals">
+        <span className="unit-group">
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            className="mini-field unit-input price bk-price"
+            aria-label="Стоимость"
+            aria-invalid={priceError ? "true" : "false"}
+            data-changed={r.changed || customPrice ? "true" : "false"}
+            value={st.p ?? String(basePrice)}
+            onChange={(e) => patch({ p: e.target.value.replace(/\D/g, "").slice(0, 5) })}
+          />
+          <span className="unit-suffix">{CURRENCY}</span>
+        </span>
+        {r.changed && <span className="bk-sum-old">{r.old}</span>}
+        {customPrice && sv === svc && (
+          <span className="bk-sum-note">по прайсу {formatPrice(basePrice)}</span>
+        )}
+      </span>
+      {customPrice && (
+        <button className="link-btn bk-sum-act" type="button" onClick={() => patch({ p: null })}>
+          Вернуть
+        </button>
+      )}
+    </>
+  );
 
   const cfField = (key, label, type, placeholder) => (
     <label className="bk-cf-label">
@@ -897,19 +952,23 @@ export default function BookingSheet({
             {summary().map((r) => (
               <div className="bk-sum-row" key={r.k}>
                 <span className="bk-sum-k">{r.k}</span>
-                <span className="bk-sum-right">
-                  <span className="bk-sum-vals">
-                    <span className="bk-sum-v" data-changed={r.changed ? "true" : "false"}>
-                      {r.v}
+                {r.price ? (
+                  <span className="bk-sum-right">{renderPrice(r)}</span>
+                ) : (
+                  <span className="bk-sum-right">
+                    <span className="bk-sum-vals">
+                      <span className="bk-sum-v" data-changed={r.changed ? "true" : "false"}>
+                        {r.v}
+                      </span>
+                      {r.changed && <span className="bk-sum-old">{r.old}</span>}
                     </span>
-                    {r.changed && <span className="bk-sum-old">{r.old}</span>}
+                    {r.act && (
+                      <button className="link-btn bk-sum-act" type="button" onClick={r.to}>
+                        {r.act}
+                      </button>
+                    )}
                   </span>
-                  {r.act && (
-                    <button className="link-btn bk-sum-act" type="button" onClick={r.to}>
-                      {r.act}
-                    </button>
-                  )}
-                </span>
+                )}
               </div>
             ))}
           </div>
