@@ -129,7 +129,11 @@ export function Screen({ crumb, onBack, toast, footer, children }) {
         </p>
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {/* Живая область есть всегда: так экранный диктор надёжно
+          объявляет тост (об изменении записи клиент узнаёт только из него). */}
+      <div role="status" aria-live="polite">
+        {toast && <div className="toast">{toast}</div>}
+      </div>
 
       <div className="screen-body">{children}</div>
 

@@ -672,8 +672,12 @@ so comparisons and request keys stay plain strings; the service step ticks into
   same file — a change to one's palette does not require changing the other's, and
   vice versa. Within each file, both copies must list the same tokens, and **below
   those blocks there must be no literal color** (`#ddd`, `white`, `#fff`) — that rule is
-  what keeps dark theme working in that file. `--accent` is for accents, text-on-accent
-  and the primary button; never for page or card surfaces.
+  what keeps dark theme working in that file. `--accent` is for accent fills, borders,
+  icons, the focus ring and the primary button; never for page or card surfaces.
+  **Text** in the accent color uses `--accent-ink` (plain `--accent` is 3.9:1 on the
+  light card), and text on an `--accent` fill uses `--on-accent` (near-black in both
+  themes — light text can't reach 4.5:1 on that magenta). Form fields stay ≥ 16px:
+  zoom is allowed (no `user-scalable=no`), and iOS zooms the page on focus below that.
 - The palette is the app's own, not Telegram's: only safe-area comes from `--tg-*`.
   [src/theme.js](src/theme.js) sets `data-theme` on `<html>` from the client's
   `colorScheme` (system `prefers-color-scheme` in a browser), the header button
