@@ -29,6 +29,11 @@
   --accent-soft: rgba(226, 12, 209, 0.1);
   --danger: #8e4238;
   --ok: #3f6b4f;
+  /* Робот экрана загрузки */
+  --robot-shell: #fff8fd;
+  --robot-shade: #efc9e6;
+  --robot-visor: #231a29;
+  --robot-eye: #62efe6;
 }
 
 /* Ручной выбор темы и фолбэк системной — значения обязаны совпадать. */
@@ -46,6 +51,10 @@ html[data-theme="dark"] {
   --accent-soft: rgba(226, 12, 209, 0.15);
   --danger: #e39b95;
   --ok: #8fbf9f;
+  --robot-shell: #f4e7f0;
+  --robot-shade: #c99bbd;
+  --robot-visor: #100d12;
+  --robot-eye: #62efe6;
 }
 
 /* Первый кадр до того, как отработает src/theme.js. */
@@ -64,6 +73,10 @@ html[data-theme="dark"] {
     --accent-soft: rgba(226, 12, 209, 0.15);
     --danger: #e39b95;
     --ok: #8fbf9f;
+    --robot-shell: #f4e7f0;
+    --robot-shade: #c99bbd;
+    --robot-visor: #100d12;
+    --robot-eye: #62efe6;
   }
 }
 
@@ -923,6 +936,125 @@ button {
 .blank.tall {
   padding: 34px var(--pad);
   color: var(--muted);
+}
+
+/* ─── Экран загрузки: робот на перекладине ────────────────────── */
+
+.boot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 62dvh;
+  gap: 18px;
+}
+
+.boot-robot {
+  width: 168px;
+  margin-top: -110px;
+  height: auto;
+  overflow: visible;
+  /* Короткая загрузка не должна мигать роботом. */
+  animation: robot-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+}
+
+.boot-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  animation: robot-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.25s both;
+}
+
+.robot-bar { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+.robot-rope { fill: none; stroke: url(#boot-robot-rope); stroke-width: 1.4; }
+.robot-rope-fade { stop-color: var(--accent); stop-opacity: 0; }
+.robot-rope-solid { stop-color: var(--accent); stop-opacity: 1; }
+.robot-shell { fill: var(--robot-shell); }
+.robot-shade { fill: var(--robot-shade); }
+.robot-accent { fill: var(--accent); }
+.robot-visor { fill: var(--robot-visor); }
+.robot-eyes { fill: var(--robot-eye); }
+
+.robot-arms path {
+  fill: none;
+  stroke: var(--robot-shade);
+  stroke-width: 9;
+  stroke-linecap: round;
+}
+
+.robot-arms .robot-cuff {
+  stroke: var(--accent);
+  stroke-width: 10;
+}
+
+.robot-stalk {
+  stroke: var(--robot-shade);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.robot-glint {
+  fill: none;
+  stroke: var(--robot-shell);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  opacity: 0.35;
+}
+
+.robot-smile {
+  fill: none;
+  stroke: var(--robot-eye);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+/* Трапеция качается от точки подвеса (80, -70), ноги догоняют
+   с запаздыванием. Origin — в координатах рисунка. */
+.robot-swing {
+  transform-box: view-box;
+  transform-origin: 80px -70px;
+  animation: robot-swing 2.4s ease-in-out infinite alternate;
+}
+
+.robot-legs {
+  transform-box: view-box;
+  transform-origin: 80px 130px;
+  animation: robot-kick 2.4s ease-in-out -0.5s infinite alternate;
+}
+
+.robot-eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: robot-blink 3.8s ease-in-out 1s infinite;
+}
+
+.robot-light {
+  animation: robot-light 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes robot-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes robot-swing {
+  from { transform: rotate(-5deg); }
+  to { transform: rotate(5deg); }
+}
+
+@keyframes robot-kick {
+  from { transform: rotate(6deg); }
+  to { transform: rotate(-6deg); }
+}
+
+@keyframes robot-blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  94% { transform: scaleY(0.1); }
+}
+
+@keyframes robot-light {
+  from { opacity: 1; }
+  to { opacity: 0.45; }
 }
 
 /* ─── Кнопки ──────────────────────────────────────────────────── */
