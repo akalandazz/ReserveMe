@@ -302,7 +302,11 @@ export default function AdminApp() {
         )}
       </div>
 
-      {toast && <div className="toast">{toast}</div>}
+      {/* Живая область есть всегда: так экранный диктор надёжно
+          объявляет тост, а не только вставленный вместе с ним узел. */}
+      <div role="status" aria-live="polite">
+        {toast && <div className="toast">{toast}</div>}
+      </div>
 
       <div className="page-body">
         {/* «Клиенты» и «Аналитика» рисуют шапку сами: в ней их состояние. */}

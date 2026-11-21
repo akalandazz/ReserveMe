@@ -18,10 +18,14 @@
   --bg: #f2eff1;
   --card: #fbfafb;
   --ink: #17161a;
-  --muted: #7c767f;
+  --muted: #706a72;
   --line: rgba(23, 22, 26, 0.11);
   --accent: #e20cd1;
-  --on-accent: #fffcf8;
+  /* Контраст ≥ 4.5:1 (WCAG AA): --accent как цвет текста даёт 3.9:1,
+     поэтому текст акцентом — --accent-ink; на заливке --accent светлый
+     текст не дотягивает (≤ 4.0:1), отсюда тёмный --on-accent в обеих темах. */
+  --accent-ink: #b90aab;
+  --on-accent: #0c0a0c;
   --accent-soft: rgba(226, 12, 209, 0.1);
   --danger: #8e4238;
   --ok: #3f6b4f;
@@ -37,7 +41,8 @@ html[data-theme="dark"] {
   --muted: #9c959f;
   --line: rgba(240, 236, 238, 0.13);
   --accent: #e20cd1;
-  --on-accent: #191519;
+  --accent-ink: #e949dd;
+  --on-accent: #0c0a0c;
   --accent-soft: rgba(226, 12, 209, 0.15);
   --danger: #e39b95;
   --ok: #8fbf9f;
@@ -54,7 +59,8 @@ html[data-theme="dark"] {
     --muted: #9c959f;
     --line: rgba(240, 236, 238, 0.13);
     --accent: #e20cd1;
-    --on-accent: #191519;
+    --accent-ink: #e949dd;
+    --on-accent: #0c0a0c;
     --accent-soft: rgba(226, 12, 209, 0.15);
     --danger: #e39b95;
     --ok: #8fbf9f;
@@ -251,13 +257,13 @@ button {
 .eyebrow.accent {
   margin: 10px 0 0;
   letter-spacing: 0.2em;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* Номер шага: 8px до заголовка (соседние margin схлопываются) */
 .eyebrow.step {
   margin: 0 0 8px;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .kicker {
@@ -394,7 +400,7 @@ button {
 /* не вложены в .nav-row: шеврон используется ещё и в строке дня */
 .nav-icon {
   flex: none;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .nav-chevron {
@@ -435,7 +441,7 @@ button {
   height: 34px;
   border-radius: 50%;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .next-card .next-main {
@@ -786,7 +792,7 @@ button {
   align-items: center;
   gap: 7px;
   font-size: 12px;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* Запись подтверждена мастером в кабинете. */
@@ -864,7 +870,8 @@ button {
   background: var(--card);
   color: var(--ink);
   font: inherit;
-  font-size: 15px;
+  /* 16px: мельче iOS зумит страницу при фокусе (зум не запрещён). */
+  font-size: 16px;
   resize: vertical;
 }
 
@@ -949,7 +956,7 @@ button {
   border: 1px solid var(--line);
   border-radius: var(--radius-btn);
   background: var(--card);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 15px;
   cursor: pointer;
 }
@@ -961,7 +968,7 @@ button {
   padding: 10px;
   border: 0;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 14px;
   cursor: pointer;
 }
@@ -976,7 +983,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 13px;
   cursor: pointer;
 }
@@ -1017,6 +1024,17 @@ button {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Зона нажатия кнопок шапки — 44px без изменения вида. */
+.icon-btn {
+  position: relative;
+}
+
+.icon-btn::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
 }
 
 @media (prefers-reduced-motion: reduce) {

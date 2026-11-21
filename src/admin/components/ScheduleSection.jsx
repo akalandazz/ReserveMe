@@ -3,6 +3,8 @@ import { saveReminderHours, saveWorkingHours } from "../api.js";
 import { stepHours } from "../calendar.js";
 
 const LABELS = ["Воскр.", "Понед.", "Вторн.", "Среда", "Четв.", "Пятн.", "Суббота"];
+// Для aria-label: «Раньше»/«Позже» без дня и края — 28 одинаковых кнопок.
+const DAY_NAMES = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
 const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];
 // За сколько часов бот напоминает клиенту (settings.reminder_hours); 0 — выкл.
 const REMINDER_STEPS = [0, 2, 3, 6, 12, 24, 48];
@@ -79,7 +81,7 @@ export default function ScheduleSection({ settings, onError }) {
                     <button
                       className="stepper-btn"
                       type="button"
-                      aria-label="Раньше"
+                      aria-label={`${DAY_NAMES[dow]}: начало раньше`}
                       onClick={() => shift(dow, "from", -1)}
                     >
                       −
@@ -88,7 +90,7 @@ export default function ScheduleSection({ settings, onError }) {
                     <button
                       className="stepper-btn"
                       type="button"
-                      aria-label="Позже"
+                      aria-label={`${DAY_NAMES[dow]}: начало позже`}
                       onClick={() => shift(dow, "from", 1)}
                     >
                       +
@@ -97,7 +99,7 @@ export default function ScheduleSection({ settings, onError }) {
                     <button
                       className="stepper-btn"
                       type="button"
-                      aria-label="Раньше"
+                      aria-label={`${DAY_NAMES[dow]}: конец раньше`}
                       onClick={() => shift(dow, "to", -1)}
                     >
                       −
@@ -106,7 +108,7 @@ export default function ScheduleSection({ settings, onError }) {
                     <button
                       className="stepper-btn"
                       type="button"
-                      aria-label="Позже"
+                      aria-label={`${DAY_NAMES[dow]}: конец позже`}
                       onClick={() => shift(dow, "to", 1)}
                     >
                       +
@@ -121,7 +123,7 @@ export default function ScheduleSection({ settings, onError }) {
                 type="button"
                 role="switch"
                 aria-checked={Boolean(h)}
-                aria-label="Рабочий день"
+                aria-label={`Рабочий день: ${DAY_NAMES[dow]}`}
                 onClick={() => toggle(dow)}
               >
                 <span className="hours-knob" />

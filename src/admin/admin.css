@@ -12,10 +12,14 @@
   --bg: #f2eff1;
   --card: #fbfafb;
   --ink: #17161a;
-  --muted: #7c767f;
+  --muted: #706a72;
   --line: rgba(23, 22, 26, 0.11);
   --accent: #e20cd1;
-  --on-accent: #fffcf8;
+  /* Контраст ≥ 4.5:1 (WCAG AA): --accent как цвет текста даёт 3.9:1,
+     поэтому текст акцентом — --accent-ink; на заливке --accent светлый
+     текст не дотягивает (≤ 4.0:1), отсюда тёмный --on-accent в обеих темах. */
+  --accent-ink: #b90aab;
+  --on-accent: #0c0a0c;
   --accent-soft: rgba(226, 12, 209, 0.1);
   --danger: #8e4238;
   --scrim: rgba(15, 13, 16, 0.42);
@@ -31,7 +35,8 @@ html[data-theme="dark"] {
   --muted: #9c959f;
   --line: rgba(240, 236, 238, 0.13);
   --accent: #e20cd1;
-  --on-accent: #191519;
+  --accent-ink: #e949dd;
+  --on-accent: #0c0a0c;
   --accent-soft: rgba(226, 12, 209, 0.15);
   --danger: #e39b95;
   --scrim: rgba(15, 13, 16, 0.42);
@@ -48,7 +53,8 @@ html[data-theme="dark"] {
     --muted: #9c959f;
     --line: rgba(240, 236, 238, 0.13);
     --accent: #e20cd1;
-    --on-accent: #191519;
+    --accent-ink: #e949dd;
+    --on-accent: #0c0a0c;
     --accent-soft: rgba(226, 12, 209, 0.15);
     --danger: #e39b95;
     --scrim: rgba(15, 13, 16, 0.42);
@@ -268,7 +274,7 @@ input:focus {
 }
 
 .bottom-nav-item[aria-current="true"] {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .bottom-nav-icon-wrap {
@@ -386,6 +392,8 @@ input:focus {
 
 /* ─── Поля ────────────────────────────────────────────────────── */
 
+/* Все поля ввода — 16px: мельче iOS зумит страницу при фокусе, а зум
+   не запрещён (viewport без user-scalable=no — WCAG 1.4.4). */
 .field {
   width: 100%;
   padding: 14px;
@@ -395,7 +403,7 @@ input:focus {
   background: var(--card);
   color: var(--ink);
   font: inherit;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .mini-field {
@@ -405,7 +413,7 @@ input:focus {
   background: var(--bg);
   color: var(--ink);
   font: inherit;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .mini-field.grow {
@@ -447,7 +455,7 @@ input:focus {
   padding: 10px;
   border: 0;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 14px;
   cursor: pointer;
 }
@@ -506,7 +514,7 @@ input:focus {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 13px;
   cursor: pointer;
 }
@@ -544,7 +552,7 @@ input:focus {
   border: 0;
   background: none;
   padding: 0;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 13px;
   cursor: pointer;
 }
@@ -679,7 +687,7 @@ input:focus {
 
 .btn-edit {
   padding: 11px 14px;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .btn-spinner {
@@ -977,7 +985,7 @@ input:focus {
 }
 
 .week-day-head[data-today="true"] .week-day-num {
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 500;
 }
 
@@ -1069,7 +1077,7 @@ input:focus {
 
 .week-event[data-kind="new"] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .week-event[data-kind="blocked"] {
@@ -1243,7 +1251,7 @@ input:focus {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--card);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 13px;
   cursor: pointer;
 }
@@ -1283,7 +1291,7 @@ input:focus {
 }
 
 .slot-open .free-slot-action {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* Закрытый слот: штриховка цветом фона по прозрачному, сплошная рамка,
@@ -1453,7 +1461,7 @@ input:focus {
 
 .unit-input {
   text-align: right;
-  font-size: 14px;
+  font-size: 16px;
   padding: 8px;
 }
 
@@ -1462,7 +1470,7 @@ input:focus {
 }
 
 .unit-input.price {
-  width: 66px;
+  width: 74px;
 }
 
 .unit-suffix {
@@ -1480,7 +1488,7 @@ input:focus {
   border: 0;
   border-bottom: 1px solid var(--line);
   background: none;
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 14px;
   text-align: left;
   cursor: pointer;
@@ -1741,7 +1749,7 @@ input:focus {
   height: 40px;
   border-radius: 50%;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-family: var(--serif);
   font-size: 16px;
 }
@@ -1798,7 +1806,7 @@ input:focus {
   width: 44px;
   height: 44px;
   background: var(--bg);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .client-facts {
@@ -1939,7 +1947,7 @@ input:focus {
   margin: 0;
   padding: 10px 11px;
   border-radius: 12px;
-  font-size: 13px;
+  font-size: 16px;
   line-height: 1.45;
   resize: vertical;
 }
@@ -2022,7 +2030,7 @@ input:focus {
 .visit-tag {
   margin-left: 6px;
   font-size: 11px;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .visit-price {
@@ -2082,6 +2090,12 @@ input:focus {
   animation: riseIn 0.24s ease both;
 }
 
+/* Лист получает фокус при открытии (BookingSheet) — кольцо вокруг всего
+   листа не нужно, оно есть у каждого элемента внутри. */
+.sheet:focus {
+  outline: none;
+}
+
 .sheet-nav {
   display: flex;
   align-items: center;
@@ -2105,7 +2119,7 @@ input:focus {
   font-weight: 500;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .sheet-bars {
@@ -2580,7 +2594,7 @@ input:focus {
   border-radius: 999px;
   background: var(--accent-soft);
   font-size: 12px;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .bk-box {
@@ -2654,7 +2668,7 @@ input:focus {
 }
 
 .bk-sum-v[data-changed="true"] {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .bk-sum-old {
@@ -2674,11 +2688,11 @@ input:focus {
 }
 
 .bk-price {
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .bk-price[data-changed="true"] {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .bk-price[aria-invalid="true"] {
@@ -2909,7 +2923,7 @@ input:focus {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--card);
-  color: var(--accent);
+  color: var(--accent-ink);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -3312,7 +3326,7 @@ input:focus {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--card);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: 13px;
   cursor: pointer;
 }
@@ -3332,9 +3346,76 @@ input:focus {
   outline-offset: 2px;
 }
 
+/* Зона нажатия мелких кнопок — до ~44px, без изменения их вида:
+   прозрачный ::after выступает за края. Вылет подобран так, чтобы зоны
+   соседних кнопок не перекрывались (степперы — через значение и «–»,
+   корзины в «Прошлых записях» — строки через ~41px). */
+.icon-btn,
+.round-btn,
+.stepper-btn,
+.visit-del,
+.remove-btn,
+.booking-del,
+.pager-btn,
+.hours-switch {
+  position: relative;
+}
+
+.icon-btn::after,
+.round-btn::after,
+.stepper-btn::after,
+.visit-del::after,
+.remove-btn::after,
+.booking-del::after,
+.pager-btn::after,
+.hours-switch::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
+}
+
+.round-btn.lg::after {
+  inset: -6px;
+}
+
+.stepper-btn::after {
+  inset: -9px -4px;
+}
+
+.visit-del::after {
+  inset: -6px -7px;
+}
+
+.remove-btn::after,
+.booking-del::after,
+.pager-btn::after {
+  inset: -5px;
+}
+
+.hours-switch::after {
+  inset: -11px -4px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
     animation: none !important;
+  }
+
+  /* Индикаторы загрузки не замирают — иначе «идёт загрузка» выглядит
+     как зависание. Вместо движения — медленное мерцание на месте. */
+  .progress-fill {
+    width: 100%;
+    animation: busyPulse 1.6s ease-in-out infinite !important;
+  }
+
+  .btn-spinner {
+    animation: busyPulse 1.6s ease-in-out infinite !important;
+  }
+}
+
+@keyframes busyPulse {
+  50% {
+    opacity: 0.35;
   }
 }

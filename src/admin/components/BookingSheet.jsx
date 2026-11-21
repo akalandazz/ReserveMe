@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CURRENCY, formatPrice } from "../../money.js";
 import {
   MAX_SERVICES,
@@ -69,6 +69,30 @@ function bookingServiceIds(services, bk) {
   const ids = (bk.services?.length ? bk.services.map((x) => x.id) : [bk.service_id]).filter(Boolean);
   const s = joinIds(services, ids);
   return ids.length > 0 && splitIds(s).length === ids.length ? s : "";
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Tab по кругу внутри листа (aria-modal: страница под ним недоступна). */
+function trapTab(e, root) {
+  if (!root) return;
+  const nodes = [...root.querySelectorAll(FOCUSABLE)];
+  if (nodes.length === 0) {
+    e.preventDefault();
+    return;
+  }
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  const active = document.activeElement;
+  const outside = !root.contains(active) || active === root;
+  if (e.shiftKey && (outside || active === first)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (outside || active === last)) {
+    e.preventDefault();
+    first.focus();
+  }
 }
 
 /**
@@ -256,9 +280,21 @@ export default function BookingSheet({
     };
   }, [chunksKey, editId]);
 
+  // Фокус — в лист при открытии и обратно на кнопку, открывшую его,
+  // при закрытии (если она ещё на странице); Tab не уходит за лист.
+  const sheetRef = useRef(null);
+  useEffect(() => {
+    const opener = document.activeElement;
+    sheetRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, []);
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") onClose();
+      if (e.key === "Tab") trapTab(e, sheetRef.current);
     };
     document.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
@@ -1062,7 +1098,14 @@ export default function BookingSheet({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="bk-title">
+      <div
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bk-title"
+        tabIndex={-1}
+        ref={sheetRef}
+      >
         <div className="sheet-nav">
           <button className="round-btn sheet-nav-btn" type="button" aria-label="Назад" onClick={back}>
             <Icon name="chevronLeft" size={14} />
