@@ -1,5 +1,5 @@
 // Презентационные примитивы. Без состояния — кроме ThemeToggle,
-// который только читает текущую тему из src/theme.js, и Screen,
+// который только читает текущую тему из src/theme.js, Screen,
 // который только читает флаг stale из src/content.js.
 
 import { useSyncExternalStore } from "react";
@@ -142,69 +142,56 @@ export function Screen({ crumb, onBack, toast, footer, children }) {
   );
 }
 
-/* ─── Загрузка контента ─────────────────────────────────────────
-   Контент салона лежит в базе, поэтому до первого ответа рисовать
-   нечего — даже имя мастера в «хлебной крошке» приходит оттуда.
-   Возвращающийся клиент этих экранов не видит: кэш читается
-   синхронно при загрузке src/content.js.                          */
+/* ─── Экран запуска ─────────────────────────────────────────────
+   Полноэкранный слой поверх приложения, только при запуске: пока
+   решается вход и, у нового клиента, грузится контент салона. Потом —
+   затухание .35s и размонтирование. Копия кабинетного
+   (src/admin/components/BootScreen.jsx): приложения не делят компоненты;
+   общие — картинка и тайминг (useBootPhase, src/boot.js). */
 
-/* Робот салона качается на трапеции, пока грузится контент.
-   Рисунок на токенах темы — сам перекрашивается в тёмной. */
-function BootRobot() {
+export function BootScreen({ leaving, error, onRetry }) {
   return (
-    <svg className="boot-robot" viewBox="0 -70 160 226" aria-hidden="true" focusable="false">
-      <defs>
-        <linearGradient id="boot-robot-rope" x1="0" y1="-70" x2="0" y2="12" gradientUnits="userSpaceOnUse">
-          <stop offset="0" className="robot-rope-fade" />
-          <stop offset="1" className="robot-rope-solid" />
-        </linearGradient>
-      </defs>
-      <g className="robot-swing">
-        <path className="robot-rope" d="M27 -70 V 12 M133 -70 V 12" />
-        <rect className="robot-bar" x="22" y="9" width="116" height="9" rx="4.5" />
-        <g className="robot-arms">
-          <path d="M38 16 C 36 46, 44 84, 60 112" />
-          <path d="M122 16 C 124 46, 116 84, 100 112" />
-          <path className="robot-cuff" d="M37.4 30 L 37.6 40" />
-          <path className="robot-cuff" d="M122.6 30 L 122.4 40" />
-        </g>
-        <circle className="robot-shade" cx="38" cy="15" r="6.5" />
-        <circle className="robot-shade" cx="122" cy="15" r="6.5" />
-
-        <g className="robot-legs">
-          <rect className="robot-shade" x="66" y="128" width="11" height="15" rx="5" />
-          <rect className="robot-shade" x="83" y="128" width="11" height="15" rx="5" />
-          <rect className="robot-accent" x="63" y="140" width="16" height="8" rx="4" />
-          <rect className="robot-accent" x="81" y="140" width="16" height="8" rx="4" />
-        </g>
-        <rect className="robot-shell" x="59" y="98" width="42" height="35" rx="15" />
-        <ellipse className="robot-accent" cx="80" cy="116" rx="9" ry="7" />
-
-        <path className="robot-stalk" d="M80 41 V 30" />
-        <circle className="robot-accent robot-light" cx="80" cy="26" r="5.5" />
-        <rect className="robot-accent" x="40" y="61" width="9" height="18" rx="3.5" />
-        <rect className="robot-accent" x="111" y="61" width="9" height="18" rx="3.5" />
-        <ellipse className="robot-shade" cx="80" cy="73" rx="36" ry="31" />
-        <ellipse className="robot-shell" cx="80" cy="70" rx="36" ry="30" />
-        <rect className="robot-visor" x="54" y="52" width="52" height="38" rx="17" />
-        <path className="robot-glint" d="M60 64 Q 62 57 70 56" />
-        <g className="robot-eyes">
-          <ellipse cx="69" cy="70" rx="6" ry="7.5" />
-          <ellipse cx="91" cy="70" rx="6" ry="7.5" />
-        </g>
-        <path className="robot-smile" d="M74 80 Q 80 85 86 80" />
-      </g>
-    </svg>
+    <div
+      className={leaving ? "boot-screen is-leaving" : "boot-screen"}
+      role="status"
+      aria-live="polite"
+    >
+      <img
+        className="boot-mascot"
+        src="/loading/mascot.webp"
+        width="491"
+        height="512"
+        alt=""
+        aria-hidden="true"
+        decoding="async"
+      />
+      {error ? (
+        <>
+          <p className="boot-error">Не удалось загрузить данные</p>
+          <p className="boot-detail">{error}</p>
+          <PrimaryButton inline onClick={onRetry}>
+            Повторить
+          </PrimaryButton>
+        </>
+      ) : (
+        <>
+          <div className="boot-line" aria-hidden="true">
+            <div className="boot-line-fill" />
+          </div>
+          <p className="boot-label">Загружаем…</p>
+        </>
+      )}
+    </div>
   );
 }
+
+/* Запасные экраны под слоем — и для входа уже после запуска (вышел и
+   вошёл снова, а контента ещё нет): тогда слоя нет, видны они.     */
 
 export function BootLoading() {
   return (
     <Screen crumb="Загрузка">
-      <div className="boot">
-        <BootRobot />
-        <p className="boot-label" role="status">Загрузка…</p>
-      </div>
+      <div className="blank tall">Загрузка…</div>
     </Screen>
   );
 }

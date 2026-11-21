@@ -187,7 +187,11 @@ Consequences that constrain every change here:
 
 Shared as plain imports (both apps use these as-is, no duplication):
 [src/supabase.js](src/supabase.js), [src/theme.js](src/theme.js),
-[src/telegram.js](src/telegram.js), [src/money.js](src/money.js), and from [src/schedule.js](src/schedule.js) the
+[src/telegram.js](src/telegram.js), [src/money.js](src/money.js),
+[src/boot.js](src/boot.js) (`useBootPhase` — timing of the start-up screen: shown
+until the session and the first data are in, at least 600 ms, `.35s` fade, never
+again after that; each app draws its own `BootScreen` over an `inert` app, both with
+`public/loading/mascot.webp`, preloaded in both HTML entries), and from [src/schedule.js](src/schedule.js) the
 date/time helpers (`dateKey`, `toMinutes`, `toHHMM`, `labelForKey`) and the
 "which hours does this date have" rule (`hoursForDay`, `toDaysOpen` — see «Days off
 and one-off open days» below) and the several-services helpers (`MAX_SERVICES`,

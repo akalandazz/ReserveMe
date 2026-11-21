@@ -193,6 +193,93 @@ input:focus {
   animation: barGo 0.9s ease-in-out infinite;
 }
 
+/* ─── Экран запуска (BootScreen.jsx) ──────────────────────────── */
+
+/* Обёртка кабинета под слоем: не участвует в раскладке. */
+.boot-under {
+  display: contents;
+}
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--safe-top) + 24px) var(--pad) calc(var(--safe-bottom) + 24px);
+  background: var(--bg);
+  text-align: center;
+  transition: opacity 0.35s ease;
+}
+
+.boot-screen.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Висит на вывеске — качается от её верхнего края. */
+.boot-mascot {
+  width: min(208px, 56vw);
+  height: auto;
+  margin-bottom: 22px;
+  transform-origin: 50% 8%;
+  animation: bootSwing 2.6s ease-in-out infinite;
+}
+
+@keyframes bootSwing {
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+}
+
+.boot-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.boot-line {
+  width: 120px;
+  height: 2px;
+  margin-top: 18px;
+  overflow: hidden;
+  background: var(--accent-soft);
+}
+
+.boot-label {
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.boot-error {
+  max-width: 280px;
+  margin: 14px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+
+.boot-detail {
+  max-width: 280px;
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.boot-retry {
+  max-width: 280px;
+}
+
 .crumb {
   flex: 1;
   min-width: 0;
