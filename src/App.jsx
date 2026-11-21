@@ -186,6 +186,9 @@ function App() {
           day: booking.day,
           time: booking.time,
           duration: booking.duration,
+          // Перенос цену не меняет (reschedule_own_booking): та, о которой
+          // договорились, — бывает и не по прайсу.
+          price: booking.price,
         },
       });
       push("book:date");

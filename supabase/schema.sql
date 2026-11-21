@@ -1426,8 +1426,10 @@ grant execute on function public.cancel_own_booking(bigint) to authenticated;
 --  заявки. Перенос возвращает запись в «Заявки» (status 'new'): даже
 --  подтверждённую мастер подтверждает заново, пересечения с чужими
 --  заявками, как и у новой заявки, разбирает она. Услуги — те же (все из
---  bookings.services), цена и длительность — текущие из прайса, как у
---  новой заявки.
+--  bookings.services), длительность — текущая из прайса (под неё
+--  проверяется окно), а цена — прежняя, со строки: услуги не поменялись,
+--  значит, и уговор (мастер могла поставить свою цену, не по прайсу) —
+--  как у update_master_booking с тем же набором.
 --  Возвращает строку целиком — клиенту можно читать свою строку и так
 --  (bookings_select_own).
 create or replace function public.reschedule_own_booking(
@@ -1479,7 +1481,7 @@ begin
          services     = svc.items,
          service_id   = svc.first_id,
          duration     = svc.duration,
-         price        = svc.price,
+         price        = bk.price,
          service_name = svc.label,
          status       = 'new',
          cancelled_by = '',
@@ -2003,10 +2005,14 @@ grant execute on function public.free_slot_counts(date, integer, text[], bigint)
 --  под advisory-локом дня: две вкладки кабинета не запишут двоих на
 --  одно окно. (Заявка клиента лок не берёт — её мастер и так
 --  разбирает руками.)
---  Старая шестиаргументная версия удаляется: иначе она осталась бы
---  перегрузкой без телеграма, канала и комментария.
+--  p_price — цена, о которой мастер договорилась с клиентом (бывает не
+--  по прайсу); null — сумма по прайсу (services_total). Пределы — те же,
+--  что у bookings_price_check и validatePrice() в src/admin/api.js.
+--  Старые версии удаляются: иначе они остались бы перегрузками (без
+--  телеграма, канала и комментария; без цены).
 drop function if exists public.create_master_booking(bigint, text, text, text, date, integer);
 drop function if exists public.create_master_booking(bigint, text, text, text, text, text, date, integer, text);
+drop function if exists public.create_master_booking(bigint, text, text, text, text, text[], date, integer, text);
 create or replace function public.create_master_booking(
   p_client_id    bigint,
   p_new_name     text,
@@ -2016,7 +2022,8 @@ create or replace function public.create_master_booking(
   p_service_ids  text[],
   p_day          date,
   p_start_min    integer,
-  p_comment      text
+  p_comment      text,
+  p_price        integer default null
 )
 returns bigint
 language plpgsql
@@ -2035,6 +2042,10 @@ begin
   -- полагается на то, что каждая её таблица закрыта политикой.
   if not public.is_master() then
     raise exception 'Нет доступа' using errcode = '42501';
+  end if;
+
+  if p_price is not null and (p_price < 0 or p_price > 99999) then
+    raise exception 'Цена — от 0 до 99 999 ₽';
   end if;
 
   svc := public.services_total(p_service_ids);
@@ -2075,7 +2086,7 @@ begin
     salon_id, day, start_min, duration, price, service_id, service_name, services,
     client_name, client_username, comment, status, source, client_id, user_id
   ) values (
-    sid, p_day, p_start_min, svc.duration, svc.price, svc.first_id, svc.label, svc.items,
+    sid, p_day, p_start_min, svc.duration, coalesce(p_price, svc.price), svc.first_id, svc.label, svc.items,
     cl.name, cl.telegram_username, left(coalesce(btrim(p_comment), ''), 1000),
     'ok', 'master', cl.id, cl.user_id
   )
@@ -2085,9 +2096,9 @@ begin
 end
 $$;
 
-revoke all on function public.create_master_booking(bigint, text, text, text, text, text[], date, integer, text)
+revoke all on function public.create_master_booking(bigint, text, text, text, text, text[], date, integer, text, integer)
   from public, anon;
-grant execute on function public.create_master_booking(bigint, text, text, text, text, text[], date, integer, text)
+grant execute on function public.create_master_booking(bigint, text, text, text, text, text[], date, integer, text, integer)
   to authenticated;
 
 -- ─── update_master_booking(): правка записи из листа «Изменить» ───
@@ -2105,7 +2116,10 @@ grant execute on function public.create_master_booking(bigint, text, text, text,
 --  денормализацию выше).
 --  p_client_channel = null — канал клиента не трогаем (форма правки
 --  его не показывает).
+--  p_price — новая цена записи (мастер договорилась о другой); null —
+--  как выше: тот же набор услуг — прежняя, другой — по прайсу.
 drop function if exists public.update_master_booking(bigint, bigint, text, text, text, text, text, date, integer, text);
+drop function if exists public.update_master_booking(bigint, bigint, text, text, text, text, text[], date, integer, text);
 create or replace function public.update_master_booking(
   p_id              bigint,
   p_client_id       bigint,
@@ -2116,7 +2130,8 @@ create or replace function public.update_master_booking(
   p_service_ids     text[],
   p_day             date,
   p_start_min       integer,
-  p_comment         text
+  p_comment         text,
+  p_price           integer default null
 )
 returns void
 language plpgsql
@@ -2140,6 +2155,9 @@ begin
 
   if nm = '' then
     raise exception 'Укажите имя клиента.';
+  end if;
+  if p_price is not null and (p_price < 0 or p_price > 99999) then
+    raise exception 'Цена — от 0 до 99 999 ₽';
   end if;
 
   svc := public.services_total(p_service_ids);
@@ -2207,7 +2225,7 @@ begin
     services        = case when same_svc then b.services     else svc.items    end,
     service_name    = case when same_svc then b.service_name else svc.label    end,
     duration        = case when same_svc then b.duration     else svc.duration end,
-    price           = case when same_svc then b.price        else svc.price    end,
+    price           = coalesce(p_price, case when same_svc then b.price else svc.price end),
     client_id       = cl.id,
     -- Запись переходит к другому клиенту — и к его аккаунту (или ни к
     -- чьему); тот же клиент — аккаунт не трогаем.
@@ -2220,9 +2238,9 @@ begin
 end
 $$;
 
-revoke all on function public.update_master_booking(bigint, bigint, text, text, text, text, text[], date, integer, text)
+revoke all on function public.update_master_booking(bigint, bigint, text, text, text, text, text[], date, integer, text, integer)
   from public, anon;
-grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text[], date, integer, text)
+grant execute on function public.update_master_booking(bigint, bigint, text, text, text, text, text[], date, integer, text, integer)
   to authenticated;
 
 -- Разово: записи, которые мастер завела клиентам с аккаунтом до того,

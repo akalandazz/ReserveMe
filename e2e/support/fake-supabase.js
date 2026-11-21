@@ -143,6 +143,18 @@ function seed() {
   };
 }
 
+/** services_total() из schema.sql: снимок и суммы по прайсу, в порядке прайса. */
+function servicesTotal(services = [], ids) {
+  const picked = services.filter((s) => ids.includes(s.id)).sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+  return {
+    services: picked.map((s) => ({ id: s.id, name: s.name, duration: s.duration, price: s.price })),
+    service_id: picked[0]?.id ?? null,
+    duration: picked.reduce((n, s) => n + s.duration, 0),
+    price: picked.reduce((n, s) => n + s.price, 0),
+    service_name: picked.map((s) => s.name).join(" + "),
+  };
+}
+
 /** Строка bookings — как её вернул бы select * (поля, которые читают кабинет и RPC). */
 export function bookingRow(id, fields) {
   return {
@@ -635,16 +647,40 @@ async function handle(route, state) {
     }
     return json(200, out);
   }
+  // Цена — как у настоящих: p_price, если пришла; иначе у правки с тем же
+  // набором услуг — прежняя, у другого набора и у новой записи — по прайсу.
+  if (rpc === "create_master_booking" && method === "POST") {
+    const body = req.postDataJSON();
+    state.rpcs.push({ name: rpc, body });
+    const total = servicesTotal(state.tables.services, body.p_service_ids);
+    const card = state.tables.client_stats.find((c) => c.id === body.p_client_id);
+    const row = bookingRow(state.nextId++, {
+      ...total,
+      price: body.p_price ?? total.price,
+      day: body.p_day,
+      start_min: body.p_start_min,
+      client_id: card?.id ?? null,
+      client_name: card?.name ?? body.p_new_name,
+      status: "ok",
+      source: "master",
+    });
+    bookings.push(row);
+    return json(200, row.id);
+  }
   if (rpc === "update_master_booking" && method === "POST") {
     const body = req.postDataJSON();
     state.rpcs.push({ name: rpc, body });
     const b = bookings.find((x) => x.id === body.p_id);
     if (b) {
-      Object.assign(b, {
+      const sorted = (list) => [...list].sort().join(",");
+      const same = sorted(b.services.map((s) => s.id)) === sorted(body.p_service_ids);
+      const total = same ? null : servicesTotal(state.tables.services, body.p_service_ids);
+      Object.assign(b, total ?? {}, {
         status: "ok",
         day: body.p_day,
         start_min: body.p_start_min,
         comment: body.p_comment,
+        price: body.p_price ?? (total ? total.price : b.price),
       });
     }
     return json(200, null);

@@ -67,13 +67,21 @@ export function deleteService(id) {
   return run(() => supabase.from("services").delete().eq("id", id), [...SERVICES, "bookings"]);
 }
 
+/** Цена услуги или записи: те же пределы, что у services_price_check,
+ *  bookings_price_check и p_price в create/update_master_booking. Ошибка или null. */
+export function validatePrice(value) {
+  const price = typeof value === "string" && value.trim() === "" ? NaN : Number(value);
+  if (!Number.isInteger(price) || price < 0 || price > 99999)
+    return "Цена — целое число от 0 до 99 999 ₽";
+  return null;
+}
+
 /** Первое нарушенное правило (те же ограничения, что в schema.sql) или null. */
 export function validateServiceFields(s) {
   const name = String(s.name ?? "").trim();
   if (!name || name.length > 80) return "Введите название услуги";
-  const price = Number(s.price);
-  if (!Number.isInteger(price) || price < 0 || price > 99999)
-    return "Цена — целое число от 0 до 99 999 ₽";
+  const priceError = validatePrice(s.price);
+  if (priceError) return priceError;
   const duration = Number(s.duration);
   if (!Number.isInteger(duration) || duration < 5 || duration > 600 || duration % 5 !== 0)
     return "Длительность — от 5 до 600 минут, кратно 5";
@@ -275,8 +283,9 @@ export function ackCancellation(id) {
 /** Запись, которую заводит сам мастер: сразу подтверждённая, мимо «Заявок».
  *  clientId — существующий клиент; иначе newClient ({name, phone,
  *  telegram_username, channel}) создаёт нового в той же транзакции
- *  (см. create_master_booking в schema.sql). */
-export async function createMasterBooking({ clientId, newClient, serviceIds, day, startMin, comment }) {
+ *  (см. create_master_booking в schema.sql). price — своя цена записи
+ *  (не по прайсу); null/undefined — сумму по прайсу считает сервер. */
+export async function createMasterBooking({ clientId, newClient, serviceIds, day, startMin, comment, price }) {
   const nc = clientFields(newClient ?? {});
   return clientResult(
     await run(() =>
@@ -290,6 +299,7 @@ export async function createMasterBooking({ clientId, newClient, serviceIds, day
         p_day: day,
         p_start_min: startMin,
         p_comment: String(comment ?? "").trim(),
+        p_price: price ?? null,
       }),
       BOOKINGS
     )
@@ -298,8 +308,9 @@ export async function createMasterBooking({ clientId, newClient, serviceIds, day
 
 /** Правка записи из листа «Изменить»: клиент, услуги, время, комментарий —
  *  одной транзакцией, и запись становится подтверждённой. clientId null —
- *  завести нового клиента из client (см. update_master_booking). */
-export async function updateMasterBooking(id, { clientId, client, serviceIds, day, startMin, comment }) {
+ *  завести нового клиента из client (см. update_master_booking). price —
+ *  новая цена записи; null/undefined — прежняя (те же услуги) или по прайсу. */
+export async function updateMasterBooking(id, { clientId, client, serviceIds, day, startMin, comment, price }) {
   const c = clientFields(client ?? {});
   return clientResult(
     await run(() =>
@@ -315,6 +326,7 @@ export async function updateMasterBooking(id, { clientId, client, serviceIds, da
         p_day: day,
         p_start_min: startMin,
         p_comment: String(comment ?? "").trim(),
+        p_price: price ?? null,
       }),
       BOOKINGS
     )

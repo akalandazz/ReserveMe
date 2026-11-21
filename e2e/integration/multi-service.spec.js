@@ -169,7 +169,8 @@ test.describe("мастер", () => {
     expect(bad.data).toEqual([]);
   });
 
-  const masterBooking = (serviceIds, day, startMin, name) =>
+  // extra — например { p_price }: без него — как старый кабинет (по прайсу).
+  const masterBooking = (serviceIds, day, startMin, name, extra = {}) =>
     rpc(
       "create_master_booking",
       {
@@ -182,6 +183,7 @@ test.describe("мастер", () => {
         p_day: day,
         p_start_min: startMin,
         p_comment: "",
+        ...extra,
       },
       M.token
     );
@@ -233,6 +235,113 @@ test.describe("мастер", () => {
       duration: svc.manicure.duration,
       services: snapshot("manicure"),
       service_name: svc.manicure.name,
+    });
+  });
+});
+
+// Своя цена записи: мастер договорилась с клиентом не по прайсу —
+// p_price в create/update_master_booking; null — как раньше. Перенос
+// клиентом (reschedule_own_booking) согласованную цену не трогает.
+test.describe("своя цена", () => {
+  const editAs = (row, serviceIds, extra = {}) =>
+    rpc(
+      "update_master_booking",
+      {
+        p_id: row.id,
+        p_client_id: row.client_id,
+        p_client_name: row.client_name || "Клиент",
+        p_client_phone: "",
+        p_client_telegram: row.client_username ?? "",
+        p_client_channel: null,
+        p_service_ids: serviceIds,
+        p_day: row.day,
+        p_start_min: row.start_min,
+        p_comment: "",
+        ...extra,
+      },
+      M.token
+    );
+
+  const create = (serviceIds, day, startMin, extra) =>
+    rpc(
+      "create_master_booking",
+      {
+        p_client_id: null,
+        p_new_name: "Нина",
+        p_new_phone: "",
+        p_new_telegram: "",
+        p_new_channel: "wa",
+        p_service_ids: serviceIds,
+        p_day: day,
+        p_start_min: startMin,
+        p_comment: "",
+        ...extra,
+      },
+      M.token
+    );
+
+  test("create_master_booking: p_price — цена записи, снимок — по прайсу", async () => {
+    const res = await create(["manicure", "design"], DAY_D, 840, { p_price: 1000 });
+    expect(res.status, JSON.stringify(res.data)).toBe(200);
+    expect(await bookingAsAdmin(res.data)).toMatchObject({
+      price: 1000,
+      duration: svc.manicure.duration + svc.design.duration,
+      services: snapshot(...byPriceList("manicure", "design")),
+    });
+  });
+
+  test("цена вне 0–99 999 — отказ, запись не создаётся", async () => {
+    for (const p_price of [-1, 100000]) {
+      const res = await create(["manicure"], DAY_D, 1020, { p_price });
+      expect(res.status, String(p_price)).toBe(400);
+      expect(res.data.message).toBe("Цена — от 0 до 99 999 ₽");
+    }
+    const left = await admin(`/rest/v1/bookings?day=eq.${DAY_D}&start_min=eq.1020&select=id`);
+    expect(left.data).toEqual([]);
+  });
+
+  test("update_master_booking: p_price меняет цену, null — оставляет, другие услуги — по прайсу", async () => {
+    const created = await create(["manicure"], DAY_B, 780);
+    expect(created.status, JSON.stringify(created.data)).toBe(200);
+    const row = await bookingAsAdmin(created.data);
+    expect(row.price).toBe(svc.manicure.price);
+
+    expect((await editAs(row, ["manicure"], { p_price: 0 })).status).toBe(204);
+    expect((await bookingAsAdmin(row.id)).price).toBe(0);
+
+    // Без цены и с тем же набором — согласованная (0) остаётся.
+    expect((await editAs(row, ["manicure"])).status).toBe(204);
+    expect((await bookingAsAdmin(row.id)).price).toBe(0);
+
+    // Другой набор без цены — по прайсу; с ценой — она.
+    expect((await editAs(row, ["manicure", "design"])).status).toBe(204);
+    expect((await bookingAsAdmin(row.id)).price).toBe(svc.manicure.price + svc.design.price);
+    expect((await editAs(row, ["manicure"], { p_price: 1200 })).status).toBe(204);
+    expect(await bookingAsAdmin(row.id)).toMatchObject({ price: 1200, services: snapshot("manicure") });
+
+    expect((await editAs(row, ["manicure"], { p_price: 100000 })).status).toBe(400);
+    expect((await bookingAsAdmin(row.id)).price).toBe(1200);
+  });
+
+  test("перенос клиентом — своя цена остаётся", async () => {
+    const created = asRow(
+      await insertBooking(A.token, { day: DAY_A, start_min: 720, services: ids("manicure") })
+    );
+    // Мастер подтвердила заявку со скидкой.
+    expect((await editAs(created, ["manicure"], { p_price: 999 })).status).toBe(204);
+
+    const res = await rpc(
+      "reschedule_own_booking",
+      { p_id: created.id, p_day: DAY_D, p_start_min: 1020 },
+      A.token
+    );
+    expect(res.status, JSON.stringify(res.data)).toBe(200);
+    expect(await bookingAsAdmin(created.id)).toMatchObject({
+      day: DAY_D,
+      start_min: 1020,
+      status: "new",
+      price: 999,
+      duration: svc.manicure.duration,
     });
   });
 });

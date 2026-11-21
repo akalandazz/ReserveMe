@@ -2668,6 +2668,28 @@ input:focus {
   font-size: 12px;
 }
 
+/* «Стоимость» на проверке — поле своей цены (BookingSheet renderPrice). */
+.bk-sum-row:has(.bk-price) {
+  align-items: center;
+}
+
+.bk-price {
+  font-size: 15px;
+}
+
+.bk-price[data-changed="true"] {
+  color: var(--accent);
+}
+
+.bk-price[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.bk-sum-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .bk-comment {
   font-size: 14px;
   line-height: 1.45;
