@@ -5,7 +5,8 @@ import { changesToast, refreshMyBookings, resetMyBookings } from "./bookings.js"
 import { initAuth, signOut, useSession } from "./supabase.js";
 import { init } from "./telegram.js";
 import { initTheme } from "./theme.js";
-import { BootError, BootLoading } from "./ui.jsx";
+import { useBootPhase } from "./boot.js";
+import { BootError, BootLoading, BootScreen } from "./ui.jsx";
 import AuthScreen from "./screens/AuthScreen.jsx";
 import BookingScreen from "./screens/BookingScreen.jsx";
 import ContactScreen from "./screens/ContactScreen.jsx";
@@ -49,7 +50,34 @@ async function syncAndNotify(setToast) {
   if (changes.length > 0) setToast(changesToast(changes));
 }
 
+/**
+ * Приложение под экраном запуска. Слой держится, пока решается вход, а
+ * у вошедшего — пока нет контента салона (возвращающемуся клиенту его
+ * сразу даёт кэш). Экраны входа и согласия ему не нужны. Пока слой
+ * поднят, приложение под ним inert.
+ */
 function App() {
+  const session = useSession();
+  const content = useContent();
+  const signed = session.status === "signed";
+  const ready = session.status !== "unknown" && (!signed || !!content.settings);
+  const phase = useBootPhase(ready);
+  const bootError =
+    signed && !content.settings && content.status === "error" ? content.error : null;
+
+  return (
+    <>
+      <div className="boot-under" inert={phase === "on"}>
+        <ClientApp />
+      </div>
+      {phase !== "off" && (
+        <BootScreen leaving={phase === "leaving"} error={bootError} onRetry={refreshContent} />
+      )}
+    </>
+  );
+}
+
+function ClientApp() {
   const [stack, setStack] = useState([HOME]);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
   // Короткое сообщение на главной после отправки заявки.

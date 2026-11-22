@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useBootPhase } from "../boot.js";
 import { dateKey } from "../schedule.js";
 import { init } from "../telegram.js";
 import { currentTheme, initTheme, subscribeTheme, toggleTheme } from "../theme.js";
@@ -12,6 +13,7 @@ import BottomNav from "./components/BottomNav.jsx";
 import CalendarSection from "./components/CalendarSection.jsx";
 import ClientsSection from "./components/ClientsSection.jsx";
 import BookingSheet from "./components/BookingSheet.jsx";
+import BootScreen from "./components/BootScreen.jsx";
 import { Icon } from "./components/Icons.jsx";
 import RequestsSection from "./components/RequestsSection.jsx";
 import SalonSection from "./components/SalonSection.jsx";
@@ -49,7 +51,39 @@ function useSyncTheme() {
   return currentTheme();
 }
 
+/**
+ * Кабинет под экраном запуска. Слой держится, пока решается вход, а у
+ * мастера — пока не пришли первые данные (записи, клиенты, услуги,
+ * расписание). Экраны входа и «Нет доступа» ему не нужны — там свои
+ * «Повторить». Пока слой поднят, кабинет под ним inert.
+ */
 export default function AdminApp() {
+  const session = useSession();
+  const data = useAdminData();
+  const resolving =
+    session.status === "unknown" || (session.status === "signed" && session.role === null);
+  const isMaster = session.status === "signed" && session.role === "master";
+  const ready = !resolving && (!isMaster || data.status === "ready");
+  const phase = useBootPhase(ready);
+  const bootError = !resolving && isMaster && data.status === "error" ? data.error : null;
+
+  return (
+    <>
+      <div className="boot-under" inert={phase === "on"}>
+        <Cabinet />
+      </div>
+      {phase !== "off" && (
+        <BootScreen
+          leaving={phase === "leaving"}
+          error={bootError}
+          onRetry={() => loadAdminData()}
+        />
+      )}
+    </>
+  );
+}
+
+function Cabinet() {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(null);
   const [tab, setTab] = useState("schedule");

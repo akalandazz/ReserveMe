@@ -1,8 +1,9 @@
 // Презентационные примитивы. Без состояния — кроме ThemeToggle,
-// который только читает текущую тему из src/theme.js, и Screen,
+// который только читает текущую тему из src/theme.js, Screen,
 // который только читает флаг stale из src/content.js.
 
 import { useSyncExternalStore } from "react";
+import { useBootSlow } from "./boot.js";
 import { useContent } from "./content.js";
 import { HAS_TG_BACK } from "./telegram.js";
 import { currentTheme, subscribeTheme, toggleTheme } from "./theme.js";
@@ -142,11 +143,61 @@ export function Screen({ crumb, onBack, toast, footer, children }) {
   );
 }
 
-/* ─── Загрузка контента ─────────────────────────────────────────
-   Контент салона лежит в базе, поэтому до первого ответа рисовать
-   нечего — даже имя мастера в «хлебной крошке» приходит оттуда.
-   Возвращающийся клиент этих экранов не видит: кэш читается
-   синхронно при загрузке src/content.js.                          */
+/* ─── Экран запуска ─────────────────────────────────────────────
+   Полноэкранный слой поверх приложения, только при запуске: пока
+   решается вход и, у нового клиента, грузится контент салона. Потом —
+   затухание .35s и размонтирование. Копия кабинетного
+   (src/admin/components/BootScreen.jsx): приложения не делят компоненты;
+   общие — картинка и тайминг (useBootPhase, src/boot.js). */
+
+export function BootScreen({ leaving, error, onRetry }) {
+  const slow = useBootSlow(!error);
+  const cls = ["boot-screen", leaving && "is-leaving", error && "is-error"]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <div className={cls} role="status" aria-live="polite">
+      <div className="boot-stage">
+        <div className="boot-figure">
+          <img
+            className="boot-mascot"
+            src="/loading/mascot.webp"
+            width="860"
+            height="890"
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+          <div className="boot-floor" aria-hidden="true" />
+        </div>
+      </div>
+      <div className="boot-foot">
+        <p className="boot-title">Онлайн-запись</p>
+        {error ? (
+          <>
+            <p className="boot-error">Не удалось загрузить данные</p>
+            <p className="boot-detail">{error}</p>
+            <PrimaryButton inline onClick={onRetry}>
+              Повторить
+            </PrimaryButton>
+          </>
+        ) : (
+          <>
+            <div className="boot-line" aria-hidden="true">
+              <div className="boot-line-fill" />
+            </div>
+            <p className="boot-label">
+              {slow ? "Загрузка занимает дольше обычного…" : "Загружаем…"}
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* Запасные экраны под слоем — и для входа уже после запуска (вышел и
+   вошёл снова, а контента ещё нет): тогда слоя нет, видны они.     */
 
 export function BootLoading() {
   return (

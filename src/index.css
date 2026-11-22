@@ -29,6 +29,13 @@
   --accent-soft: rgba(226, 12, 209, 0.1);
   --danger: #8e4238;
   --ok: #3f6b4f;
+  /* Тень под маскотом на экране запуска; в тёмной теме — отсвет акцента. */
+  --boot-shadow: rgba(23, 22, 26, 0.18);
+
+
+
+
+
 }
 
 /* Ручной выбор темы и фолбэк системной — значения обязаны совпадать. */
@@ -46,6 +53,11 @@ html[data-theme="dark"] {
   --accent-soft: rgba(226, 12, 209, 0.15);
   --danger: #e39b95;
   --ok: #8fbf9f;
+  --boot-shadow: rgba(226, 12, 209, 0.22);
+
+
+
+
 }
 
 /* Первый кадр до того, как отработает src/theme.js. */
@@ -64,6 +76,11 @@ html[data-theme="dark"] {
     --accent-soft: rgba(226, 12, 209, 0.15);
     --danger: #e39b95;
     --ok: #8fbf9f;
+  --boot-shadow: rgba(226, 12, 209, 0.22);
+
+
+
+
   }
 }
 
@@ -925,6 +942,193 @@ button {
   color: var(--muted);
 }
 
+/* ─── Экран запуска (BootScreen в ui.jsx) ─────────────────────── */
+
+/* Обёртка приложения под слоем: не участвует в раскладке. */
+.boot-under {
+  display: contents;
+}
+
+/* Две зоны: маскот один в оптическом центре (чуть выше середины),
+   статус — внизу, под большим пальцем. Копия кабинетной раскладки
+   (admin.css), значения держим одинаковыми. */
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  justify-items: center;
+  padding: calc(var(--safe-top) + 24px) var(--pad) calc(var(--safe-bottom) + 36px);
+  background: var(--bg);
+  text-align: center;
+  transition: opacity 0.35s ease;
+}
+
+.boot-screen.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.boot-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 6vh;
+  transition: transform 0.35s ease;
+}
+
+/* Уходя, сцена чуть приближается — приложение «выходит» из неё. */
+.boot-screen.is-leaving .boot-stage {
+  transform: scale(1.04);
+}
+
+/* Появляется один раз; дальше парит только картинка. */
+.boot-figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: bootIn 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Робот держит вывеску над собой — он парит, а не висит на ней. */
+.boot-mascot {
+  width: min(256px, 68vw, 40vh);
+  width: min(256px, 68vw, 40dvh);
+  height: auto;
+  animation: bootFloat 3.2s ease-in-out infinite;
+}
+
+.boot-floor {
+  width: min(128px, 34vw, 20vh);
+  width: min(128px, 34vw, 20dvh);
+  height: 14px;
+  margin-top: 10px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--boot-shadow), transparent);
+  animation: bootFloor 3.2s ease-in-out infinite;
+}
+
+/* Ошибка — движение останавливается, ждём человека. */
+.boot-screen.is-error .boot-mascot,
+.boot-screen.is-error .boot-floor {
+  animation: none;
+}
+
+@keyframes bootIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bootFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-9px);
+  }
+}
+
+/* Тень сжимается и бледнеет, когда робот поднимается. */
+@keyframes bootFloor {
+  0%,
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scaleX(0.78);
+    opacity: 0.55;
+  }
+}
+
+.boot-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 280px;
+  min-height: 64px;
+  animation: riseIn 0.5s 0.15s ease both;
+}
+
+.boot-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Та же полоска, что под шапкой кабинета (.progress-fill / barGo). */
+.boot-line {
+  width: 132px;
+  height: 3px;
+  margin-top: 16px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--accent-soft);
+}
+
+.boot-line-fill {
+  width: 30%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: bootBar 0.9s ease-in-out infinite;
+}
+
+@keyframes bootBar {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(330%);
+  }
+}
+
+@keyframes bootPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.boot-label {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.boot-error {
+  max-width: 280px;
+  margin: 14px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+
+.boot-detail {
+  max-width: 280px;
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.boot-screen .btn-primary {
+  max-width: 280px;
+  margin-top: 18px;
+}
+
 /* ─── Кнопки ──────────────────────────────────────────────────── */
 
 .btn-primary {
@@ -1041,5 +1245,12 @@ button {
   * {
     transition: none !important;
     animation: none !important;
+  }
+
+  /* Полоска запуска не замирает — иначе загрузка выглядит как
+     зависание. Вместо движения — мерцание на месте, как в кабинете. */
+  .boot-line-fill {
+    width: 100%;
+    animation: bootPulse 1.6s ease-in-out infinite !important;
   }
 }

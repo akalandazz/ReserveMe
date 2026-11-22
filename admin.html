@@ -23,6 +23,10 @@
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 
+    <!-- Талисман экрана запуска (BootScreen.jsx): грузится вместе со
+         страницей, а не после первого рендера. -->
+    <link rel="preload" as="image" type="image/webp" href="/loading/mascot.webp" />
+
     <!-- Шрифты макета: Playfair Display — заголовки и цены, Onest — текст.
          Фолбэки прописаны в --serif / --sans, если Google Fonts недоступен. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />

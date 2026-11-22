@@ -61,6 +61,9 @@ export const test = base.extend({
     await withTelegram(page, MASTER);
     await page.goto("/admin.html");
     await expect(page.getByRole("heading", { name: "Расписание" })).toBeVisible();
+    // Экран запуска (BootScreen) уходит не сразу: минимум 600 мс и затухание.
+    // Сырые mouse/touch-события тестов не ждут его, как ждёт click().
+    await expect(page.locator(".boot-screen")).toHaveCount(0);
     await use({
       page,
       backend,
@@ -81,6 +84,7 @@ export const test = base.extend({
     await withTelegram(page, CLIENT);
     await page.goto("/");
     await expect(page.getByText(`Привет, ${CLIENT.firstName}!`)).toBeVisible();
+    await expect(page.locator(".boot-screen")).toHaveCount(0);
     await use({ page, backend });
   },
 });
