@@ -204,15 +204,16 @@ input:focus {
   display: contents;
 }
 
+/* Две зоны: маскот один в оптическом центре (чуть выше середины),
+   статус — внизу, под большим пальцем. Клиентская копия — index.css. */
 .boot-screen {
   position: fixed;
   inset: 0;
   z-index: 50;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: calc(var(--safe-top) + 24px) var(--pad) calc(var(--safe-bottom) + 24px);
+  display: grid;
+  grid-template-rows: 1fr auto;
+  justify-items: center;
+  padding: calc(var(--safe-top) + 24px) var(--pad) calc(var(--safe-bottom) + 36px);
   background: var(--bg);
   text-align: center;
   transition: opacity 0.35s ease;
@@ -223,24 +224,91 @@ input:focus {
   pointer-events: none;
 }
 
-/* Висит на вывеске — качается от её верхнего края. */
-.boot-mascot {
-  width: min(230px, 62vw);
-  height: auto;
-  margin-bottom: 22px;
-  filter: drop-shadow(0 14px 22px var(--boot-shadow));
-  transform-origin: 50% 8%;
-  animation: bootSwing 2.6s ease-in-out infinite;
+.boot-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 6vh;
+  transition: transform 0.35s ease;
 }
 
-@keyframes bootSwing {
+/* Уходя, сцена чуть приближается — кабинет «выходит» из неё. */
+.boot-screen.is-leaving .boot-stage {
+  transform: scale(1.04);
+}
+
+/* Появляется один раз; дальше парит только картинка. */
+.boot-figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: bootIn 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Робот держит вывеску над собой — он парит, а не висит на ней. */
+.boot-mascot {
+  width: min(240px, 64vw, 38dvh);
+  height: auto;
+  animation: bootFloat 3.2s ease-in-out infinite;
+}
+
+.boot-floor {
+  width: min(120px, 32vw, 19dvh);
+  height: 14px;
+  margin-top: 10px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--boot-shadow), transparent);
+  animation: bootFloor 3.2s ease-in-out infinite;
+}
+
+/* Ошибка — движение останавливается, ждём человека. */
+.boot-screen.is-error .boot-mascot,
+.boot-screen.is-error .boot-floor {
+  animation: none;
+}
+
+@keyframes bootIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bootFloat {
   0%,
   100% {
-    transform: rotate(-4deg);
+    transform: translateY(0);
   }
   50% {
-    transform: rotate(4deg);
+    transform: translateY(-9px);
   }
+}
+
+/* Тень сжимается и бледнеет, когда робот поднимается. */
+@keyframes bootFloor {
+  0%,
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scaleX(0.78);
+    opacity: 0.55;
+  }
+}
+
+.boot-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 280px;
+  min-height: 64px;
+  animation: fadeUp 0.5s 0.15s ease both;
 }
 
 .boot-title {
@@ -253,11 +321,16 @@ input:focus {
 }
 
 .boot-line {
-  width: 120px;
-  height: 2px;
-  margin-top: 18px;
+  width: 132px;
+  height: 3px;
+  margin-top: 16px;
+  border-radius: 3px;
   overflow: hidden;
   background: var(--accent-soft);
+}
+
+.boot-line .progress-fill {
+  border-radius: inherit;
 }
 
 .boot-label {

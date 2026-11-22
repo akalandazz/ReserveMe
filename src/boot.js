@@ -10,6 +10,9 @@ const MIN_MS = 600;
 // = transition: opacity 0.35s у .boot-screen в обоих CSS.
 const FADE_MS = 350;
 
+// После стольких секунд «Загружаем…» честно говорит, что долго.
+const SLOW_MS = 6000;
+
 const reducedMotion = () =>
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
@@ -37,4 +40,17 @@ export function useBootPhase(ready) {
   }, [phase]);
 
   return phase;
+}
+
+/** true, когда экран запуска ждёт дольше SLOW_MS (пока active). */
+export function useBootSlow(active) {
+  const [slow, setSlow] = useState(false);
+
+  useEffect(() => {
+    if (!active) return;
+    const t = window.setTimeout(() => setSlow(true), SLOW_MS);
+    return () => window.clearTimeout(t);
+  }, [active]);
+
+  return active && slow;
 }

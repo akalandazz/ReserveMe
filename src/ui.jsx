@@ -3,6 +3,7 @@
 // который только читает флаг stale из src/content.js.
 
 import { useSyncExternalStore } from "react";
+import { useBootSlow } from "./boot.js";
 import { useContent } from "./content.js";
 import { HAS_TG_BACK } from "./telegram.js";
 import { currentTheme, subscribeTheme, toggleTheme } from "./theme.js";
@@ -150,37 +151,47 @@ export function Screen({ crumb, onBack, toast, footer, children }) {
    общие — картинка и тайминг (useBootPhase, src/boot.js). */
 
 export function BootScreen({ leaving, error, onRetry }) {
+  const slow = useBootSlow(!error);
+  const cls = ["boot-screen", leaving && "is-leaving", error && "is-error"]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <div
-      className={leaving ? "boot-screen is-leaving" : "boot-screen"}
-      role="status"
-      aria-live="polite"
-    >
-      <img
-        className="boot-mascot"
-        src="/loading/mascot.webp"
-        width="979"
-        height="1022"
-        alt=""
-        aria-hidden="true"
-        decoding="async"
-      />
-      {error ? (
-        <>
-          <p className="boot-error">Не удалось загрузить данные</p>
-          <p className="boot-detail">{error}</p>
-          <PrimaryButton inline onClick={onRetry}>
-            Повторить
-          </PrimaryButton>
-        </>
-      ) : (
-        <>
-          <div className="boot-line" aria-hidden="true">
-            <div className="boot-line-fill" />
-          </div>
-          <p className="boot-label">Загружаем…</p>
-        </>
-      )}
+    <div className={cls} role="status" aria-live="polite">
+      <div className="boot-stage">
+        <div className="boot-figure">
+          <img
+            className="boot-mascot"
+            src="/loading/mascot.webp"
+            width="979"
+            height="1022"
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+          <div className="boot-floor" aria-hidden="true" />
+        </div>
+      </div>
+      <div className="boot-foot">
+        <p className="boot-title">Онлайн-запись</p>
+        {error ? (
+          <>
+            <p className="boot-error">Не удалось загрузить данные</p>
+            <p className="boot-detail">{error}</p>
+            <PrimaryButton inline onClick={onRetry}>
+              Повторить
+            </PrimaryButton>
+          </>
+        ) : (
+          <>
+            <div className="boot-line" aria-hidden="true">
+              <div className="boot-line-fill" />
+            </div>
+            <p className="boot-label">
+              {slow ? "Загрузка занимает дольше обычного…" : "Загружаем…"}
+            </p>
+          </>
+        )}
+      </div>
     </div>
   );
 }
