@@ -24,8 +24,8 @@
   --danger: #8e4238;
   --scrim: rgba(15, 13, 16, 0.42);
   --knob: #ffffff;
-  /* Тень маскота на экране запуска. */
-  --boot-shadow: rgba(23, 22, 26, 0.16);
+  /* Тень под маскотом на экране запуска; в тёмной теме — отсвет акцента. */
+  --boot-shadow: rgba(23, 22, 26, 0.18);
 }
 
 html[data-theme="dark"] {
@@ -43,7 +43,7 @@ html[data-theme="dark"] {
   --danger: #e39b95;
   --scrim: rgba(15, 13, 16, 0.42);
   --knob: #ffffff;
-  --boot-shadow: rgba(0, 0, 0, 0.4);
+  --boot-shadow: rgba(226, 12, 209, 0.22);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -62,7 +62,7 @@ html[data-theme="dark"] {
     --danger: #e39b95;
     --scrim: rgba(15, 13, 16, 0.42);
     --knob: #ffffff;
-    --boot-shadow: rgba(0, 0, 0, 0.4);
+    --boot-shadow: rgba(226, 12, 209, 0.22);
   }
 }
 
@@ -247,13 +247,15 @@ input:focus {
 
 /* Робот держит вывеску над собой — он парит, а не висит на ней. */
 .boot-mascot {
-  width: min(240px, 64vw, 38dvh);
+  width: min(256px, 68vw, 40vh);
+  width: min(256px, 68vw, 40dvh);
   height: auto;
   animation: bootFloat 3.2s ease-in-out infinite;
 }
 
 .boot-floor {
-  width: min(120px, 32vw, 19dvh);
+  width: min(128px, 34vw, 20vh);
+  width: min(128px, 34vw, 20dvh);
   height: 14px;
   margin-top: 10px;
   border-radius: 50%;

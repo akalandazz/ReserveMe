@@ -22,8 +22,8 @@ export default function BootScreen({ leaving, error, onRetry }) {
           <img
             className="boot-mascot"
             src="/loading/mascot.webp"
-            width="979"
-            height="1022"
+            width="860"
+            height="890"
             alt=""
             aria-hidden="true"
             decoding="async"
